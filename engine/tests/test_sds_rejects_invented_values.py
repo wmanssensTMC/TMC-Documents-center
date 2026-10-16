@@ -65,5 +65,8 @@ def run():
 
 
 if __name__ == "__main__":
+    if not Path(SRC).exists():
+        print(f"SKIP: sample SDS missing: {SRC}")
+        sys.exit(0)
     _, bad = run()
     sys.exit(1 if bad else 0)

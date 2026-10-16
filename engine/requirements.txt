@@ -6,3 +6,4 @@ ocrmypdf
 numpy
 Pillow
 pytest
+reportlab   # tests only: builds synthetic supplier PDFs

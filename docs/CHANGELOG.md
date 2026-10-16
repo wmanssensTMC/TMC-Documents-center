@@ -6,3 +6,5 @@
 - `npm run hash-password` makes the value for `ADMIN_PASSWORD_HASH`.
 - Engine: `requirements.txt` added; SDS test reads `entity.example.json` instead of a missing `entity_db.json`.
 - Decisions of 16/10 recorded in `docs/BRIEF.md` section 11 (incl. supplier name visible in app, feedback overview for phase 2).
+- Agents: Willem's Architect/Developer/Security/Refactor/Testing/Master set added (`.github/agents`, `.claude/agents`).
+- GitHub check (`.github/workflows/checks.yml`): engine tests and web build on every push, no local Python needed.

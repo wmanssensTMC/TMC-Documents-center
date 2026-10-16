@@ -33,3 +33,11 @@ Willem Manssens, AI lead at Transmare Chemie NV (TMC). He is not a developer: ex
 - UI: TMC navy `#213371`, TMC logo (`engine/assets/logo.png`), clean, phone-friendly. Dates dd/mm/yyyy.
 - Text for users in English first; NL/FR later via a translation file.
 - No em dashes in any text Willem will send by mail.
+
+## Agents (added 16/10/2026)
+- Willem's agent set lives in `.github/agents/*.agent.md` (GitHub Copilot format, verbatim) and in `.claude/agents/` (same text, tool names for Claude Code).
+- Per phase, the main session runs the Master workflow: `architect` (design) -> build -> `security` -> `refactor` -> `testing` -> docs. Small fixes inside a phase only need `security` and `testing` when they touch login, uploads or file handling.
+- Master's "Migration Branch Gate", "Publication" and Aikido steps do not apply here (no Aikido). Instead: one branch per phase, checks on GitHub must pass, Willem says ok, then merge to `main`.
+
+## Checks
+- `.github/workflows/checks.yml` runs the engine tests (Python, LibreOffice, OCR) and the web build on GitHub for every push. Nothing needs installing on a laptop for that.
