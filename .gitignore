@@ -6,3 +6,8 @@ samples/*
 __pycache__/
 .next/
 out/
+
+# local tools
+.venv/
+.pytest_cache/
+.claude/settings.local.json

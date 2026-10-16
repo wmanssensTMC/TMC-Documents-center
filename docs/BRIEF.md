@@ -123,3 +123,14 @@ Look and feel: TMC navy `#213371`, TMC logo, clean, phone-friendly, NL/EN/FR lab
 - K8 documents auto-processed: count of Final documents made via the engine per month.
 - K1 time saved: time per COA/MSDS manual vs via Document Center (baseline with Stijn).
 - Search time: a document found in under 10 seconds.
+
+## 11. Decisions log
+
+| Date | Decision | By |
+|---|---|---|
+| 16/10/2026 | Project folder `C:\Users\wilman\Projects\tmc-document-center`, git branch per phase | Willem |
+| 16/10/2026 | Vercel phase: test/sample documents only until Jeroen decides on real documents (open point 4) | Willem |
+| 16/10/2026 | Supplier original is visible to every logged-in user, for checking. **Screen-by-screen policy:** on the check screen the supplier original is on the left and the TMC (neutralised) version on the right; the user makes the final call before downloading | Willem |
+| 16/10/2026 | Finished TMC documents (phase 1 upload) may be added directly as Final by anyone with upload rights | Willem |
+| 16/10/2026 | An approver may approve their own upload (no second person required) | Willem |
+| 16/10/2026 | Phase 0 login: one admin account from env vars, own signed-cookie session behind `web/lib/auth`; users and roles move to the database in phase 1 | Claude, agreed by Willem |

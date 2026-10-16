@@ -1,0 +1,12 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-tmc: #213371;
+  --color-tmc-light: #e8ebf4;
+  --font-sans: Arial, Helvetica, sans-serif;
+}
+
+body {
+  background: #f6f7fb;
+  color: #1f2430;
+}

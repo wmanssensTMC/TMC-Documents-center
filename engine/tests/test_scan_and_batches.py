@@ -1,6 +1,6 @@
 """Checks against the three supplier samples Willem supplied.
 
-Run from the skill root with the sample PDFs in samples/:
+Put the sample PDFs in engine/samples/ (not in git), then run:
     python tests/test_scan_and_batches.py
 """
 import sys, pathlib
