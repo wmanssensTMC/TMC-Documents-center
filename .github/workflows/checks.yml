@@ -33,6 +33,10 @@ jobs:
           status=$?
           cat routes.log
           { echo "### Route tests (exit $status)"; echo '```'; tail -60 routes.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if [ $status -ne 0 ]; then
+            msg=$(tail -40 routes.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+            echo "::error title=Route tests::$msg"
+          fi
           exit $status
       - name: Provenance gate blocks invented SDS values (skips without sample)
         run: python tests/test_sds_rejects_invented_values.py
