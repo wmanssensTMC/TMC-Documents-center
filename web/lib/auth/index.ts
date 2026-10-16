@@ -3,7 +3,7 @@
 import "server-only";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { verifyPassword } from "./password";
+import { dummyHash, verifyPassword } from "./password";
 import { SESSION_COOKIE, SESSION_HOURS, decodeSession, encodeSession, type Role, type Session } from "./session";
 import { findUserByEmail } from "./users";
 
@@ -20,15 +20,19 @@ export async function getSession(): Promise<Session | null> {
 export async function requireUser(minRole: Role = "user"): Promise<Session> {
   const session = await getSession();
   if (!session) redirect("/login");
-  if (RANK[session.role] < RANK[minRole]) redirect("/");
+  if ((RANK[session.role] ?? 0) < RANK[minRole]) redirect("/");
   return session;
 }
 
 /** Returns false for an unknown user or wrong password (same answer for both). */
 export async function signIn(email: string, password: string): Promise<boolean> {
   const user = await findUserByEmail(email);
-  const ok = user ? await verifyPassword(password, user.passwordHash) : false;
-  if (!user || !ok) return false;
+  // Always run one scrypt, so an unknown e-mail takes as long as a wrong password.
+  const ok = await verifyPassword(password, user?.passwordHash ?? (await dummyHash()));
+  if (!user || !ok) {
+    console.warn("login_failed", { at: new Date().toISOString() });
+    return false;
+  }
   const token = await encodeSession({ email: user.email, name: user.name, role: user.role });
   const store = await cookies();
   store.set(SESSION_COOKIE, token, {

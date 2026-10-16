@@ -1,7 +1,8 @@
 // Signed session cookie (stateless). Safe to import from proxy.ts: no Node-only APIs.
 import { SignJWT, jwtVerify } from "jose";
 
-export type Role = "admin" | "approver" | "user";
+export const ROLES = ["admin", "approver", "user"] as const;
+export type Role = (typeof ROLES)[number];
 
 export type Session = {
   email: string;
@@ -33,9 +34,10 @@ export async function decodeSession(token: string | undefined): Promise<Session 
   try {
     const { payload } = await jwtVerify(token, key(), { algorithms: ["HS256"] });
     const { email, name, role } = payload as Partial<Session>;
-    if (!email || !name || !role) return null;
+    if (!email || !name || !role || !ROLES.includes(role)) return null;
     return { email, name, role };
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("AUTH_SECRET")) console.error(err.message);
     return null;
   }
 }

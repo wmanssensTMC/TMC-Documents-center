@@ -9,6 +9,7 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
   const email = String(formData.get("email") ?? "");
   const password = String(formData.get("password") ?? "");
   if (!email || !password) return { error: "Fill in e-mail and password.", email };
+  if (email.length > 254 || password.length > 256) return { error: "E-mail or password is not correct." };
 
   const ok = await signIn(email, password);
   if (!ok) {

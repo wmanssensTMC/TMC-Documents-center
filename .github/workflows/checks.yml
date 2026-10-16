@@ -2,6 +2,9 @@
 # and the web app build. Nothing needs to be installed on a laptop for this.
 name: checks
 
+permissions:
+  contents: read
+
 on:
   push:
   pull_request:
