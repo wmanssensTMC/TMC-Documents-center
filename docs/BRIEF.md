@@ -1,0 +1,125 @@
+# TMC Document Center: project brief
+
+Version 0.2 · 16/10/2026 · Owner: Willem Manssens (AI lead) · Business partner: Kars Groen
+Roadmap item: AI.S002 (track B). First in-house AI project after the external vendors (Ennovative, Tradewind/SDSExtract) were put on hold on 16/10/2026.
+
+## 1. Why
+
+Today supplier documents (COA, MSDS/SDS, TDS, spec sheets, labels) are rebranded one by one and stored in personal folders. Nobody has one place to find "the TMC COA for batch X of product Y". The Document Center gives TMC:
+
+1. **One central library** of all TMC-branded documents, searchable by product, batch, dossier, type and entity.
+2. **One flow to create them**: upload the supplier document, the existing neutralizer engine makes the TMC version, a person checks the yellow parts, then it becomes Final.
+3. **Later: labels** (Kars' TMC Label Creator: EN/FR, Word + PDF) in the same place.
+
+## 2. Users (pilot) · assumption, confirm
+
+| Who | Role in pilot |
+|---|---|
+| Willem | Admin, uploads, approves (Final) |
+| Kars | Uploads, approves (Final), owner of labels |
+| Dennis Boeren, Sigi Berben | Upload, search, download |
+| Later: logistics team (Stijn, Mila, Anthony …), sales | Search and download |
+
+Pilot login: simple password login built into the app (no Entra yet). Microsoft login (Entra ID) comes with the Azure phase. No public access.
+
+## 3. Scope per phase (strictly in order, each phase shown to Willem before the next)
+
+| Phase | What | Done when |
+|---|---|---|
+| 0. Setup | Repo on GitHub, Next.js app, simple password login, deploy to Vercel | Willem logs in on the Vercel URL |
+| 1. Library | Upload finished TMC documents with metadata; list, filter, search, view, download; versioning (never overwrite) | 20 real TMC documents uploaded and findable in < 10 s |
+| 2. Neutralise | Upload supplier COA/MSDS/TDS (+ PFI/OC) → engine job → Word draft with yellow marks → check → Final (PDF) → into the library | Same output as the current skill on the test corpus, provenance gate passing |
+| 3. Labels | Kars' Label Creator as a module (EN/FR, Word + PDF), labels stored in the library | Kars signs off on 3 real labels |
+| 4. Azure | Move app to Azure, switch login to Microsoft (Entra ID), worker to Azure Container Apps, files to SharePoint library "TMC Document Center" | Pilot users work on the Azure URL, Vercel switched off |
+| 5. Link to Sonar Logistics | Documents per dossier visible in Sonar; BC data (product, batch, dossier) via the Dynamate API key | Opening a dossier shows its COA/MSDS |
+
+Out of scope for now: e-signatures, external customer portal, automatic mail sending.
+
+## 4. Hosting plan: Vercel first, then Azure (Willem, 16/10)
+
+- **Vercel (phases 0-3):** Next.js front end + API routes. Start on Willem's **Hobby** account for the prototype with test documents only. Hobby is meant for personal, non-commercial use and has one user, so upgrade to Pro (≈ $20/user/month incl. $20 usage) or move to Azure before colleagues work in it.
+- **Important limit:** the neutralizer engine is Python with OCR (Tesseract/ocrmypdf) and Word→PDF (LibreOffice). That does **not** run in Vercel serverless functions. So the engine runs as a separate **worker**:
+  - pilot: worker runs on Willem's laptop (or a small container), picks up jobs from the database, writes results back;
+  - Azure: the same worker as a container in Azure Container Apps.
+- **Data rule for the Vercel phase:** use test/sample documents (e.g. the Klassif.ai sample set in OneDrive `Willem/COA's/DATA_Klassif.ai`) until Jeroen agrees real supplier documents may be stored outside the Microsoft tenant.
+- **Build portable:** storage, auth and job queue behind small interfaces so the Azure move is a config change, not a rebuild.
+
+## 5. Proposed stack (Claude Code may propose better, but must explain why)
+
+| Part | Vercel phase | Azure phase |
+|---|---|---|
+| Front end + API | Next.js (App Router, TypeScript), Tailwind | Same code on Azure App Service / Static Web Apps |
+| Login | Simple password login (users and hashed passwords in env vars or DB), behind `lib/auth` | Microsoft Entra ID (app registration) |
+| Database | Postgres (Neon via Vercel) with Drizzle or Prisma | Azure Database for PostgreSQL |
+| File storage | Vercel Blob | SharePoint document library via Microsoft Graph |
+| Engine worker | Python 3.11, `engine/` folder (existing skill), polls `jobs` table | Azure Container Apps |
+| Secrets | Vercel env vars | Azure Key Vault |
+
+Needed from IT only in phase 4 (Cheops / Willem as admin): one **Entra app registration** for Microsoft login and Graph permission `Sites.Selected` for the SharePoint library.
+
+## 6. Data model (first version)
+
+**document**
+- id, type: `COA | MSDS | TDS | SPEC | LABEL | OTHER`
+- product_name (TMC name, as agreed with the client), inci_name (optional, see pricing tool), cas_number (optional)
+- batch (lot), file_nr (TMC dossier, format `NNN.SNNNN`, e.g. `840.S0850`), po_number (optional)
+- entity: `TMC` (Transmare Chemie NV) | `TMCGULF` | `PHARMALABO`
+- language (EN default; FR, NL…)
+- manufacturing_date, expiry_or_retest_date (only when on the source)
+- supplier_name: **internal only**, never printed on any output, never shown to non-admin users
+- status: `Draft` → `To check` (yellow left) → `Final` → `Superseded`
+- version (1, 2, 3 …), previous_version_id
+- files: source (supplier original, internal), docx, pdf
+- created_by, created_at, approved_by, approved_at
+- tags (free)
+
+**job** (neutralise run): id, document_id, input files, type, parameters (entity, product_name, file_nr, batch), state (`queued | running | to_check | done | failed`), exit_code, log, started/finished.
+
+**audit_log**: append-only, every create/update/approve/download with user and time.
+
+**entity** (settings): naam, adres, telefoon, email, web, btw, nood, code → see `engine/entity.example.json`. Only Willem adds entities; never invent an address.
+
+## 7. Business rules (non-negotiable, from Willem's earlier decisions)
+
+1. **Never invent, never leave out.** Every value on a TMC document comes from the source document or from a value a user typed. Every specification on the source COA must reach the output. The engine's provenance gate enforces this; it must never be bypassed or switched off.
+2. **Yellow = must check.** Anything uncertain is marked yellow in the Word draft; the PDF/Final is blocked until all yellow is resolved by a person. Never remove a yellow mark automatically.
+3. **No supplier identity on output:** supplier name, address, phone, e-mail, website, logo, article codes, colours. The UFI code stays. GHS/transport pictograms stay with their own colours.
+4. **Hard values win:** product name, dossier number and batch typed by the user replace whatever the supplier document says. The product name comes from the commercial document (PFI, OC, contract, invoice) when available, otherwise the supplier's stays.
+5. **File names** (settled, do not change):
+   - COA: `<CODE>_COA_<file nr>_<product>_<batch>` e.g. `TMC_COA_840.S0850_Betaine_AI_test_BT-3877`
+   - MSDS: `<CODE>_MSDS_<product>` e.g. `TMC_MSDS_HYDROQUINONE`
+   - TDS/spec: `<CODE>_TDS_<product>`
+   - A part that is not known is left out, never invented.
+6. **Never overwrite.** Same name again = new version; the old one becomes `Superseded` and stays retrievable. Tell the user the document already exists.
+7. **One COA per batch.** A COA with several batches gives one document per batch. A batch appearing twice with only a different quantity is taken once (note kept); a different analysis value is held back for a person.
+8. **Incomplete input is caught** (e.g. page marker says 3 pages, file has 2).
+9. **Emergency number** on MSDS section 1.4: +32 (0)14 58 45 45. Supplier's regulatory framing (UK REACH etc.) is kept as supplied.
+10. Dates shown European (dd/mm/yyyy).
+
+## 8. Screens (pilot)
+
+1. **Library:** one table, filters in the column headers (type, product, batch, dossier, entity, status), search box, newest first. Row click opens the document.
+2. **Document:** preview PDF, metadata, versions, download Word/PDF, audit trail. Approve button for approvers.
+3. **New document:** drag and drop, one type per drop, several COAs at once; fields: entity, product name, dossier number (with "use first for all"), batch. Commercial document may be dropped with the COAs; typed values overrule it.
+4. **To check:** list of drafts with yellow parts; download Word, upload checked Word, Finalise.
+5. **Settings (admin):** entities, users/roles.
+
+Look and feel: TMC navy `#213371`, TMC logo, clean, phone-friendly, NL/EN/FR labels later.
+
+## 9. Open points
+
+| # | Question | Who |
+|---|---|---|
+| 1 | Confirm pilot users and approvers (section 2) | Willem / Kars |
+| 2 | Entra app registration for phase 4: who creates it (Willem as admin or Cheops)? | Willem |
+| 3 | Vercel: Hobby for the prototype; Pro (who pays) before colleagues use it | Willem / Jeroen |
+| 4 | Real supplier documents on Vercel: allowed or test data only? | Jeroen |
+| 5 | Azure subscription for phase 4 | Cheops |
+| 6 | Label Creator: Kars shares his example label and project files | Kars |
+| 7 | Which document types first in the pilot: COA + MSDS (proposal), TDS next | Willem / Kars |
+
+## 10. Success measures (KPI link)
+
+- K8 documents auto-processed: count of Final documents made via the engine per month.
+- K1 time saved: time per COA/MSDS manual vs via Document Center (baseline with Stijn).
+- Search time: a document found in under 10 seconds.
