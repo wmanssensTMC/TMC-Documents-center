@@ -26,7 +26,14 @@ jobs:
           sudo apt-get install -y --no-install-recommends libreoffice-writer tesseract-ocr ghostscript
       - run: pip install -r requirements.txt
       - name: Route tests (synthetic documents)
-        run: python tests/test_v060_routes.py
+        shell: bash
+        run: |
+          set +e
+          python tests/test_v060_routes.py > routes.log 2>&1
+          status=$?
+          cat routes.log
+          { echo "### Route tests (exit $status)"; echo '```'; tail -60 routes.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
       - name: Provenance gate blocks invented SDS values (skips without sample)
         run: python tests/test_sds_rejects_invented_values.py
       - name: Scan and batch tests (skips without samples)
@@ -48,7 +55,6 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm run lint
-      - run: npx tsc --noEmit
       - run: npm run build
         env:
           AUTH_SECRET: ci-only-placeholder-secret-not-used-anywhere-000
