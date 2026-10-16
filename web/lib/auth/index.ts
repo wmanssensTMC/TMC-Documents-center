@@ -1,8 +1,9 @@
 // The only auth entry point pages and API routes use. In phase 4 Microsoft Entra ID
 // replaces signIn(); getSession() and requireUser() keep the same shape.
 import "server-only";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { clearFailures, isLocked, recordFailure, withSlot } from "./limiter";
 import { dummyHash, verifyPassword } from "./password";
 import { SESSION_COOKIE, SESSION_HOURS, decodeSession, encodeSession, type Role, type Session } from "./session";
 import { findUserByEmail } from "./users";
@@ -24,15 +25,24 @@ export async function requireUser(minRole: Role = "user"): Promise<Session> {
   return session;
 }
 
-/** Returns false for an unknown user or wrong password (same answer for both). */
-export async function signIn(email: string, password: string): Promise<boolean> {
+export type SignInResult = "ok" | "invalid" | "locked" | "busy";
+
+/** "invalid" for an unknown user or a wrong password (same answer for both). */
+export async function signIn(email: string, password: string): Promise<SignInResult> {
+  const ip = (await headers()).get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  const key = `${ip}|${email.trim().toLowerCase()}`;
+  if (isLocked(key)) return "locked";
+
   const user = await findUserByEmail(email);
   // Always run one scrypt, so an unknown e-mail takes as long as a wrong password.
-  const ok = await verifyPassword(password, user?.passwordHash ?? (await dummyHash()));
+  const ok = await withSlot(async () => verifyPassword(password, user?.passwordHash ?? (await dummyHash())));
+  if (ok === null) return "busy";
   if (!user || !ok) {
+    recordFailure(key);
     console.warn("login_failed", { at: new Date().toISOString() });
-    return false;
+    return "invalid";
   }
+  clearFailures(key);
   const token = await encodeSession({ email: user.email, name: user.name, role: user.role });
   const store = await cookies();
   store.set(SESSION_COOKIE, token, {
@@ -42,7 +52,7 @@ export async function signIn(email: string, password: string): Promise<boolean> 
     path: "/",
     maxAge: SESSION_HOURS * 3600,
   });
-  return true;
+  return "ok";
 }
 
 export async function signOut() {

@@ -21,8 +21,8 @@ const password = await new Promise((resolve) => {
 rl.close();
 process.stdout.write("\n");
 
-if (password.length < 12) {
-  console.error("Use at least 12 characters.");
+if (password.length < 12 || password.length > 256) {
+  console.error("Use 12 to 256 characters.");
   process.exit(1);
 }
 const N = 2 ** 17, r = 8, p = 1;
