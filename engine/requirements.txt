@@ -1,4 +1,4 @@
-# Python 3.11. System tools also needed: LibreOffice (soffice in PATH), Tesseract OCR, Ghostscript.
+# Python 3.11. System tools also needed: LibreOffice (soffice in PATH), Tesseract OCR, Ghostscript, poppler-utils (pdftotext, tests).
 pdfplumber
 python-docx
 pypdf

@@ -20,10 +20,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - name: System tools (LibreOffice, Tesseract, Ghostscript)
+      - name: System tools (LibreOffice, Tesseract, Ghostscript, poppler)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libreoffice-writer tesseract-ocr ghostscript
+          sudo apt-get install -y --no-install-recommends libreoffice-writer tesseract-ocr ghostscript poppler-utils
       - run: pip install -r requirements.txt
       - name: Route tests (synthetic documents)
         shell: bash
