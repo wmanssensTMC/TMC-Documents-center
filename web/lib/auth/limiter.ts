@@ -24,7 +24,8 @@ export function recordFailure(key: string) {
   const now = Date.now();
   const entry = fails.get(key);
   if (!entry || now > entry.until) {
-    if (fails.size >= MAX_KEYS) fails.clear();
+    // Full: drop the oldest entry (Map keeps insertion order), never reset all locks.
+    if (fails.size >= MAX_KEYS) fails.delete(fails.keys().next().value!);
     fails.set(key, { count: 1, until: now + WINDOW_MS });
   } else {
     entry.count++;

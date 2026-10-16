@@ -9,3 +9,4 @@
 - Agents: Willem's Architect/Developer/Security/Refactor/Testing/Master set added (`.github/agents`, `.claude/agents`).
 - GitHub check (`.github/workflows/checks.yml`): engine tests and web build on every push, no local Python needed.
 - Security review (75/100) fixes: role claim validated and unknown roles fail closed; scrypt cost N=2^17 stored in the hash; same timing for unknown e-mail; input length caps; failed-login log line; security headers (no framing, nosniff, referrer, HSTS); hash script hides the password; GitHub check token read-only. Built-in login brake: max 2 checks at once, 5 failures per IP+e-mail lock 15 min. Still to add at deploy: Vercel Firewall rate-limit rule on POST /login.
+- Security gate passed: 90/100 (Security agent, 16/10). Open: Vercel Firewall rule on POST /login (raises to 100).
