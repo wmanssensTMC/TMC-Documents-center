@@ -28,7 +28,7 @@ Pilot login: simple password login built into the app (no Entra yet). Microsoft 
 |---|---|---|
 | 0. Setup | Repo on GitHub, Next.js app, simple password login, deploy to Vercel | Willem logs in on the Vercel URL |
 | 1. Library | Upload finished TMC documents with metadata; list, filter, search, view, download; versioning (never overwrite) | 20 real TMC documents uploaded and findable in < 10 s |
-| 2. Neutralise | Upload supplier COA/MSDS/TDS (+ PFI/OC) → engine job → Word draft with yellow marks → check → Final (PDF) → into the library | Same output as the current skill on the test corpus, provenance gate passing |
+| 2. Neutralise | Upload supplier COA/MSDS/TDS (+ PFI/OC) → engine job → Word draft with yellow marks → check → Final (PDF) → into the library; check screen side by side (original left, TMC right); corrections go to the admin feedback overview | Same output as the current skill on the test corpus, provenance gate passing |
 | 3. Labels | Kars' Label Creator as a module (EN/FR, Word + PDF), labels stored in the library | Kars signs off on 3 real labels |
 | 4. Azure | Move app to Azure, switch login to Microsoft (Entra ID), worker to Azure Container Apps, files to SharePoint library "TMC Document Center" | Pilot users work on the Azure URL, Vercel switched off |
 | 5. Link to Sonar Logistics | Documents per dossier visible in Sonar; BC data (product, batch, dossier) via the Dynamate API key | Opening a dossier shows its COA/MSDS |
@@ -66,7 +66,7 @@ Needed from IT only in phase 4 (Cheops / Willem as admin): one **Entra app regis
 - entity: `TMC` (Transmare Chemie NV) | `TMCGULF` | `PHARMALABO`
 - language (EN default; FR, NL…)
 - manufacturing_date, expiry_or_retest_date (only when on the source)
-- supplier_name: **internal only**, never printed on any output, never shown to non-admin users
+- supplier_name: internal metadata, visible to every logged-in user in the app (for checking), **never printed on any output** (Willem, 16/10)
 - status: `Draft` → `To check` (yellow left) → `Final` → `Superseded`
 - version (1, 2, 3 …), previous_version_id
 - files: source (supplier original, internal), docx, pdf
@@ -134,3 +134,5 @@ Look and feel: TMC navy `#213371`, TMC logo, clean, phone-friendly, NL/EN/FR lab
 | 16/10/2026 | Finished TMC documents (phase 1 upload) may be added directly as Final by anyone with upload rights | Willem |
 | 16/10/2026 | An approver may approve their own upload (no second person required) | Willem |
 | 16/10/2026 | Phase 0 login: one admin account from env vars, own signed-cookie session behind `web/lib/auth`; users and roles move to the database in phase 1 | Claude, agreed by Willem |
+| 16/10/2026 | Q6 and Q7 confirmed. Supplier name visible to every logged-in user in the app, never on any TMC output (section 6 updated) | Willem |
+| 16/10/2026 | **Feedback overview (phase 2):** every correction a user makes when checking a draft (yellow part fixed, value changed, draft rejected, with a short reason) is stored and shown to the admin on one overview page, to improve the engine's reading rules. Never used to change a document automatically | Willem |
