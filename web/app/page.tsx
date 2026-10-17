@@ -142,7 +142,7 @@ export default async function LibraryPage({ searchParams }: PageProps<"/">) {
                   </td>
                   <td className={cell}>
                     <Link href={`/documents/${d.id}`} className="font-medium text-gray-900 after:absolute after:inset-0">
-                      {d.productName}
+                      {d.productName ?? <span className="italic text-gray-500">product to confirm</span>}
                     </Link>
                     <div className="text-xs text-gray-500">
                       {d.name}

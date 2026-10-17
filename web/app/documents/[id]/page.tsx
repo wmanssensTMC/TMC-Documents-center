@@ -57,7 +57,7 @@ export default async function DocumentPage({ params, searchParams }: PageProps<"
       </Link>
       <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-tmc">{doc.productName}</h1>
+          <h1 className="text-xl font-semibold text-tmc">{doc.productName ?? "Product to confirm"}</h1>
           <p className="break-all text-sm text-gray-600">
             {doc.name} · {doc.version ? `version ${doc.version}` : "draft"} ·{" "}
             <span className={doc.status === "Final" ? "text-green-700" : "text-gray-500"}>{doc.status}</span>

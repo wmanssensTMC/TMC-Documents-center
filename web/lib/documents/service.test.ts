@@ -15,6 +15,7 @@ const EXE = new Uint8Array([0x4d, 0x5a, 0x90, 0, 0, 0, 0, 0]);
 function fakeStorage(files: Map<string, { bytes: Uint8Array; size?: number }>): Storage {
   return {
     mode: "local",
+    async put() {},
     async get() {
       return null;
     },

@@ -15,12 +15,14 @@ export interface Storage {
   get(key: string): Promise<StoredFile | null>;
   /** First `n` bytes and the size, to check the file signature after upload. */
   head(key: string, n: number): Promise<{ bytes: Uint8Array; size: number } | null>;
+  /** Stores a new file (the worker's results). Refuses to overwrite. */
+  put(key: string, data: Uint8Array, contentType: string): Promise<void>;
 }
 
 let storage: Storage | undefined;
 
 export function getStorage(): Storage {
-  storage ??= process.env.BLOB_READ_WRITE_TOKEN ? blobStorage() : localStorage();
+  storage ??= process.env.BLOB_READ_WRITE_TOKEN ? blobStorage() : localStorage(LOCAL_ROOT);
   return storage;
 }
 
@@ -39,29 +41,35 @@ function blobStorage(): Storage {
       const bytes = await readFirst(file.stream, n);
       return { bytes, size: file.size ?? 0 };
     },
+    async put(key, data, contentType) {
+      if (!parseUploadKey(key)) throw new Error("invalid storage key");
+      const { put } = await import("@vercel/blob");
+      await put(key, Buffer.from(data), { access: "private", contentType, addRandomSuffix: false, allowOverwrite: false });
+    },
   };
 }
 
 // ---------------------------------------------------------------- local folder
 export const LOCAL_ROOT = path.join(process.cwd(), ".data", "files");
 
-function localPath(key: string) {
+function localPath(root: string, key: string) {
   if (!parseUploadKey(key)) throw new Error("invalid storage key");
-  return path.join(LOCAL_ROOT, ...key.split("/"));
+  return path.join(root, ...key.split("/"));
 }
 
-function localStorage(): Storage {
+/** Laptop and tests: files in a folder (default .data/files). */
+export function localStorage(root: string): Storage {
   return {
     mode: "local",
     async get(key) {
-      const p = localPath(key);
+      const p = localPath(root, key);
       const s = await stat(p).catch(() => null);
       if (!s) return null;
       const stream = Readable.toWeb(createReadStream(p)) as ReadableStream<Uint8Array>;
       return { stream, size: s.size, contentType: null };
     },
     async head(key, n) {
-      const p = localPath(key);
+      const p = localPath(root, key);
       const fh = await open(p, "r").catch(() => null);
       if (!fh) return null;
       try {
@@ -72,14 +80,17 @@ function localStorage(): Storage {
         await fh.close();
       }
     },
+    async put(key, data) {
+      const p = localPath(root, key);
+      await mkdir(path.dirname(p), { recursive: true });
+      await writeFile(p, data, { flag: "wx" });
+    },
   };
 }
 
 /** Local mode only (dev upload route). Refuses to overwrite. */
 export async function putLocal(key: string, data: Uint8Array) {
-  const p = localPath(key);
-  await mkdir(path.dirname(p), { recursive: true });
-  await writeFile(p, data, { flag: "wx" });
+  await localStorage(LOCAL_ROOT).put(key, data, "application/octet-stream");
 }
 
 async function readFirst(stream: ReadableStream<Uint8Array>, n: number) {

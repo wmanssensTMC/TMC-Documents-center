@@ -17,6 +17,7 @@ let db: Db;
 let files: Map<string, Uint8Array>;
 const storage: Storage = {
   mode: "local",
+  put: async () => {},
   get: async () => null,
   head: async (key) => (files.has(key) ? { bytes: files.get(key)!, size: files.get(key)!.length } : null),
 };

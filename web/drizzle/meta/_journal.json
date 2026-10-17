@@ -36,6 +36,13 @@
       "when": 1792255670674,
       "tag": "0004_final_complete_check",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792255903429,
+      "tag": "0005_draft_product_optional",
+      "breakpoints": true
     }
   ]
 }

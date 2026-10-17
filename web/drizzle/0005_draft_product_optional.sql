@@ -1,0 +1,3 @@
+ALTER TABLE "documents" DROP CONSTRAINT "documents_final_complete";--> statement-breakpoint
+ALTER TABLE "documents" ALTER COLUMN "product_name" DROP NOT NULL;--> statement-breakpoint
+ALTER TABLE "documents" ADD CONSTRAINT "documents_final_complete" CHECK ("documents"."status" <> 'Final' OR ("documents"."version" IS NOT NULL AND "documents"."pdf_key" IS NOT NULL AND "documents"."product_name" IS NOT NULL));

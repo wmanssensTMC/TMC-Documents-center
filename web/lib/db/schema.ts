@@ -97,7 +97,8 @@ export const documents = pgTable(
     name: text("name").notNull(),
     type: docType("type").notNull(),
     entity: entityCode("entity").notNull().default("TMC"),
-    productName: text("product_name").notNull(),
+    // Empty on an engine draft until a person confirms it at the check (never guessed).
+    productName: text("product_name"),
     inciName: text("inci_name"),
     casNumber: text("cas_number"),
     batch: text("batch"),
@@ -135,8 +136,11 @@ export const documents = pgTable(
     uniqueIndex("documents_docx_key").on(t.docxKey),
     uniqueIndex("documents_source_key").on(t.sourceKey),
     index("documents_created_at").on(t.createdAt),
-    // A Final document always has its PDF and a version number (BRIEF 7.2, 7.6).
-    check("documents_final_complete", sql`${t.status} <> 'Final' OR (${t.version} IS NOT NULL AND ${t.pdfKey} IS NOT NULL)`),
+    // A Final document always has its PDF, a version number and a product name (BRIEF 7.2, 7.6).
+    check(
+      "documents_final_complete",
+      sql`${t.status} <> 'Final' OR (${t.version} IS NOT NULL AND ${t.pdfKey} IS NOT NULL AND ${t.productName} IS NOT NULL)`,
+    ),
   ],
 );
 

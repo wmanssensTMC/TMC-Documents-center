@@ -46,6 +46,38 @@ jobs:
         run: |
           python tests/test_scan_and_batches.py | tee scan.log
           ! grep -q "FAIL" scan.log
+      # The worker with the real engine: supplier COA in, TMC draft out (web/worker/worker.test.ts)
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Worker runs the engine end to end
+        working-directory: web
+        shell: bash
+        run: |
+          npm ci
+          set +e
+          ENGINE_PYTHON="$(which python)" npx vitest run worker > worker.log 2>&1
+          status=$?
+          cat worker.log
+          if [ $status -ne 0 ]; then
+            msg=$(tail -60 worker.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+            echo "::error title=Worker test::$msg"
+          fi
+          exit $status
+
+  worker-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the worker Docker image (as Railway will)
+        run: docker build -f web/worker/Dockerfile -t tmc-worker .
+      - name: Image starts and answers /health
+        run: |
+          docker run -d --name w -p 8080:8080 -e WORKER_WAKE_SECRET=ci-only-secret-0123456789abcdef0123456789 tmc-worker
+          for i in $(seq 1 20); do curl -fs localhost:8080/health && exit 0; sleep 1; done
+          docker logs w; exit 1
 
   web:
     runs-on: ubuntu-latest

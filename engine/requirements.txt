@@ -7,3 +7,5 @@ numpy
 Pillow
 pytest
 reportlab   # tests only: builds synthetic supplier PDFs
+pytesseract # scan fallback in scripts/neutralize.py (classify)
+pdf2image

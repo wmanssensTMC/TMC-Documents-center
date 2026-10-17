@@ -1,5 +1,12 @@
 # Changelog
 
+## 17/10/2026 · Phase 2b: worker (branch `phase-2-neutralise`)
+- Worker (`web/worker/`): Node program that runs the engine unchanged. Woken by the app (POST /wake with a secret), checks every 30 min as a safety net, one job at a time, 10-minute limit, crashed runs retried up to 3 times.
+- Engine called with an argument list (no shell), values as --option=value, safe local file names, no secrets in the engine's environment, log capped at 8 000 characters and stripped of server paths (review N2/N3).
+- Output: every engine document becomes a "To check" draft (Word; PDF only if nothing is yellow), with its own copy of the supplier original. Engine failure (exit 1) stores nothing. Product, dossier and batch come only from typed values; empty ones are confirmed at the check.
+- Docker image (`web/worker/Dockerfile`: Node 24, Python 3.11, LibreOffice, Tesseract, Ghostscript, poppler) and `railway.json`. GitHub checks run the worker against the real engine and build the image.
+
+
 ## 17/10/2026 · Phase 2a: jobs and Neutralise screen (branch `phase-2-neutralise`)
 - Decisions 17/10: worker on Railway (Docker); engine output always needs a person; anyone may finalise; on-screen yellow-part editor, then Word + PDF; status Rejected; COA/MSDS/TDS from the start; wake-up call instead of office hours; Entities admin screen. Labels: waiting for Kars' files.
 - Database: `jobs` table (queued/running/to_check/done/failed), `entities` table (TMC NV seeded from engine/entity.example.json; others entered by admin), status Rejected, drafts without PDF or version; only one *Final* per name, so a draft can sit next to the Final it will replace.
