@@ -3,6 +3,7 @@
 import "server-only";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { cache } from "react";
 import { clearFailures, isLocked, recordFailure, withSlot } from "./limiter";
 import { dummyHash, verifyPassword } from "./password";
 import { SESSION_COOKIE, SESSION_HOURS, decodeSession, encodeSession, type Role, type Session } from "./session";
@@ -17,15 +18,41 @@ export async function getSession(): Promise<Session | null> {
   return decodeSession(store.get(SESSION_COOKIE)?.value);
 }
 
-/** Use at the top of every page, server action and API route. Redirects to /login when needed. */
-export async function requireUser(minRole: Role = "user"): Promise<Session> {
+export type CurrentUser = Session & { mustChangePassword: boolean; source: "db" | "env" };
+
+/**
+ * The logged-in user as the database knows them now (role changes and deactivation count
+ * immediately, not after the 12 h cookie expires). Null when not logged in or no longer active.
+ */
+export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   const session = await getSession();
-  if (!session) redirect("/login");
-  if ((RANK[session.role] ?? 0) < RANK[minRole]) redirect("/");
-  return session;
+  if (!session) return null;
+  const user = await findUserByEmail(session.email);
+  if (!user) return null;
+  return { email: user.email, name: user.name, role: user.role, mustChangePassword: user.mustChangePassword, source: user.source };
+});
+
+export function hasRole(user: Pick<Session, "role">, minRole: Role) {
+  return (RANK[user.role] ?? 0) >= RANK[minRole];
 }
 
-export type SignInResult = "ok" | "invalid" | "locked" | "busy";
+/** Use at the top of every page and server action. Redirects to /login when needed. */
+export async function requireUser(minRole: Role = "user", opts: { allowPasswordChange?: boolean } = {}): Promise<CurrentUser> {
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  if (user.mustChangePassword && !opts.allowPasswordChange) redirect("/account/password");
+  if (!hasRole(user, minRole)) redirect("/");
+  return user;
+}
+
+/** For API route handlers: the user, or null (the handler answers 401/403). */
+export async function apiUser(minRole: Role = "user"): Promise<CurrentUser | null> {
+  const user = await getCurrentUser();
+  if (!user || user.mustChangePassword || !hasRole(user, minRole)) return null;
+  return user;
+}
+
+export type SignInResult = "ok" | "must_change" | "invalid" | "locked" | "busy";
 
 /** "invalid" for an unknown user or a wrong password (same answer for both). */
 export async function signIn(email: string, password: string): Promise<SignInResult> {
@@ -52,7 +79,7 @@ export async function signIn(email: string, password: string): Promise<SignInRes
     path: "/",
     maxAge: SESSION_HOURS * 3600,
   });
-  return "ok";
+  return user.mustChangePassword ? "must_change" : "ok";
 }
 
 export async function signOut() {

@@ -19,5 +19,5 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
     await new Promise((r) => setTimeout(r, 800));
     return { error: "E-mail or password is not correct.", email };
   }
-  redirect("/");
+  redirect(result === "must_change" ? "/account/password" : "/");
 }

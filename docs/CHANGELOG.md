@@ -1,5 +1,16 @@
 # Changelog
 
+## 17/10/2026 · Phase 1: Library (branch `phase-1-library`)
+- Database (Drizzle): documents, users, audit log. Neon online, PGlite (built-in Postgres) on laptop and in tests. Migrations run before `next build`.
+- Never overwrite: same file name = new version, old one Superseded; the database itself allows only one current version per name.
+- Audit log is append-only (database trigger refuses update/delete/truncate). Logged: added, superseded, viewed, downloaded, user changes.
+- File names: 1:1 port of the engine (COA/MSDS/TDS/spec); shared test cases `engine/tests/naming_cases.json` checked by both web and engine tests.
+- Storage: Vercel Blob with **private** files, browser uploads straight to storage (no 4.5 MB limit); laptop uses `.data/files`. Files checked on type, size (25 MB) and real content.
+- Screens: Library (search + column filters, newest first, current versions), Document (supplier original left, TMC right, downloads, versions, history), Upload (live file-name preview), Settings/Users (admin), Change password.
+- Users and roles in the database; env admin stays as bootstrap account. New users must change their temporary password. Role changes and blocking apply immediately.
+- Types LABEL and OTHER cannot be uploaded yet: no naming rule agreed (ask Willem).
+
+
 ## 16/10/2026 · Phase 0 (branch `phase-0-setup`)
 - Next.js 16 app in `web/` (TypeScript, Tailwind, TMC navy, TMC logo, phone-friendly).
 - Password login behind `web/lib/auth`: signed cookie (12 h), scrypt password hash, one admin from env vars. Every page goes to /login without a valid session.

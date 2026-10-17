@@ -1,0 +1,16 @@
+[
+  {"type": "COA", "entity": "TMC", "fileNr": "840.S0850", "productName": "Betaine AI test", "batch": "BT-3877", "expected": "TMC_COA_840.S0850_Betaine_AI_test_BT-3877"},
+  {"type": "MSDS", "entity": "TMC", "productName": "HYDROQUINONE", "expected": "TMC_MSDS_HYDROQUINONE"},
+  {"type": "TDS", "entity": "TMC", "productName": "Sodium Lauryl Sulphate", "expected": "TMC_TDS_Sodium_Lauryl_Sulphate"},
+  {"type": "MSDS", "entity": "TMCGULF", "productName": "A", "expected": "TMCGULF_MSDS_A"},
+  {"type": "MSDS", "entity": "PHARMALABO", "productName": "A", "expected": "PHARMALABO_MSDS_A"},
+  {"type": "COA", "entity": "TMC", "productName": "Betaine", "expected": "TMC_COA_Betaine"},
+  {"type": "COA", "entity": "TMC", "batch": "L1", "expected": "TMC_COA_L1"},
+  {"type": "COA", "entity": "TMC", "fallbackStem": "supplier coa 7", "expected": "TMC_COA_supplier_coa_7"},
+  {"type": "COA", "entity": "TMC", "productName": "../etc/passwd (x)", "batch": "a/b", "expected": "TMC_COA_..etcpasswd_x_ab"},
+  {"type": "TDS", "entity": "TMC", "productName": "a\\b/c:d*e?f\"g<h>i|j", "expected": "TMC_TDS_abcdefghij"},
+  {"type": "MSDS", "entity": "TMC", "productName": "Crème Brûlée", "expected": "TMC_MSDS_Crème_Brûlée"},
+  {"type": "COA", "entity": "TMC", "productName": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expected": "TMC_COA_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  {"type": "MSDS", "entity": "TMC", "productName": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expected": "TMC_MSDS_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  {"type": "TDS", "entity": "TMC", "productName": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "expected": "TMC_TDS_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+]
