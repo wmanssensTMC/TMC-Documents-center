@@ -1,5 +1,12 @@
 # Changelog
 
+## 17/10/2026 · Phase 2a: jobs and Neutralise screen (branch `phase-2-neutralise`)
+- Decisions 17/10: worker on Railway (Docker); engine output always needs a person; anyone may finalise; on-screen yellow-part editor, then Word + PDF; status Rejected; COA/MSDS/TDS from the start; wake-up call instead of office hours; Entities admin screen. Labels: waiting for Kars' files.
+- Database: `jobs` table (queued/running/to_check/done/failed), `entities` table (TMC NV seeded from engine/entity.example.json; others entered by admin), status Rejected, drafts without PDF or version; only one *Final* per name, so a draft can sit next to the Final it will replace.
+- Neutralise screen: several supplier PDFs at once, one row each (product, dossier, batch), "use first row for all", commercial documents for COAs; one job per supplier document, all-or-nothing.
+- Jobs screen (refreshes itself while jobs run, shows engine log on failure); Entities settings screen; worker wake-up call (WORKER_WAKE_URL / WORKER_WAKE_SECRET, best effort).
+
+
 ## 17/10/2026 · Phase 1: Library (branch `phase-1-library`)
 - Database (Drizzle): documents, users, audit log. Neon online, PGlite (built-in Postgres) on laptop and in tests. Migrations run before `next build`.
 - Never overwrite: same file name = new version, old one Superseded; the database itself allows only one current version per name.

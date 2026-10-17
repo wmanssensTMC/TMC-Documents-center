@@ -1,5 +1,6 @@
 import { PageShell } from "@/components/app-header";
 import { Notice } from "@/components/notice";
+import { SettingsNav } from "@/components/settings-nav";
 import { requireUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { ROLES } from "@/lib/db/schema";
@@ -19,7 +20,8 @@ export default async function UsersPage({ searchParams }: PageProps<"/settings/u
 
   return (
     <PageShell user={admin}>
-      <h1 className="text-xl font-semibold text-tmc">Users</h1>
+      <SettingsNav current="users" />
+      <h1 className="mt-4 text-xl font-semibold text-tmc">Users</h1>
       <p className="mt-1 text-sm text-gray-600">
         Admin: everything. Approver: upload and approve. User: upload, search and download.
       </p>

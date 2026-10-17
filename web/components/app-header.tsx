@@ -17,6 +17,12 @@ export function AppHeader({ user }: { user: CurrentUser }) {
           <Link href="/" className="rounded px-3 py-1 hover:bg-white/10">
             Library
           </Link>
+          <Link href="/neutralise" className="rounded px-3 py-1 hover:bg-white/10">
+            Neutralise
+          </Link>
+          <Link href="/jobs" className="rounded px-3 py-1 hover:bg-white/10">
+            Jobs
+          </Link>
           <Link href="/upload" className="rounded px-3 py-1 hover:bg-white/10">
             Upload
           </Link>

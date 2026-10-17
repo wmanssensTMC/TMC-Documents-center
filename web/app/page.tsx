@@ -146,7 +146,7 @@ export default async function LibraryPage({ searchParams }: PageProps<"/">) {
                     </Link>
                     <div className="text-xs text-gray-500">
                       {d.name}
-                      {d.version > 1 && ` · v${d.version}`}
+                      {(d.version ?? 0) > 1 && ` · v${d.version}`}
                     </div>
                   </td>
                   <td className={cell}>{d.batch}</td>

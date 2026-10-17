@@ -3,7 +3,7 @@ import { logAudit } from "@/lib/audit";
 import { apiUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { getDocument } from "@/lib/documents/service";
-import { detectType, EXTENSION, FILE_KINDS, type FileKind } from "@/lib/files";
+import { detectType, DOCUMENT_FILE_KINDS, EXTENSION } from "@/lib/files";
 import { getStorage } from "@/lib/storage";
 
 export async function GET(req: Request, ctx: RouteContext<"/api/files/[id]/[kind]">) {
@@ -11,7 +11,7 @@ export async function GET(req: Request, ctx: RouteContext<"/api/files/[id]/[kind
   if (!user) return new Response("Not logged in", { status: 401 });
 
   const { id, kind: rawKind } = await ctx.params;
-  const kind = FILE_KINDS.find((k) => k === rawKind) as FileKind | undefined;
+  const kind = DOCUMENT_FILE_KINDS.find((k) => k === rawKind);
   if (!kind) return new Response("Not found", { status: 404 });
 
   const db = await getDb();

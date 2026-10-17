@@ -1,10 +1,10 @@
 "use client";
 
-import { upload } from "@vercel/blob/client";
 import { useRouter } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
 import { ENTITIES } from "@/lib/constants";
-import { MAX_FILE_BYTES, newUploadKey, type FileKind } from "@/lib/files";
+import { sendFile } from "@/lib/client-upload";
+import { MAX_FILE_BYTES, type FileKind } from "@/lib/files";
 import { fileStem, NAMED_TYPES } from "@/lib/naming";
 import { saveDocument } from "./actions";
 
@@ -38,23 +38,6 @@ const input =
   "mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-tmc focus:outline-none focus:ring-1 focus:ring-tmc";
 
 const noSubscribe = () => () => {};
-
-async function sendFile(mode: "blob" | "local", kind: FileKind, file: File): Promise<string> {
-  if (mode === "blob") {
-    const key = newUploadKey(kind);
-    await upload(key, file, {
-      access: "private",
-      handleUploadUrl: "/api/upload",
-      contentType: file.type || undefined,
-      multipart: file.size > 5 * 1024 * 1024,
-    });
-    return key;
-  }
-  const res = await fetch("/api/upload-local", { method: "POST", body: file, headers: { "x-upload-kind": kind } });
-  const json = (await res.json().catch(() => ({}))) as { key?: string; error?: string };
-  if (!res.ok || !json.key) throw new Error(json.error ?? "upload failed");
-  return json.key;
-}
 
 export function UploadForm({ uploadMode }: { uploadMode: "blob" | "local" }) {
   const router = useRouter();

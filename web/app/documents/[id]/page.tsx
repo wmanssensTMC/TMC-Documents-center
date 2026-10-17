@@ -59,12 +59,12 @@ export default async function DocumentPage({ params, searchParams }: PageProps<"
         <div>
           <h1 className="text-xl font-semibold text-tmc">{doc.productName}</h1>
           <p className="break-all text-sm text-gray-600">
-            {doc.name} · version {doc.version} ·{" "}
+            {doc.name} · {doc.version ? `version ${doc.version}` : "draft"} ·{" "}
             <span className={doc.status === "Final" ? "text-green-700" : "text-gray-500"}>{doc.status}</span>
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Download href={file("pdf")} label="Download PDF" />
+          {doc.pdfKey && <Download href={file("pdf")} label="Download PDF" />}
           {doc.docxKey && <Download href={file("docx")} label="Download Word" />}
           {doc.sourceKey && <Download href={file("source")} label="Supplier original" />}
         </div>
@@ -90,10 +90,18 @@ export default async function DocumentPage({ params, searchParams }: PageProps<"
         )}
         <section>
           <h2 className="mb-1 text-sm font-semibold text-gray-700">TMC document</h2>
-          <iframe src={file("pdf", true)} title="TMC document" className="h-[70vh] w-full rounded border bg-white" />
-          <a href={file("pdf", true)} target="_blank" rel="noopener" className="mt-1 inline-block text-sm text-tmc underline">
-            Open PDF in a new tab
-          </a>
+          {doc.pdfKey ? (
+            <>
+              <iframe src={file("pdf", true)} title="TMC document" className="h-[70vh] w-full rounded border bg-white" />
+              <a href={file("pdf", true)} target="_blank" rel="noopener" className="mt-1 inline-block text-sm text-tmc underline">
+                Open PDF in a new tab
+              </a>
+            </>
+          ) : (
+            <p className="rounded border bg-white p-4 text-sm text-gray-700">
+              Draft: Word only. The PDF is made when the yellow parts are checked and the document is finalised.
+            </p>
+          )}
         </section>
       </div>
 
@@ -125,7 +133,7 @@ export default async function DocumentPage({ params, searchParams }: PageProps<"
             {versions.map((v) => (
               <li key={v.id}>
                 <Link href={`/documents/${v.id}`} className={v.id === doc.id ? "font-semibold" : "text-tmc underline"}>
-                  Version {v.version}
+                  {v.version ? `Version ${v.version}` : "Draft"}
                 </Link>{" "}
                 · {v.status} · {formatDateTime(v.createdAt)}
               </li>

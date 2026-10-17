@@ -1,7 +1,10 @@
 // What may be uploaded, per file slot. Checked twice: before the upload (type, size)
 // and after it, on the stored bytes (file signature), so a renamed .exe is refused.
 
-export const FILE_KINDS = ["pdf", "docx", "source"] as const;
+// pdf/docx/source: files of a library document. input: a supplier or commercial document
+// for a neutralise job (the engine reads PDFs).
+export const FILE_KINDS = ["pdf", "docx", "source", "input"] as const;
+export const DOCUMENT_FILE_KINDS = ["pdf", "docx", "source"] as const;
 export type FileKind = (typeof FILE_KINDS)[number];
 
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -22,6 +25,7 @@ export const ALLOWED_TYPES: Record<FileKind, string[]> = {
   pdf: [PDF],
   docx: [DOCX],
   source: [PDF, DOCX, PNG, JPEG],
+  input: [PDF],
 };
 
 export const EXTENSION: Record<string, string> = { [PDF]: ".pdf", [DOCX]: ".docx", [PNG]: ".png", [JPEG]: ".jpg" };
@@ -31,7 +35,7 @@ export function newUploadKey(kind: FileKind, id: string = crypto.randomUUID()) {
   return `uploads/${id}/${kind}`;
 }
 
-const KEY_RE = /^uploads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(pdf|docx|source)$/;
+const KEY_RE = /^uploads\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(pdf|docx|source|input)$/;
 
 export function parseUploadKey(key: unknown): { key: string; kind: FileKind } | null {
   if (typeof key !== "string") return null;

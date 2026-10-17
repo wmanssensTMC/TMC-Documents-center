@@ -1,8 +1,9 @@
 // Documents: create (with versioning), list, read. Rules from BRIEF 7:
-//  - never overwrite: same name = new version, the old one becomes Superseded (rule 6)
+//  - never overwrite: same name = new version, the old Final one becomes Superseded (rule 6)
+//  - drafts (To check) sit next to the Final version; only Final counts as current
 //  - file names exactly as the engine makes them (rule 5, lib/naming.ts)
 // Callers check login and role; this module checks the data.
-import { and, desc, eq, ilike, inArray, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { logAudit, type Actor } from "../audit";
 import type { Db } from "../db";
 import { auditLog, documents, type DocStatus, type DocType, type Entity } from "../db/schema";
@@ -45,14 +46,18 @@ export async function createDocument(db: Db, storage: Storage, actor: Actor, raw
         const [current] = await tx
           .select({ id: documents.id, version: documents.version })
           .from(documents)
-          .where(and(eq(documents.name, name), ne(documents.status, "Superseded")))
+          .where(and(eq(documents.name, name), eq(documents.status, "Final")))
           .for("update");
+        const [{ last }] = await tx
+          .select({ last: sql<number | null>`max(${documents.version})` })
+          .from(documents)
+          .where(eq(documents.name, name));
 
         if (current) {
           await tx.update(documents).set({ status: "Superseded" }).where(eq(documents.id, current.id));
           await logAudit(tx, actor, "document.superseded", current.id, { name, version: current.version });
         }
-        const version = current ? current.version + 1 : 1;
+        const version = (Number(last) || 0) + 1;
         const now = new Date();
         const [row] = await tx
           .insert(documents)
@@ -136,8 +141,8 @@ function like(s: string) {
 
 export async function listDocuments(db: Db, f: DocumentFilters, page = 0) {
   const where: SQL[] = [];
-  // Library shows current versions; old versions are one filter away.
-  if (!f.status) where.push(ne(documents.status, "Superseded"));
+  // Library shows current documents and drafts; old versions and rejected drafts are one filter away.
+  if (!f.status) where.push(notInArray(documents.status, ["Superseded", "Rejected"]));
   else if (f.status !== "all") where.push(eq(documents.status, f.status));
   if (f.type) where.push(eq(documents.type, f.type));
   if (f.entity) where.push(eq(documents.entity, f.entity));
@@ -180,7 +185,7 @@ export async function getVersions(db: Db, name: string) {
     .select({ id: documents.id, version: documents.version, status: documents.status, createdAt: documents.createdAt, createdBy: documents.createdBy })
     .from(documents)
     .where(eq(documents.name, name))
-    .orderBy(desc(documents.version));
+    .orderBy(sql`${documents.version} desc nulls first`, desc(documents.createdAt));
 }
 
 export async function getAuditTrail(db: Db, documentIds: string[]) {
