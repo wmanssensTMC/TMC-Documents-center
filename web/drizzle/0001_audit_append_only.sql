@@ -1,4 +1,5 @@
--- The audit log is append-only: nobody (not even the app) may change or remove a line.
+-- The audit log is append-only: no query may change or remove a line. (The table owner can
+-- still disable the trigger; a restricted runtime role closes that gap before real data.)
 CREATE OR REPLACE FUNCTION audit_log_append_only() RETURNS trigger AS $$
 BEGIN
   RAISE EXCEPTION 'audit_log is append-only';

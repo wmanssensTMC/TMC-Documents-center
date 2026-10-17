@@ -75,11 +75,17 @@ export const documents = pgTable(
     // Never two current versions of the same document.
     uniqueIndex("documents_one_current_per_name").on(t.name).where(sql`${t.status} <> 'Superseded'`),
     uniqueIndex("documents_name_version").on(t.name, t.version),
+    // An uploaded file belongs to one document only.
+    uniqueIndex("documents_pdf_key").on(t.pdfKey),
+    uniqueIndex("documents_docx_key").on(t.docxKey),
+    uniqueIndex("documents_source_key").on(t.sourceKey),
     index("documents_created_at").on(t.createdAt),
   ],
 );
 
-// Append-only: a database trigger (migration 0001) refuses UPDATE, DELETE and TRUNCATE.
+// Append-only: a database trigger (migration 0001) refuses UPDATE, DELETE and TRUNCATE for
+// normal queries. The database owner could still disable the trigger; before real data the
+// app should connect with a role that may only INSERT/SELECT here (security finding S2).
 export const auditLog = pgTable(
   "audit_log",
   {

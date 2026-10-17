@@ -36,6 +36,9 @@ export async function GET(req: Request, ctx: RouteContext<"/api/files/[id]/[kind
     "Cache-Control": "private, no-store",
     "X-Content-Type-Options": "nosniff",
   });
+  // Downloads never run as a page of this site. (Not on inline PDFs: browsers refuse to show
+  // a PDF under a sandbox policy; inline is limited to real PDFs above.)
+  if (!inline) headers.set("Content-Security-Policy", "sandbox; default-src 'none'");
   if (file.size) headers.set("Content-Length", String(file.size));
   return new Response(file.stream, { headers });
 }

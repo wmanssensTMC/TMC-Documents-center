@@ -9,6 +9,8 @@
 - Screens: Library (search + column filters, newest first, current versions), Document (supplier original left, TMC right, downloads, versions, history), Upload (live file-name preview), Settings/Users (admin), Change password.
 - Users and roles in the database; env admin stays as bootstrap account. New users must change their temporary password. Role changes and blocking apply immediately.
 - Types LABEL and OTHER cannot be uploaded yet: no naming rule agreed (ask Willem).
+- Security review 88/100, fixes: each uploaded file belongs to one document (unique index), downloads get a sandbox CSP, audit-log comment states the owner-role limit. Open before real data: restricted DB role for the app (S2).
+- Vercel: private Blob store `tmc-documents` and Neon database `tmc-document-center`, both Frankfurt, free plans; Preview deployments get their own database branch.
 
 
 ## 16/10/2026 · Phase 0 (branch `phase-0-setup`)

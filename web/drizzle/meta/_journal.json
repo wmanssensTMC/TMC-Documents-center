@@ -15,6 +15,13 @@
       "when": 1792248843841,
       "tag": "0001_audit_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792251101353,
+      "tag": "0002_file_keys_unique",
+      "breakpoints": true
     }
   ]
 }
