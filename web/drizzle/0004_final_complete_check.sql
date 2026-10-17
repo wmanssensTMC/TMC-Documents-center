@@ -1,0 +1,1 @@
+ALTER TABLE "documents" ADD CONSTRAINT "documents_final_complete" CHECK ("documents"."status" <> 'Final' OR ("documents"."version" IS NOT NULL AND "documents"."pdf_key" IS NOT NULL));

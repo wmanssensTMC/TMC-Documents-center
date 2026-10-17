@@ -4,6 +4,7 @@
 - Decisions 17/10: worker on Railway (Docker); engine output always needs a person; anyone may finalise; on-screen yellow-part editor, then Word + PDF; status Rejected; COA/MSDS/TDS from the start; wake-up call instead of office hours; Entities admin screen. Labels: waiting for Kars' files.
 - Database: `jobs` table (queued/running/to_check/done/failed), `entities` table (TMC NV seeded from engine/entity.example.json; others entered by admin), status Rejected, drafts without PDF or version; only one *Final* per name, so a draft can sit next to the Final it will replace.
 - Neutralise screen: several supplier PDFs at once, one row each (product, dossier, batch), "use first row for all", commercial documents for COAs; one job per supplier document, all-or-nothing.
+- Security review 2a (88/100) fixes: max 40 open jobs per person; database refuses a Final document without PDF/version; wake-up call https-only, no redirects; entity changes logged with old and new values. Worker rules for 2b (N2/N3): engine called with an argument list (no shell), temp file names from storage keys, log capped and stripped of paths.
 - Jobs screen (refreshes itself while jobs run, shows engine log on failure); Entities settings screen; worker wake-up call (WORKER_WAKE_URL / WORKER_WAKE_SECRET, best effort).
 
 

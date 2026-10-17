@@ -57,10 +57,17 @@ export async function saveEntity(db: Db, actor: Actor, code: unknown, raw: unkno
   if (!c) throw new EntityError("unknown entity");
   const r = entityInput.safeParse(raw);
   if (!r.success) throw new EntityError(r.error.issues.map((i) => i.message).join("; "));
+  const before = await getEntity(db, c);
   const values = { ...r.data, updatedBy: actor.email, updatedAt: new Date() };
   await db
     .insert(entities)
     .values({ code: c, ...values })
     .onConflictDoUpdate({ target: entities.code, set: values });
-  await logAudit(db, actor, "entity.saved", null, { entity: c });
+  // These values are printed on regulatory documents: keep what changed, old and new.
+  const changes = Object.fromEntries(
+    (Object.keys(r.data) as (keyof typeof r.data)[])
+      .filter((k) => before?.[k] !== r.data[k])
+      .map((k) => [k, { before: before?.[k] ?? null, after: r.data[k] }]),
+  );
+  await logAudit(db, actor, "entity.saved", null, { entity: c, changes });
 }

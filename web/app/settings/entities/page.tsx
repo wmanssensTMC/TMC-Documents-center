@@ -13,7 +13,7 @@ export const metadata = { title: "Entities · TMC Document Center" };
 async function save(formData: FormData) {
   "use server";
   const admin = await requireUser("admin");
-  const code = String(formData.get("code") ?? "");
+  const code = ENTITIES.find((e) => e === formData.get("code")) ?? "Entity";
   try {
     await saveEntity(await getDb(), admin, code, Object.fromEntries(ENTITY_FIELDS.map((f) => [f.key, formData.get(f.key)])));
   } catch (err) {

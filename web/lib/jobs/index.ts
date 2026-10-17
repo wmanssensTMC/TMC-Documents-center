@@ -1,7 +1,7 @@
 // Neutralise jobs: the app files them, the worker (worker/) runs the engine on them.
 // Queue = the jobs table, so moving to Azure changes nothing here (BRIEF 4).
 import "server-only";
-import { desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { logAudit, type Actor } from "../audit";
 import type { Db } from "../db";
@@ -11,6 +11,9 @@ import { cleanFilename, detectType, MAX_FILE_BYTES, parseUploadKey } from "../fi
 import type { Storage } from "../storage";
 
 export class JobError extends Error {}
+
+/** Open (queued + running) jobs one person may have; stops a flood of OCR work. */
+export const MAX_OPEN_JOBS_PER_USER = 40;
 
 const text = (max: number) =>
   z
@@ -50,6 +53,9 @@ async function checkInput(storage: Storage, ref: { key: string; filename: string
 export async function createJobs(db: Db, storage: Storage, actor: Actor, raws: JobInput[]): Promise<string[]> {
   if (!Array.isArray(raws) || raws.length === 0) throw new JobError("add at least one supplier document");
   if (raws.length > 20) throw new JobError("at most 20 supplier documents at once");
+  if ((await countOpenJobs(db, actor.email)) + raws.length > MAX_OPEN_JOBS_PER_USER) {
+    throw new JobError(`you already have many documents waiting; wait until fewer than ${MAX_OPEN_JOBS_PER_USER} are open`);
+  }
 
   type Prepared = z.output<typeof jobInput>;
   const prepared: Prepared[] = [];
@@ -95,8 +101,15 @@ export async function wakeWorker() {
   const url = process.env.WORKER_WAKE_URL;
   const secret = process.env.WORKER_WAKE_SECRET;
   if (!url || !secret) return;
+  // The secret only travels over https (plain http allowed on a laptop), and never follows a redirect.
+  if (!url.startsWith("https://") && process.env.NODE_ENV === "production") return;
   try {
-    await fetch(url, { method: "POST", headers: { authorization: `Bearer ${secret}` }, signal: AbortSignal.timeout(2000) });
+    await fetch(url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${secret}` },
+      redirect: "manual",
+      signal: AbortSignal.timeout(2000),
+    });
   } catch {
     // ignored on purpose
   }
@@ -124,10 +137,11 @@ export async function getJob(db: Db, id: string): Promise<Job | null> {
   return row ?? null;
 }
 
-export async function countOpenJobs(db: Db) {
+export async function countOpenJobs(db: Db, createdBy?: string) {
+  const open = inArray(jobs.state, ["queued", "running"]);
   const [{ n }] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(jobs)
-    .where(inArray(jobs.state, ["queued", "running"]));
+    .where(createdBy ? and(open, eq(jobs.createdBy, createdBy)) : open);
   return n;
 }

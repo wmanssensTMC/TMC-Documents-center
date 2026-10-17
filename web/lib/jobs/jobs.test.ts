@@ -5,7 +5,8 @@ import { auditLog, jobs } from "../db/schema";
 import { getEntity, saveEntity, EntityError } from "../entities";
 import { newUploadKey } from "../files";
 import type { Storage } from "../storage";
-import { createJobs, JobError, listJobs, type JobInput } from "./index";
+import { sql } from "drizzle-orm";
+import { createJobs, JobError, listJobs, MAX_OPEN_JOBS_PER_USER, type JobInput } from "./index";
 
 const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]);
 const DOCX = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]);
@@ -48,6 +49,9 @@ describe("entities", () => {
     await expect(saveEntity(db, admin, "ACME", rec)).rejects.toThrow(EntityError);
     await saveEntity(db, admin, "TMCGULF", rec);
     expect(await getEntity(db, "TMCGULF")).toMatchObject({ naam: "X", updatedBy: admin.email });
+    await saveEntity(db, admin, "TMCGULF", { ...rec, nood: "112" });
+    const last = (await db.select().from(auditLog)).filter((a) => a.action === "entity.saved").pop();
+    expect(last?.details).toEqual({ entity: "TMCGULF", changes: { nood: { before: "n", after: "112" } } });
   });
 });
 
@@ -87,6 +91,32 @@ describe("createJobs", () => {
       createJobs(db, storage, user, [job({ route: "sds", commercialFiles: [input("pfi.pdf")] })]),
     ).rejects.toThrow(/only go with a COA/);
     await createJobs(db, storage, user, [job({ commercialFiles: [input("pfi.pdf")] })]);
+  });
+
+  it("caps open jobs per person", async () => {
+    for (let i = 0; i < MAX_OPEN_JOBS_PER_USER / 20; i++) {
+      await createJobs(db, storage, user, Array.from({ length: 20 }, () => job()));
+    }
+    await expect(createJobs(db, storage, user, [job()])).rejects.toThrow(/many documents waiting/);
+    await createJobs(db, storage, admin, [job()]); // other people are not blocked
+  });
+
+  it("the database refuses a Final document without PDF or version", async () => {
+    const reason = (q: Promise<unknown>) =>
+      q.then(
+        () => "allowed",
+        (e: Error & { cause?: Error }) => e.cause?.message ?? e.message,
+      );
+    expect(
+      await reason(
+        db.execute(sql`insert into documents (name, type, product_name, status, created_by) values ('X', 'COA', 'x', 'Final', 'x')`),
+      ),
+    ).toMatch(/documents_final_complete/);
+    expect(
+      await reason(
+        db.execute(sql`insert into documents (name, type, product_name, status, created_by) values ('X', 'COA', 'x', 'To check', 'x')`),
+      ),
+    ).toBe("allowed");
   });
 
   it("validates sizes and counts", async () => {

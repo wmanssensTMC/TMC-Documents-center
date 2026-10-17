@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import {
   bigserial,
   boolean,
+  check,
   date,
   index,
   integer,
@@ -134,6 +135,8 @@ export const documents = pgTable(
     uniqueIndex("documents_docx_key").on(t.docxKey),
     uniqueIndex("documents_source_key").on(t.sourceKey),
     index("documents_created_at").on(t.createdAt),
+    // A Final document always has its PDF and a version number (BRIEF 7.2, 7.6).
+    check("documents_final_complete", sql`${t.status} <> 'Final' OR (${t.version} IS NOT NULL AND ${t.pdfKey} IS NOT NULL)`),
   ],
 );
 
