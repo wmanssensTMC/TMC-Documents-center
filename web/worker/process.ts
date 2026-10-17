@@ -6,10 +6,10 @@ import path from "node:path";
 import type { Db } from "../lib/db";
 import type { DocType, Entity, Job } from "../lib/db/schema";
 import { engineEntityJson, getEntity } from "../lib/entities";
-import { newUploadKey } from "../lib/files";
+import { MAX_FILE_BYTES, newUploadKey } from "../lib/files";
 import { failJob, saveDrafts, type Draft } from "../lib/jobs/worker-state";
 import type { Storage } from "../lib/storage";
-import { engineArgv, runPython } from "./engine";
+import { cleanLog, engineArgv, runPython } from "./engine";
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const PDF = "application/pdf";
@@ -25,10 +25,16 @@ async function download(storage: Storage, key: string, to: string) {
   const file = await storage.get(key);
   if (!file) throw new Error("input file missing in storage");
   const chunks: Uint8Array[] = [];
+  let size = 0;
   const reader = file.stream.getReader();
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
+    size += value.length;
+    if (size > MAX_FILE_BYTES) {
+      await reader.cancel();
+      throw new Error("input file larger than 25 MB");
+    }
     chunks.push(value);
   }
   await writeFile(to, Buffer.concat(chunks), { flag: "wx" });
@@ -99,7 +105,7 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
     }
     await saveDrafts(db, job, drafts, run.code, run.log);
   } catch (err) {
-    await failJob(db, job, null, `[worker] ${err instanceof Error ? err.message : "unexpected error"}`);
+    await failJob(db, job, null, cleanLog(`[worker] ${err instanceof Error ? err.message : "unexpected error"}`, dir));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

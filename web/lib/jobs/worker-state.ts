@@ -36,8 +36,13 @@ export async function requeueStaleJobs(db: Db) {
     .where(stale);
 }
 
+/** Only the run that holds the job may close it (review W4): still running, same attempt. */
+function stillMine(job: Job) {
+  return and(eq(jobs.id, job.id), eq(jobs.state, "running"), eq(jobs.attempts, job.attempts));
+}
+
 export async function failJob(db: Db, job: Job, exitCode: number | null, log: string) {
-  await db.update(jobs).set({ state: "failed", exitCode, log, finishedAt: new Date() }).where(eq(jobs.id, job.id));
+  await db.update(jobs).set({ state: "failed", exitCode, log, finishedAt: new Date() }).where(stillMine(job));
 }
 
 export type Draft = {
@@ -59,6 +64,12 @@ export type Draft = {
  */
 export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: number, log: string) {
   await db.transaction(async (tx) => {
+    const closed = await tx
+      .update(jobs)
+      .set({ state: "to_check", exitCode, log, finishedAt: new Date() })
+      .where(stillMine(job))
+      .returning({ id: jobs.id });
+    if (!closed.length) throw new Error("job is no longer held by this run; drafts not saved");
     for (const d of drafts) {
       const [row] = await tx
         .insert(documents)
@@ -89,6 +100,5 @@ export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: nu
         yellow: d.yellow,
       });
     }
-    await tx.update(jobs).set({ state: "to_check", exitCode, log, finishedAt: new Date() }).where(eq(jobs.id, job.id));
   });
 }

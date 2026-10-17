@@ -4,6 +4,7 @@
 - Worker (`web/worker/`): Node program that runs the engine unchanged. Woken by the app (POST /wake with a secret), checks every 30 min as a safety net, one job at a time, 10-minute limit, crashed runs retried up to 3 times.
 - Engine called with an argument list (no shell), values as --option=value, safe local file names, no secrets in the engine's environment, log capped at 8 000 characters and stripped of server paths (review N2/N3).
 - Output: every engine document becomes a "To check" draft (Word; PDF only if nothing is yellow), with its own copy of the supplier original. Engine failure (exit 1) stores nothing. Product, dossier and batch come only from typed values; empty ones are confirmed at the check.
+- Worker review (85/100) fixes: a timeout stops the whole engine process group (LibreOffice/OCR too) and tini cleans up; code in the image is read-only for the worker; all worker messages cleaned of server paths; a job can only be closed by the run that holds it; typed values cannot start with "-"; downloads stop above 25 MB. Before real data: engine under its own user (W2) together with the restricted DB role (S2).
 - Docker image (`web/worker/Dockerfile`: Node 24, Python 3.11, LibreOffice, Tesseract, Ghostscript, poppler) and `railway.json`. GitHub checks run the worker against the real engine and build the image.
 
 

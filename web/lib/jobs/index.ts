@@ -21,6 +21,8 @@ const text = (max: number) =>
     .trim()
     .max(max)
     .refine((s) => !/[\u0000-\u001f\u007f]/.test(s), "contains control characters")
+    // The engine passes these on as separate arguments; a leading "-" would look like an option.
+    .refine((s) => !s.startsWith("-"), 'cannot start with "-"')
     .optional()
     .transform((s) => (s ? s : null));
 

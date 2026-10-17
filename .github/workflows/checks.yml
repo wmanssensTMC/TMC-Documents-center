@@ -72,12 +72,27 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Build the worker Docker image (as Railway will)
-        run: docker build -f web/worker/Dockerfile -t tmc-worker .
-      - name: Image starts and answers /health
+        shell: bash
         run: |
-          docker run -d --name w -p 8080:8080 -e WORKER_WAKE_SECRET=ci-only-secret-0123456789abcdef0123456789 tmc-worker
-          for i in $(seq 1 20); do curl -fs localhost:8080/health && exit 0; sleep 1; done
-          docker logs w; exit 1
+          set +e
+          docker build --progress=plain -f web/worker/Dockerfile -t tmc-worker . > build.log 2>&1
+          status=$?
+          cat build.log
+          if [ $status -ne 0 ]; then
+            msg=$(tail -40 build.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+            echo "::error title=Docker build::$msg"
+          fi
+          exit $status
+      - name: Image starts and answers /health
+        shell: bash
+        run: |
+          set +e
+          docker run -d --name w -p 8080:8080 -e WORKER_WAKE_SECRET=ci-only-secret-0123456789abcdef0123456789 tmc-worker > run.log 2>&1
+          for i in $(seq 1 30); do curl -fs localhost:8080/health && exit 0; sleep 1; done
+          docker logs w >> run.log 2>&1
+          msg=$(tail -40 run.log | sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g')
+          echo "::error title=Worker start::$msg"
+          exit 1
 
   web:
     runs-on: ubuntu-latest

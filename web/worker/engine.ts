@@ -1,16 +1,19 @@
 // Runs the existing Python engine (engine/scripts/neutralize.py) unchanged. Its provenance gate
 // and yellow review run inside it; nothing here can switch them off.
 //
-// Safety (security review N2/N3): an argument list, never a shell; values passed as
+// Safety (security reviews N2/N3/W1/W3): an argument list, never a shell; values passed as
 // --option=value so text starting with "-" cannot become an option; the engine gets no secrets
-// (no database or storage keys in its environment); the log is capped and stripped of paths.
-import { execFile } from "node:child_process";
+// (no database or storage keys in its environment); a timeout stops the whole process group
+// (LibreOffice and OCR included); the log is capped and stripped of server paths.
+import { spawn } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 
 export const ENGINE_DIR = process.env.ENGINE_DIR ?? path.resolve(__dirname, "..", "..", "engine");
 const PYTHON = process.env.ENGINE_PYTHON ?? "python3";
 const TIMEOUT_MS = 10 * 60 * 1000;
 const LOG_MAX = 8000;
+const OUTPUT_KEEP = 256 * 1024;
 
 export type EngineRun = { code: number; log: string };
 
@@ -48,19 +51,59 @@ export function runPython(argv: string[], workDir: string): Promise<EngineRun> {
     PYTHONIOENCODING: "utf-8",
   } as unknown as NodeJS.ProcessEnv; // only these: the engine gets no secrets
   return new Promise((resolve) => {
-    execFile(PYTHON, argv, { cwd: workDir, env, timeout: TIMEOUT_MS, maxBuffer: 20 * 1024 * 1024 }, (err: Error | null, stdout: string, stderr: string) => {
-      const e = err as (NodeJS.ErrnoException & { code?: number | string; killed?: boolean }) | null;
-      const code = !e ? 0 : typeof e.code === "number" ? e.code : 1;
-      let log = `${stdout}\n${stderr}`;
-      if (e?.killed) log += "\n[worker] stopped: the run took longer than 10 minutes";
-      else if (e && typeof e.code !== "number") log += `\n[worker] could not start the engine (${e.code ?? e.message})`;
-      resolve({ code, log: cleanLog(log, workDir) });
+    // Own process group, so a timeout also stops the LibreOffice/OCR the engine started.
+    const child = spawn(PYTHON, argv, {
+      cwd: workDir,
+      env,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    const keep = (chunk: Buffer) => {
+      out = (out + chunk.toString("utf8")).slice(-OUTPUT_KEEP); // bounded memory
+    };
+    child.stdout.on("data", keep);
+    child.stderr.on("data", keep);
+
+    let timedOut = false;
+    let done = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killTree(child.pid);
+    }, TIMEOUT_MS);
+    const finish = (code: number, note = "") => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ code, log: cleanLog(out + note, workDir) });
+    };
+    child.on("error", (err: NodeJS.ErrnoException) => finish(1, `\n[worker] could not start the engine (${err.code ?? "error"})`));
+    child.on("close", (code) => {
+      killTree(child.pid); // leftovers of a finished run are stopped too
+      if (timedOut) finish(1, "\n[worker] stopped: the run took longer than 10 minutes");
+      else finish(code ?? 1);
     });
   });
 }
 
+function killTree(pid: number | undefined) {
+  if (!pid) return;
+  try {
+    process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL");
+  } catch {
+    // already gone
+  }
+}
+
+const HIDE: [string, string][] = [
+  [ENGINE_DIR, "<engine>"],
+  [path.isAbsolute(PYTHON) ? path.dirname(path.dirname(PYTHON)) : "", "<python>"],
+  [os.tmpdir(), "<tmp>"],
+];
+
 /** Log for people: no server paths, last 8 000 characters. */
 export function cleanLog(log: string, workDir: string) {
-  const out = log.split(workDir).join("<job>").split(ENGINE_DIR).join("<engine>");
+  let out = log.split(workDir).join("<job>");
+  for (const [p, label] of HIDE) if (p.length > 1) out = out.split(p).join(label);
   return out.length > LOG_MAX ? `…${out.slice(-LOG_MAX)}` : out;
 }

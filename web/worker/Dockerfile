@@ -9,7 +9,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       python3 python3-venv ca-certificates \
       libreoffice-writer-nogui fonts-dejavu-core fonts-liberation \
-      tesseract-ocr ghostscript poppler-utils \
+      tesseract-ocr ghostscript poppler-utils tini \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -31,11 +31,13 @@ COPY web/lib/ web/lib/
 COPY web/worker/ web/worker/
 COPY web/tsconfig.json web/
 
-# Run as a normal user, never as root
-RUN chown -R node:node /app
+# Run as a normal user, never as root. The code stays owned by root, so the worker (and the
+# engine it starts) can read it but not change it; only temp folders are writable.
 USER node
 WORKDIR /app/web
 ENV NODE_ENV=production PORT=8080
 EXPOSE 8080
-# react-server: lets lib/* (marked "server-only") load outside Next.js
+# tini stops and cleans up child processes (LibreOffice, OCR) properly.
+# react-server lets lib/* (marked "server-only") load outside Next.js.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "--conditions=react-server", "--import", "tsx", "worker/main.ts"]
