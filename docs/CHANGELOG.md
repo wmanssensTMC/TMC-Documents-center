@@ -1,5 +1,11 @@
 # Changelog
 
+## 19/10/2026 · Phase 2 final security gate: PASS 92/100
+- Fixes after the gate: engine yellow check also sees runs inside hyperlinks, fields and tracked inserts (N4, test extended); uploaded Word files with tracked changes are refused and text in deleted parts and charts is read for the supplier name (N1); the worker always lists yellow parts, a draft with any yellow keeps no PDF (N5); finalise requests count toward the 40 open jobs per person (N6).
+- Open, decision for Willem: supplier name required on neutralise jobs (N2); what happens when product/dossier/batch change at the check while they are in the file name (N3).
+- Before real data: restricted DB role (S2), engine under its own user and worker without internet (W2), pinned versions (N7).
+
+
 ## 19/10/2026 · Drag and drop (BRIEF screen 3)
 - Neutralise and Upload: drop zones (drag files in, or click to choose). Wrong file types are skipped with a note.
 

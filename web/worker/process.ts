@@ -84,10 +84,18 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
       const m = NAME_RE.exec(stem);
       if (!m || !plainName(stem)) return failJob(db, job, run.code, `${run.log}\n[worker] unexpected output name: ${stem}`);
       const pdfName = `${stem}.pdf`;
-      const pdf = await readFile(path.join(outDir, pdfName)).catch(() => null);
+      const docxPath = path.join(outDir, docxName);
+      // Always read the yellow parts, also when the engine made a PDF (review N5): any yellow
+      // part means a draft to check, and its PDF is not kept.
+      const listed = await runPython(yellowArgv("list", docxPath), dir, { keepStdout: true });
+      if (listed.code !== 0) {
+        return failJob(db, job, run.code, [run.log, "[worker] could not read the yellow parts", listed.log].join("\n"));
+      }
+      const yellowParts: YellowPart[] = parseYellowParts(listed.stdout);
+      const pdf = yellowParts.length ? null : await readFile(path.join(outDir, pdfName)).catch(() => null);
 
       const docxKey = newUploadKey("docx");
-      await storage.put(docxKey, await readFile(path.join(outDir, docxName)), DOCX);
+      await storage.put(docxKey, await readFile(docxPath), DOCX);
       let pdfKey: string | null = null;
       if (pdf) {
         pdfKey = newUploadKey("pdf");
@@ -97,16 +105,9 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
       const sourceKey = newUploadKey("source");
       await storage.put(sourceKey, source, PDF);
 
-      // Yellow parts for the on-screen check, and a DRAFT preview (no real PDF yet).
-      let yellowParts: YellowPart[] = [];
+      // No real PDF yet: a DRAFT preview for the check screen.
       let previewKey: string | null = null;
       if (!pdf) {
-        const docxPath = path.join(outDir, docxName);
-        const listed = await runPython(yellowArgv("list", docxPath), dir, { keepStdout: true });
-        if (listed.code !== 0) return failJob(db, job, run.code, `${run.log}
-[worker] could not read the yellow parts
-${listed.log}`);
-        yellowParts = parseYellowParts(listed.stdout);
         const previewPath = path.join(dir, `${stem}.preview.pdf`);
         const preview = await runPython(yellowArgv("preview", docxPath, previewPath), dir);
         if (preview.code === 0) {

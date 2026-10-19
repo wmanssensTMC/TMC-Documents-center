@@ -139,6 +139,7 @@ def iter_highlighted(doc):
     --finalise. A text box is stored twice (DrawingML + a VML fallback): only the version
     Word shows is read, the fallback copy is skipped."""
     from docx.text.paragraph import Paragraph
+    from docx.text.run import Run
 
     containers = [(doc.element.body, doc)]
     seen_parts = set()
@@ -153,12 +154,16 @@ def iter_highlighted(doc):
             seen_parts.add(id(el))
             containers.append((el, hf))
 
+    # Every run, also inside hyperlinks, fields and inserted (tracked) text -- paragraph.runs
+    # would only give the direct children. Deleted text (w:delText) is not shown, so it has no
+    # text here and is skipped. Each run is read once, with its own nearest paragraph.
     for element, parent in containers:
-        for p_el in element.xpath('.//w:p[not(ancestor::*[local-name()="Fallback"])]'):
-            p = Paragraph(p_el, parent)
-            for r in p.runs:
-                if r.font.highlight_color not in (None, WD_COLOR_INDEX.AUTO) and r.text.strip():
-                    yield r, p
+        for r_el in element.xpath('.//w:r[not(ancestor::*[local-name()="Fallback"])]'):
+            p_els = r_el.xpath("ancestor::w:p[1]")
+            p = Paragraph(p_els[0], parent) if p_els else None
+            r = Run(r_el, p if p is not None else parent)
+            if r.font.highlight_color not in (None, WD_COLOR_INDEX.AUTO) and r.text.strip():
+                yield r, p
 
 
 def yellow_runs(docx_path):

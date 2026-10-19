@@ -11,7 +11,7 @@ import { logAudit, type Actor } from "../audit";
 import type { Db } from "../db";
 import { documents, feedback, jobs, type DocMetadata, type Document, type FinalisePayload } from "../db/schema";
 import { detectType, MAX_FILE_BYTES, parseUploadKey, cleanFilename } from "../files";
-import { wakeWorker } from "../jobs";
+import { countOpenJobs, MAX_OPEN_JOBS_PER_USER, wakeWorker } from "../jobs";
 import type { Storage } from "../storage";
 
 export class CheckError extends Error {}
@@ -61,6 +61,9 @@ async function openFinaliseJob(db: Db, documentId: string) {
 export async function requestFinalise(db: Db, storage: Storage, actor: Actor, documentId: string, raw: unknown) {
   const doc = await loadDraft(db, documentId);
   if (await openFinaliseJob(db, doc.id)) throw new CheckError("this document is already being finalised");
+  if ((await countOpenJobs(db, actor.email)) >= MAX_OPEN_JOBS_PER_USER) {
+    throw new CheckError("you already have many documents waiting; try again when some are done"); // review N6
+  }
   const r = z
     .object({
       metadata: metadataInput,

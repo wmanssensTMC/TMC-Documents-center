@@ -139,6 +139,11 @@ with tempfile.TemporaryDirectory() as d:
     rc, _, err = run("check", d / "other.docx", d / "forbid.json")
     check("check: parts of the name alone do not trigger", rc == 0, err)
 
+    patched("all.docx", "tracked.docx", "word/document.xml", b"</w:body>",
+            b'<w:p><w:del w:id="9" w:author="x"><w:r><w:delText>Acme Chemicals GmbH</w:delText></w:r></w:del></w:p></w:body>')
+    rc, _, err = run("check", d / "tracked.docx", d / "forbid.json")
+    check("check: tracked changes are refused, deleted supplier text included (N1)", rc == 1 and "tracked" in err, err)
+
     (d / "zip.docx").write_bytes(b"PK not really a zip")
     rc, _, err = run("check", d / "zip.docx", d / "forbid.json")
     check("check: refused when it is not a real Word file", rc == 1, err)

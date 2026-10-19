@@ -28,7 +28,7 @@ def cmd_list(docx):
     items = []
     for i, (r, p) in enumerate(runs_in_order(doc)):
         # Over 500 characters: too long for the on-screen editor, check it in Word (review M1).
-        items.append({"id": f"y{i}", "text": r.text[:500], "context": p.text[:300], "truncated": len(r.text) > 500})
+        items.append({"id": f"y{i}", "text": r.text[:500], "context": (p.text if p is not None else r.text)[:300], "truncated": len(r.text) > 500})
     json.dump(items, sys.stdout, ensure_ascii=False)
 
 
@@ -82,13 +82,16 @@ def read_all(z, info, budget):
     return bytes(out)
 
 
-def xml_text(data):
-    """Visible text of a WordprocessingML part: w:t joined per paragraph."""
-    import xml.etree.ElementTree as ET
-    root = ET.fromstring(data)
+A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+
+
+def xml_text(root):
+    """All text of a part, per paragraph: Word text (w:t), deleted text (w:delText) and text
+    in charts and diagrams (a:t) -- review N1."""
+    kinds = (f"{W_NS}t", f"{W_NS}delText", f"{A_NS}t")
     lines = []
-    for p in root.iter(f"{W_NS}p"):
-        lines.append("".join(t.text or "" for t in p.iter(f"{W_NS}t")))
+    for p in list(root.iter(f"{W_NS}p")) + list(root.iter(f"{A_NS}p")):
+        lines.append("".join(e.text or "" for e in p.iter() if e.tag in kinds))
     return "\n".join(lines)
 
 
@@ -117,14 +120,17 @@ def cmd_check(docx, forbid_path, engine_scripts):
                         if mode.lower() == "external" and rel.attrib.get("Type") != REL_HYPERLINK:
                             sys.exit("refused: the Word file links to outside content")
                 elif name.startswith("/word/") and name.endswith(".xml"):
+                    root = ET.fromstring(data)
+                    # Tracked changes keep deleted text that a PDF may still show (review N1).
+                    if next(root.iter(f"{W_NS}ins"), None) is not None or next(root.iter(f"{W_NS}del"), None) is not None:
+                        sys.exit("refused: the Word file has tracked changes; accept or reject all changes first")
                     if b"instrText" in data or b"fldSimple" in data:
-                        root = ET.fromstring(data)
                         codes = [t.text or "" for t in root.iter(f"{W_NS}instrText")]
                         codes += [e.get(f"{W_NS}instr", "") for e in root.iter(f"{W_NS}fldSimple")]
                         if any(FIELD_RE.search(c) for c in codes):
                             sys.exit("refused: the Word file includes outside content through a field")
-                    # body, headers, footers, footnotes, endnotes, comments, text boxes
-                    texts.append(xml_text(data))
+                    # body, headers, footers, footnotes, endnotes, comments, text boxes, charts
+                    texts.append(xml_text(root))
                 elif name in ("/docprops/core.xml", "/docprops/app.xml"):
                     root = ET.fromstring(data)
                     texts.extend(e.text or "" for e in root.iter())
