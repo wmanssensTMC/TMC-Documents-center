@@ -259,8 +259,12 @@ def cmd_changes(draft, edited, source_pdf):
     known = words(source)
 
     # capped so a huge file cannot hold the worker for minutes (review F6)
-    a, b = paragraph_texts(draft)[:20000], paragraph_texts(edited)[:20000]
+    full_a, full_b = paragraph_texts(draft), paragraph_texts(edited)
+    a, b = full_a[:20000], full_b[:20000]
     changes = []
+    if len(full_a) > 20000 or len(full_b) > 20000:
+        changes.append({"before": "", "after": "[very long document: only the first 20000 paragraphs were compared]",
+                        "unknown": ["check the rest yourself"]})
     # a picture that was not in the draft: it could be a supplier logo (review F2)
     for _ in range(len(pictures(edited) - pictures(draft))):
         changes.append({"before": "", "after": "[new picture added]", "unknown": ["picture: check it is not a supplier logo"]})

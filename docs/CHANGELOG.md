@@ -1,12 +1,12 @@
 # Changelog
 
-## 20/10/2026 · On-screen document editor (branch `phase-2e-editor`, not merged)
+## 20/10/2026 · On-screen document editor (branch `phase-2e-editor`, not merged; security gate PASS 90/100)
 - Check screen, "Edit the document": the draft opens as the real Word document in the browser, supplier original on the left. Any text and formatting can be changed (Willem 19/10, option A).
 - Save and finalise: the worker runs every Final check on the edited file (no macros or outside links, no supplier name, file-name values printed, no yellow left). Changes that bring in words or numbers not found in the supplier original come back as warnings; the person ticks "I checked these changes" and goes on. Every change is kept in the feedback overview ("Edited on screen") and CSV.
 - The last edit that did not become Final can be reopened, so no work is lost.
 - Editor: SuperDoc 2.24.0 (npm), runs in the browser only, its usage reporting switched off. Licence: AGPL-3.0 (free) or a paid commercial licence: decision for Willem before go-live (see BRIEF 11).
 - The quick yellow-parts list and "check in Word yourself" stay as alternatives.
-- Security review fixes (first score 80): yellow shading counts as yellow too, and the editor was shown to keep the yellow highlight when it saves (F1); link addresses are read for the supplier name and a picture added in the editor is a warning (F2); in production the browser may only connect to this app and the file store (F4); a confirmation only counts for the saved version whose warnings were shown (F5); size cap on the comparison (F6); footnotes, endnotes and comments are compared too (F7). Open for Willem: F3 (see BRIEF 11).
+- Security review fixes (first score 80): yellow shading counts as yellow too, and the editor was shown to keep the yellow highlight when it saves (F1); link addresses are read for the supplier name and a picture added in the editor is a warning (F2); in production the browser may only connect to this app and the file store (F4); a confirmation only counts for the saved version whose warnings were shown (F5); size cap on the comparison (F6); footnotes, endnotes and comments are compared too (F7). A document over 20000 paragraphs gets a warning that only the first part was compared. Open for Willem: F3 (see BRIEF 11).
 
 
 ## 19/10/2026 · COA batches, file-name rule, MSDS pictograms (security gate PASS 92/100)
