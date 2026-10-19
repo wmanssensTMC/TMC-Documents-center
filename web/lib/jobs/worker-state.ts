@@ -59,6 +59,8 @@ export type Draft = {
   yellow: boolean;
   yellowParts: YellowPart[];
   previewKey: string | null;
+  /** The batch the engine made this document for (one document per batch). */
+  batch?: string | null;
 };
 
 /**
@@ -82,7 +84,7 @@ export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: nu
           entity: d.entity,
           productName: job.productName,
           fileNr: job.fileNr,
-          batch: job.batch,
+          batch: d.batch ?? job.batch,
           supplierName: job.supplierName,
           status: "To check",
           version: null,

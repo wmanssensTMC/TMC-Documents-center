@@ -139,6 +139,15 @@ with tempfile.TemporaryDirectory() as d:
     rc, _, err = run("check", d / "other.docx", d / "forbid.json")
     check("check: parts of the name alone do not trigger", rc == 0, err)
 
+    # name and content agree (Willem 19/10): each value of the file name is printed
+    (d / "shown.json").write_text(json.dumps([["product name", "Sodium Benzoate"], ["batch", "SB-1"]]))
+    shown = Document(); shown.add_paragraph("Product: SODIUM BENZOATE"); shown.add_paragraph("Lot SB-1"); shown.save(d / "shown.docx")
+    rc, _, err = run("check", d / "shown.docx", d / "forbid.json", d / "shown.json")
+    check("check: passes when every value of the file name is printed", rc == 0, err)
+    (d / "notshown.json").write_text(json.dumps([["product name", "Benzoate Pure"]]))
+    rc, _, err = run("check", d / "shown.docx", d / "forbid.json", d / "notshown.json")
+    check("check: refused when the file name has a value the document does not print", rc == 1 and "not printed" in err, err)
+
     patched("all.docx", "tracked.docx", "word/document.xml", b"</w:body>",
             b'<w:p><w:del w:id="9" w:author="x"><w:r><w:delText>Acme Chemicals GmbH</w:delText></w:r></w:del></w:p></w:body>')
     rc, _, err = run("check", d / "tracked.docx", d / "forbid.json")

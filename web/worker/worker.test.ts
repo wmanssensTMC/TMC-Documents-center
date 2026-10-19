@@ -12,7 +12,7 @@ import { createJobs } from "../lib/jobs";
 import { claimNextJob, MAX_ATTEMPTS, requeueStaleJobs } from "../lib/jobs/worker-state";
 import { localStorage, type Storage } from "../lib/storage";
 import { cleanLog, engineArgv } from "./engine";
-import { requestFinalise } from "../lib/documents/check";
+import { approveDraft, requestFinalise } from "../lib/documents/check";
 import { plainName, processFinaliseJob, processNeutraliseJob, safeName } from "./process";
 
 const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]);
@@ -193,6 +193,47 @@ c.save()`;
     const head = await storage.head(final.pdfKey!, 5);
     expect(Buffer.from(head!.bytes).toString()).toBe("%PDF-");
     expect((await db.select().from(jobs).where(eq(jobs.id, job.id)))[0].state).toBe("done");
+  }, 300_000);
+
+  it("approve: details not printed in the document are refused; matching details make it Final (Willem 19/10)", async () => {
+    const pdfPath = path.join(mkdtempSync(path.join(os.tmpdir(), "tmc-coa-")), "coa.pdf");
+    syntheticCoa(pdfPath);
+    await createJobs(db, storage, willem, [
+      {
+        route: "coa",
+        entity: "TMC",
+        productName: "Sodium Benzoate",
+        fileNr: "840.S0997",
+        supplierFile: await upload(new Uint8Array(readFileSync(pdfPath)), "coa.pdf"),
+      },
+    ]);
+    await processNeutraliseJob(db, storage, (await claimNextJob(db))!);
+    const [draft] = await db.select().from(documents);
+    expect(draft.yellowParts, JSON.stringify(draft.yellowParts)).toEqual([]);
+    expect(draft.batch).toBe("SB-2026-114"); // the batch the engine made it for
+
+    // A product name the document does not print: the worker refuses, the draft keeps waiting.
+    await approveDraft(db, willem, draft.id, { productName: "Benzoate Pure", fileNr: "840.S0997", batch: "SB-2026-114" });
+    const wrong = (await claimNextJob(db))!;
+    await processFinaliseJob(db, storage, wrong);
+    const [refused] = await db.select().from(jobs).where(eq(jobs.id, wrong.id));
+    expect(refused.state).toBe("failed");
+    expect(refused.log).toMatch(/product name 'Benzoate Pure' is not printed/);
+    expect((await db.select().from(documents))[0].status).toBe("To check");
+
+    await approveDraft(db, willem, draft.id, { productName: "Sodium Benzoate", fileNr: "840.S0997", batch: "SB-2026-114" });
+    const ok = (await claimNextJob(db))!;
+    await processFinaliseJob(db, storage, ok);
+    const [fj] = await db.select().from(jobs).where(eq(jobs.id, ok.id));
+    expect(fj.state, fj.log ?? "").toBe("done");
+    const [final] = await db.select().from(documents);
+    expect(final).toMatchObject({
+      status: "Final",
+      version: 1,
+      name: "TMC_COA_840.S0997_Sodium_Benzoate_SB-2026-114",
+      pdfFilename: "TMC_COA_840.S0997_Sodium_Benzoate_SB-2026-114.pdf",
+      pdfKey: draft.pdfKey, // the engine's own PDF, only the name follows the rule
+    });
   }, 300_000);
 
   it("a document the engine does not recognise fails the job and stores nothing", async () => {

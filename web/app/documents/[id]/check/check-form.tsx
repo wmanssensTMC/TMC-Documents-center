@@ -4,7 +4,9 @@ import { useRouter } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
 import { sendFile } from "@/lib/client-upload";
 import type { YellowPart } from "@/lib/db/schema";
+import type { DocType, Entity } from "@/lib/constants";
 import { MAX_FILE_BYTES } from "@/lib/files";
+import { fileStem } from "@/lib/naming";
 import { approve, finaliseDraft, reject, type CheckResult } from "./actions";
 
 const input =
@@ -18,9 +20,10 @@ type Props = {
   busy: boolean;
   uploadMode: "blob" | "local";
   initial: { productName: string; fileNr: string; batch: string };
+  naming: { type: DocType; entity: Entity; batchLocked: boolean };
 };
 
-export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial }: Props) {
+export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial, naming }: Props) {
   const router = useRouter();
   const ready = useSyncExternalStore(noSubscribe, () => true, () => false);
   const [meta, setMeta] = useState(initial);
@@ -50,6 +53,8 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
   }
 
   const metadata = { productName: meta.productName, fileNr: meta.fileNr, batch: meta.batch };
+  // The file name follows the details (Willem 19/10); shown so nobody is surprised.
+  const name = fileStem({ type: naming.type, entity: naming.entity, productName: meta.productName.trim(), fileNr: meta.fileNr.trim(), batch: meta.batch.trim() });
 
   return (
     <div className="mt-6 space-y-6">
@@ -65,8 +70,19 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
         </label>
         <label className="block text-sm">
           Batch
-          <input value={meta.batch} onChange={(e) => setMeta({ ...meta, batch: e.target.value })} maxLength={100} className={`mt-1 ${input}`} />
+          <input
+            value={meta.batch}
+            onChange={(e) => setMeta({ ...meta, batch: e.target.value })}
+            readOnly={naming.batchLocked}
+            title={naming.batchLocked ? "This document was made for this batch; it cannot be changed" : undefined}
+            maxLength={100}
+            className={`mt-1 ${input} ${naming.batchLocked ? "bg-gray-100 text-gray-600" : ""}`}
+          />
         </label>
+        <p className="text-xs text-gray-600 sm:col-span-3">
+          File name: <span className="break-all font-mono">{name}</span>. Each value in it must be printed in the document; change the
+          document and these details together.
+        </p>
       </section>
 
       {parts.length > 0 && (

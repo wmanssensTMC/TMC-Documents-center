@@ -9,3 +9,4 @@ pytest
 reportlab   # tests only: builds synthetic supplier PDFs
 pytesseract # scan fallback in scripts/neutralize.py (classify)
 pdf2image
+pymupdf     # MSDS images and pictograms (extract_sds), scan readings (ocr_prep), image check (provenance)

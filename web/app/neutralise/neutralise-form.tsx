@@ -138,7 +138,7 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
           <DropZone label="Add supplier documents" accept=".pdf,application/pdf" multiple onFiles={addSupplierFiles} />
         </div>
         <p className="mt-1 text-xs text-gray-500">
-          One type per drop; several COAs at once is fine. Leave a field empty to let the neutralizer read it from the document.
+          One type per drop; several COAs at once is fine. Leave a field empty to let the neutralizer read it from the document. A COA with several batches: leave Batch empty, each batch gets its own document.
         </p>
         {rows.length > 0 && (
           <div className="mt-4 overflow-x-auto">

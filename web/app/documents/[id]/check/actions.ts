@@ -29,10 +29,8 @@ export async function finaliseDraft(documentId: string, input: unknown): Promise
 export async function approve(documentId: string, metadata: unknown): Promise<CheckResult> {
   const user = await requireUser();
   return run(async () => {
-    const r = await approveDraft(await getDb(), user, documentId, metadata);
-    return r.supersededVersion
-      ? `Final as version ${r.version}; version ${r.supersededVersion} is now Superseded.`
-      : `Final as version ${r.version}.`;
+    await approveDraft(await getDb(), user, documentId, metadata);
+    return "Sent for approval. The neutralizer checks the details against the document; this page updates itself.";
   });
 }
 

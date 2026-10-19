@@ -7,18 +7,27 @@ import type { Db } from "../lib/db";
 import type { DocType, Entity, Job, YellowPart } from "../lib/db/schema";
 import { eq } from "drizzle-orm";
 import { documents } from "../lib/db/schema";
+import { finalName, shownValues } from "../lib/documents/check";
 import { engineEntityJson, getEntity } from "../lib/entities";
 import { MAX_FILE_BYTES, newUploadKey } from "../lib/files";
 import { failJob, saveDrafts, saveFinal, type Draft } from "../lib/jobs/worker-state";
+import { nameParts, plainName } from "../lib/naming";
 import type { Storage } from "../lib/storage";
 import { cleanLog, engineArgv, finaliseArgv, runPython, yellowArgv } from "./engine";
 
+export { plainName };
+
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const PDF = "application/pdf";
-// The whole name, as the engine makes it (tmc_common.safe_part removes \ / : * ? " < > |), so it is
-// always a plain file name (review L4/N3).
-const NAME_RE = /^(TMC|TMCGULF|PHARMALABO)_(COA|MSDS|TDS)_[^\/\\:*?"<>|\u0000-\u001f]+$/u;
-export const plainName = (n: string) => NAME_RE.test(n) && !n.includes("..") && path.basename(n) === n;
+const SAFE_TEXT = /^[^\u0000-\u001f\u007f\u2028\u2029\p{Cf}]{0,100}$/u;
+
+/** The batch the engine says this document is for (COA route, <stem>.meta.json). */
+async function engineBatch(outDir: string, stem: string): Promise<string | null> {
+  const raw = await readFile(path.join(outDir, `${stem}.meta.json`), "utf8").catch(() => null);
+  if (!raw) return null;
+  const batch = (JSON.parse(raw) as { batch?: unknown }).batch;
+  return typeof batch === "string" && batch.trim() && SAFE_TEXT.test(batch.trim()) ? batch.trim() : null;
+}
 
 /** A safe local file name from the user's file name (never used as-is: review N2). */
 export function safeName(original: string, index: number) {
@@ -81,7 +90,7 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
     const drafts: Draft[] = [];
     for (const docxName of names) {
       const stem = docxName.slice(0, -5);
-      const m = NAME_RE.exec(stem);
+      const m = nameParts(stem);
       if (!m || !plainName(stem)) return failJob(db, job, run.code, `${run.log}\n[worker] unexpected output name: ${stem}`);
       const pdfName = `${stem}.pdf`;
       const docxPath = path.join(outDir, docxName);
@@ -129,6 +138,7 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
         yellow: !pdf,
         yellowParts,
         previewKey,
+        batch: await engineBatch(outDir, stem),
       });
     }
     await saveDrafts(db, job, drafts, run.code, run.log);
@@ -161,12 +171,16 @@ export async function processFinaliseJob(db: Db, storage: Storage, job: Job) {
     if (!job.documentId || !payload) return failJob(db, job, null, "[worker] finalise job without document");
     const [doc] = await db.select().from(documents).where(eq(documents.id, job.documentId));
     if (!doc || doc.status !== "To check") return failJob(db, job, null, "[worker] the document is not waiting for a check");
-    if (!plainName(doc.name)) return failJob(db, job, null, "[worker] unexpected document name");
+    // The name comes from the checked details by the naming rule (Willem 19/10): name, content
+    // and library details always agree.
+    const name = finalName(doc, payload.metadata);
+    if (!plainName(name)) return failJob(db, job, null, "[worker] unexpected document name");
+    const stays = "[worker] not finalised: the document stays waiting for a check";
 
     const outDir = path.join(dir, "final");
     await mkdir(outDir);
-    const finalDocx = path.join(outDir, `${doc.name}.docx`);
-    let docxKey: string;
+    const finalDocx = path.join(outDir, `${name}.docx`);
+    let approved: { pdfKey: string; docxKey: string } | null = null;
     if (payload.mode === "editor") {
       if (!doc.docxKey) return failJob(db, job, null, "[worker] the draft has no Word file");
       const draft = path.join(dir, "draft.docx");
@@ -174,32 +188,44 @@ export async function processFinaliseJob(db: Db, storage: Storage, job: Job) {
       const fixes = path.join(dir, "fixes.json");
       await writeFile(fixes, JSON.stringify(payload.fixes), "utf8");
       const applied = await runPython(yellowArgv("apply", draft, fixes, finalDocx), dir);
-      if (applied.code !== 0) return failJob(db, job, applied.code, `[worker] the corrections could not be written in
-${applied.log}`);
-      docxKey = newUploadKey("docx");
-      await storage.put(docxKey, await readFile(finalDocx), DOCX);
+      if (applied.code !== 0) return failJob(db, job, applied.code, `[worker] the corrections could not be written in\n${applied.log}`);
+    } else if (payload.mode === "approve") {
+      if (!doc.docxKey || !doc.pdfKey) return failJob(db, job, null, "[worker] the draft has no Word file or PDF");
+      approved = { pdfKey: doc.pdfKey, docxKey: doc.docxKey };
+      await download(storage, doc.docxKey, finalDocx);
     } else {
       await download(storage, payload.docx.key, finalDocx);
-      docxKey = payload.docx.key; // the person's checked Word file is the master
     }
 
-    // Before anything is rendered: the Word file must be safe to process, and must not name the
-    // supplier (reviews M2/M3). Checked on the person's fixes and on uploaded Word files alike.
+    // Before anything is rendered: the Word file must be safe to process, must not name the
+    // supplier (reviews M2/M3) and must print every value its name is made of.
     const forbid = path.join(dir, "forbid.json");
     await writeFile(forbid, JSON.stringify([doc.supplierName].filter(Boolean)), "utf8");
-    const safe = await runPython(yellowArgv("check", finalDocx, forbid), dir);
-    if (safe.code !== 0) return failJob(db, job, safe.code, `${safe.log}
-[worker] not finalised: the document stays waiting for a check`);
+    const shown = path.join(dir, "shown.json");
+    await writeFile(shown, JSON.stringify(shownValues(doc, payload.metadata)), "utf8");
+    const safe = await runPython(yellowArgv("check", finalDocx, forbid, shown), dir);
+    if (safe.code !== 0) return failJob(db, job, safe.code, `${safe.log}\n${stays}`);
 
+    const files = { pdfFilename: `${name}.pdf`, docxFilename: `${name}.docx` };
+    if (approved) {
+      // The engine's own PDF of this same Word file: only the file names change.
+      await saveFinal(db, job, { ...files, ...approved }, safe.log);
+      return;
+    }
     const run = await runPython(finaliseArgv(finalDocx), dir);
-    const pdfPath = path.join(outDir, `${doc.name}.pdf`);
-    const pdf = run.code === 0 ? await readFile(pdfPath).catch(() => null) : null;
-    if (!pdf) return failJob(db, job, run.code, `${run.log}
-[worker] not finalised: the document stays waiting for a check`);
+    const pdf = run.code === 0 ? await readFile(path.join(outDir, files.pdfFilename)).catch(() => null) : null;
+    if (!pdf) return failJob(db, job, run.code, `${run.log}\n${stays}`);
 
+    let docxKey: string;
+    if (payload.mode === "upload") {
+      docxKey = payload.docx.key; // the person's checked Word file is the master
+    } else {
+      docxKey = newUploadKey("docx");
+      await storage.put(docxKey, await readFile(finalDocx), DOCX);
+    }
     const pdfKey = newUploadKey("pdf");
     await storage.put(pdfKey, pdf, PDF);
-    await saveFinal(db, job, { pdfKey, pdfFilename: `${doc.name}.pdf`, docxKey, docxFilename: `${doc.name}.docx` }, run.log);
+    await saveFinal(db, job, { ...files, pdfKey, docxKey }, run.log);
   } catch (err) {
     await failJob(db, job, null, cleanLog(`[worker] ${err instanceof Error ? err.message : "unexpected error"}`, dir));
   } finally {

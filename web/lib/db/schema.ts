@@ -52,6 +52,8 @@ export type DocMetadata = { productName: string; fileNr: string | null; batch: s
 export type FinalisePayload = { metadata: DocMetadata } & (
   | { mode: "editor"; fixes: Record<string, { value: string; confirmed: true }> }
   | { mode: "upload"; docx: JobFile }
+  // a draft without yellow: the worker checks name and content agree, then it is Final
+  | { mode: "approve" }
 );
 
 // One neutralise job = one supplier document (+ commercial documents for a COA), run by the

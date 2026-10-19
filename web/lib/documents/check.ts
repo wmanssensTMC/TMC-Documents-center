@@ -12,6 +12,7 @@ import type { Db } from "../db";
 import { documents, feedback, jobs, type DocMetadata, type Document, type FinalisePayload } from "../db/schema";
 import { detectType, MAX_FILE_BYTES, parseUploadKey, cleanFilename } from "../files";
 import { countOpenJobs, MAX_OPEN_JOBS_PER_USER, wakeWorker } from "../jobs";
+import { fileStem, plainName } from "../naming";
 import type { Storage } from "../storage";
 
 export class CheckError extends Error {}
@@ -40,6 +41,31 @@ const fixesInput = z.record(
 );
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Name and content agree (Willem 19/10): the file name is made from the checked details by the
+// naming rule, each value in it must be printed in the document (the worker checks), and the
+// batch the document was made for cannot be changed (one document per batch).
+type NameSource = Pick<Document, "type" | "entity">;
+
+/** The name a checked document gets. */
+export function finalName(doc: NameSource, m: DocMetadata): string {
+  const name = fileStem({ type: doc.type, entity: doc.entity, productName: m.productName, fileNr: m.fileNr, batch: m.batch });
+  if (!plainName(name)) throw new CheckError("these details do not give a valid file name; check the product name");
+  return name;
+}
+
+/** The values the file name is made of, as [label, value]: each must be printed in the document. */
+export function shownValues(doc: NameSource, m: DocMetadata): [string, string][] {
+  const all: [string, string | null][] =
+    doc.type === "COA" ? [["product name", m.productName], ["dossier", m.fileNr], ["batch", m.batch]] : [["product name", m.productName]];
+  return all.filter((v): v is [string, string] => !!v[1]);
+}
+
+/** The batch is fixed once the document has one. */
+function lockBatch(doc: Document, m: DocMetadata): DocMetadata {
+  if (doc.batch && m.batch !== doc.batch) throw new CheckError(`the batch of this document is ${doc.batch} and cannot be changed`);
+  return m;
+}
 
 async function loadDraft(db: Db | Tx, id: string): Promise<Document> {
   if (!UUID.test(id)) throw new CheckError("document not found");
@@ -73,7 +99,8 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
     })
     .safeParse(raw);
   if (!r.success) throw new CheckError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
-  const input = r.data;
+  const input = { ...r.data, metadata: lockBatch(doc, r.data.metadata) };
+  finalName(doc, input.metadata);
   const parts = doc.yellowParts ?? [];
 
   let payload: FinalisePayload;
@@ -109,7 +136,10 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
     notes.push({ actor: actor.email, documentId: doc.id, kind: "word_upload", after: filename });
     payload = { mode: "upload", docx: { key: ref.key, filename }, metadata: input.metadata };
   }
+  await queueFinalise(db, actor, doc, payload, notes);
+}
 
+async function queueFinalise(db: Db, actor: Actor, doc: Document, payload: FinalisePayload, notes: (typeof feedback.$inferInsert)[]) {
   try {
     await db.transaction(async (tx) => {
       const [job] = await tx
@@ -139,18 +169,19 @@ export async function makeFinal(
   files: { pdfKey: string; pdfFilename: string; docxKey: string; docxFilename: string },
   metadata: DocMetadata,
 ) {
+  const name = finalName(doc, metadata);
   const [current] = await tx
     .select({ id: documents.id, version: documents.version })
     .from(documents)
-    .where(and(eq(documents.name, doc.name), eq(documents.status, "Final")))
+    .where(and(eq(documents.name, name), eq(documents.status, "Final")))
     .for("update");
   const [{ last }] = await tx
     .select({ last: sql<number | null>`max(${documents.version})` })
     .from(documents)
-    .where(eq(documents.name, doc.name));
+    .where(eq(documents.name, name));
   if (current) {
     await tx.update(documents).set({ status: "Superseded" }).where(eq(documents.id, current.id));
-    await logAudit(tx, actor, "document.superseded", current.id, { name: doc.name, version: current.version });
+    await logAudit(tx, actor, "document.superseded", current.id, { name, version: current.version });
   }
   const version = (Number(last) || 0) + 1;
   const now = new Date();
@@ -158,6 +189,7 @@ export async function makeFinal(
     .update(documents)
     .set({
       status: "Final",
+      name,
       version,
       previousVersionId: current?.id ?? null,
       ...files,
@@ -172,7 +204,12 @@ export async function makeFinal(
     .where(and(eq(documents.id, doc.id), eq(documents.status, "To check")))
     .returning({ id: documents.id });
   if (!updated.length) throw new CheckError("the document changed while finalising");
-  await logAudit(tx, actor, "document.finalised", doc.id, { name: doc.name, version, superseded: current?.version ?? null });
+  await logAudit(tx, actor, "document.finalised", doc.id, {
+    name,
+    ...(name !== doc.name ? { renamedFrom: doc.name } : {}),
+    version,
+    superseded: current?.version ?? null,
+  });
   await closeNeutraliseJobIfDone(tx, doc.jobId);
   return { version, supersededVersion: current?.version ?? null };
 }
@@ -187,24 +224,20 @@ async function closeNeutraliseJobIfDone(tx: Tx, jobId: string | null) {
   if (open === 0) await tx.update(jobs).set({ state: "done" }).where(and(eq(jobs.id, jobId), eq(jobs.state, "to_check")));
 }
 
-/** A draft the engine left without any yellow: a person still approves it (Willem 17/10). */
+/**
+ * A draft the engine left without any yellow: a person still approves it (Willem 17/10). It goes
+ * through the worker too, which checks the details are printed in the document (Willem 19/10).
+ */
 export async function approveDraft(db: Db, actor: Actor, documentId: string, rawMetadata: unknown) {
   const m = metadataInput.safeParse(rawMetadata);
   if (!m.success) throw new CheckError(m.error.issues.map((i) => i.message).join("; "));
-  if (!UUID.test(documentId)) throw new CheckError("document not found");
-  if (await openFinaliseJob(db, documentId)) throw new CheckError("this document is being finalised");
-  return db.transaction(async (tx) => {
-    const doc = await loadDraft(tx, documentId);
-    if ((doc.yellowParts ?? []).length) throw new CheckError("this draft has yellow parts: check them first");
-    if (!doc.pdfKey || !doc.pdfFilename || !doc.docxKey || !doc.docxFilename) throw new CheckError("this draft has no PDF yet");
-    return makeFinal(
-      tx,
-      actor,
-      doc,
-      { pdfKey: doc.pdfKey, pdfFilename: doc.pdfFilename, docxKey: doc.docxKey, docxFilename: doc.docxFilename },
-      m.data,
-    );
-  });
+  const doc = await loadDraft(db, documentId);
+  if (await openFinaliseJob(db, doc.id)) throw new CheckError("this document is being finalised");
+  if ((doc.yellowParts ?? []).length) throw new CheckError("this draft has yellow parts: check them first");
+  if (!doc.pdfKey || !doc.pdfFilename || !doc.docxKey || !doc.docxFilename) throw new CheckError("this draft has no PDF yet");
+  const metadata = lockBatch(doc, m.data);
+  finalName(doc, metadata);
+  await queueFinalise(db, actor, doc, { mode: "approve", metadata }, []);
 }
 
 export async function rejectDraft(db: Db, actor: Actor, documentId: string, rawReason: unknown) {

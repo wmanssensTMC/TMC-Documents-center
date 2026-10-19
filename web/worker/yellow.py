@@ -8,7 +8,9 @@ on the check screen -- never automatically (BRIEF 7.2).
   python yellow.py --engine DIR list DOCX                     -> JSON list on stdout
   python yellow.py --engine DIR apply DOCX FIXES.json OUT.docx
   python yellow.py --engine DIR preview DOCX OUT.pdf          -> PDF stamped DRAFT
-  python yellow.py --engine DIR check DOCX FORBID.json        -> exit 1 if unsafe or names the supplier
+  python yellow.py --engine DIR check DOCX FORBID.json [SHOWN.json]
+                                     -> exit 1 if unsafe, names the supplier, or does not
+                                        print a value of its file name (SHOWN: [[label, value]])
 """
 import argparse, io, json, re, shutil, sys, tempfile
 from pathlib import Path
@@ -95,8 +97,9 @@ def xml_text(root):
     return "\n".join(lines)
 
 
-def cmd_check(docx, forbid_path, engine_scripts):
-    """Refuses a Word file that is not safe to process, or that names the supplier (rule 3)."""
+def cmd_check(docx, forbid_path, engine_scripts, shown_path=None):
+    """Refuses a Word file that is not safe to process, that names the supplier (rule 3), or
+    that does not print a value its file name is made of (name and content agree, Willem 19/10)."""
     import xml.etree.ElementTree as ET
     import zipfile
     sys.path.insert(0, str(engine_scripts))
@@ -146,6 +149,12 @@ def cmd_check(docx, forbid_path, engine_scripts):
         if f" {n} " in f" {haystack} " or (len(n.replace(' ', '')) >= 6 and n.replace(" ", "") in compact):
             sys.exit("refused: the document still names the supplier")
 
+    for label, value in json.loads(Path(shown_path).read_text(encoding="utf-8")) if shown_path else []:
+        n = norm(value)
+        if n and f" {n} " not in f" {haystack} " and n.replace(" ", "") not in compact:
+            sys.exit(f"refused: the {label} '{value}' is not printed in the document; "
+                     "the file name must match the document, so change one of them")
+
 
 def cmd_preview(docx, out, engine_scripts):
     sys.path.insert(0, str(engine_scripts))
@@ -191,8 +200,8 @@ def main():
         cmd_apply(*a.paths)
     elif a.command == "preview" and len(a.paths) == 2:
         cmd_preview(a.paths[0], a.paths[1], scripts)
-    elif a.command == "check" and len(a.paths) == 2:
-        cmd_check(a.paths[0], a.paths[1], scripts)
+    elif a.command == "check" and len(a.paths) in (2, 3):
+        cmd_check(a.paths[0], a.paths[1], scripts, a.paths[2] if len(a.paths) == 3 else None)
     else:
         ap.error("wrong number of paths")
 
