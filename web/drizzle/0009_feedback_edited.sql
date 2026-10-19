@@ -1,0 +1,1 @@
+ALTER TYPE "public"."feedback_kind" ADD VALUE 'edited';

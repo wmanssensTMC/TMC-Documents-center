@@ -2,6 +2,7 @@
 import { logAudit } from "@/lib/audit";
 import { apiUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
+import { pendingEdit } from "@/lib/documents/changes-pending";
 import { getDocument } from "@/lib/documents/service";
 import { detectType, DOCUMENT_FILE_KINDS, EXTENSION } from "@/lib/files";
 import { getStorage } from "@/lib/storage";
@@ -16,7 +17,9 @@ export async function GET(req: Request, ctx: RouteContext<"/api/files/[id]/[kind
 
   const db = await getDb();
   const doc = await getDocument(db, id);
-  const key = doc && { pdf: doc.pdfKey, docx: doc.docxKey, source: doc.sourceKey, preview: doc.previewKey }[kind];
+  // ?edited=1: the version edited on screen that waits for its warnings to be confirmed
+  const edited = kind === "docx" && new URL(req.url).searchParams.get("edited") === "1";
+  const key = doc && (edited ? (await pendingEdit(db, doc))?.key : { pdf: doc.pdfKey, docx: doc.docxKey, source: doc.sourceKey, preview: doc.previewKey }[kind]);
   if (!doc || !key) return new Response("Not found", { status: 404 });
 
   const storage = getStorage();

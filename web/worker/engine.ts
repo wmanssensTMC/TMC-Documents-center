@@ -118,6 +118,6 @@ export function cleanLog(log: string, workDir: string) {
 }
 
 /** web/worker/yellow.py (list / apply / preview), which reuses the engine's own helpers. */
-export function yellowArgv(command: "list" | "apply" | "preview" | "check", ...paths: string[]): string[] {
+export function yellowArgv(command: "list" | "apply" | "preview" | "check" | "changes", ...paths: string[]): string[] {
   return ["-I", path.join(__dirname, "yellow.py"), `--engine=${ENGINE_DIR}`, command, ...paths];
 }

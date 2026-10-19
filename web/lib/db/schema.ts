@@ -58,6 +58,9 @@ export type FinalisePayload = {
   | { mode: "upload"; docx: JobFile }
   // a draft without yellow: the worker checks name and content agree, then it is Final
   | { mode: "approve" }
+  // edited on screen (Willem 19/10): changes not found in the supplier original are a warning;
+  // acceptChanges = the person saw the warnings and goes on
+  | { mode: "edited"; docx: JobFile; acceptChanges?: boolean }
 );
 
 // One neutralise job = one supplier document (+ commercial documents for a COA), run by the
@@ -187,7 +190,7 @@ export const auditLog = pgTable(
 
 // What people corrected or decided at the check: the feedback overview for the admin, to
 // improve the engine's reading rules. Never used to change a document automatically.
-export const FEEDBACK_KINDS = ["corrected", "confirmed", "rejected", "word_upload"] as const;
+export const FEEDBACK_KINDS = ["corrected", "confirmed", "rejected", "word_upload", "edited"] as const;
 export const feedbackKind = pgEnum("feedback_kind", FEEDBACK_KINDS);
 export const feedback = pgTable(
   "feedback",

@@ -7,6 +7,7 @@ import type { Db } from "../lib/db";
 import type { DocType, Entity, Job, YellowPart } from "../lib/db/schema";
 import { eq } from "drizzle-orm";
 import { documents } from "../lib/db/schema";
+import { CHANGES_MARK, parseChanges, type Change } from "../lib/documents/changes";
 import { finalName, shownValues } from "../lib/documents/check";
 import { engineEntityJson, getEntity } from "../lib/entities";
 import { MAX_FILE_BYTES, newUploadKey } from "../lib/files";
@@ -226,6 +227,29 @@ ${stays}`);
     const safe = await runPython(yellowArgv("check", finalDocx, forbid, shown), dir);
     if (safe.code !== 0) return failJob(db, job, safe.code, `${safe.log}\n${stays}`);
 
+    // Edited on screen (Willem 19/10): every change is kept as feedback; a change that brings in
+    // words or numbers not found in the supplier original is a warning the person must see.
+    let edits: Change[] = [];
+    if (payload.mode === "edited") {
+      const listed = await runPython(yellowArgv("list", finalDocx), dir, { keepStdout: true });
+      const left = listed.code === 0 ? parseYellowParts(listed.stdout).length : -1;
+      if (left !== 0) {
+        return failJob(db, job, listed.code, `[worker] ${left > 0 ? left : "some"} yellow part(s) still marked: check each one and remove its highlight\n${stays}`);
+      }
+      if (!doc.docxKey || !doc.sourceKey) return failJob(db, job, null, "[worker] the draft or the supplier original is missing");
+      const draft = path.join(dir, "draft.docx");
+      const source = path.join(dir, "source.pdf");
+      await download(storage, doc.docxKey, draft);
+      await download(storage, doc.sourceKey, source);
+      const compared = await runPython(yellowArgv("changes", draft, finalDocx, source), dir, { keepStdout: true });
+      if (compared.code !== 0) return failJob(db, job, compared.code, `[worker] the changes could not be compared\n${compared.log}`);
+      edits = parseChanges(compared.stdout);
+      const warned = edits.filter((c) => c.unknown.length);
+      if (warned.length && !payload.acceptChanges) {
+        return failJob(db, job, null, [CHANGES_MARK + JSON.stringify(warned.slice(0, 20)), `[worker] ${warned.length} change(s) bring in words or numbers that are not in the supplier original: check them, then confirm to go on`, stays].join("\n"));
+      }
+    }
+
     const files = { pdfFilename: `${name}.pdf`, docxFilename: `${name}.docx` };
     if (approved) {
       // The engine's own PDF of this same Word file: only the file names change.
@@ -237,7 +261,7 @@ ${stays}`);
     if (!pdf) return failJob(db, job, run.code, `${run.log}\n${stays}`);
 
     let docxKey: string;
-    if (payload.mode === "upload") {
+    if (payload.mode === "upload" || payload.mode === "edited") {
       docxKey = payload.docx.key; // the person's checked Word file is the master
     } else {
       docxKey = newUploadKey("docx");
@@ -245,7 +269,13 @@ ${stays}`);
     }
     const pdfKey = newUploadKey("pdf");
     await storage.put(pdfKey, pdf, PDF);
-    await saveFinal(db, job, { ...files, pdfKey, docxKey }, run.log);
+    const feedbackRows = edits.map((c) => ({
+      kind: "edited" as const,
+      before: c.before,
+      after: c.after,
+      context: c.unknown.length ? `not in the original, confirmed: ${c.unknown.join(" ")}`.slice(0, 300) : null,
+    }));
+    await saveFinal(db, job, { ...files, pdfKey, docxKey }, run.log, feedbackRows);
   } catch (err) {
     await failJob(db, job, null, cleanLog(`[worker] ${err instanceof Error ? err.message : "unexpected error"}`, dir));
   } finally {

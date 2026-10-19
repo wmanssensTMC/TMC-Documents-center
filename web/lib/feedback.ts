@@ -42,7 +42,7 @@ export async function feedbackSummary(db: Db, p: Period) {
 }
 
 /** Feedback lines with the document they belong to, newest first. */
-export async function feedbackLines(db: Db, p: Period, kinds: ("corrected" | "rejected" | "word_upload")[], limit = 200) {
+export async function feedbackLines(db: Db, p: Period, kinds: ("corrected" | "rejected" | "word_upload" | "edited")[], limit = 200) {
   return db
     .select({
       id: feedback.id,

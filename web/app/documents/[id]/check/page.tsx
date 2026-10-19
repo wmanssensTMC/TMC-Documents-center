@@ -6,6 +6,7 @@ import { AutoRefresh } from "@/app/jobs/auto-refresh";
 import { requireUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { jobs } from "@/lib/db/schema";
+import { pendingEdit } from "@/lib/documents/changes-pending";
 import { getDocument } from "@/lib/documents/service";
 import { getStorage } from "@/lib/storage";
 import { CheckForm } from "./check-form";
@@ -29,6 +30,7 @@ export default async function CheckPage({ params }: PageProps<"/documents/[id]/c
   const busy = lastFinalise && (lastFinalise.state === "queued" || lastFinalise.state === "running");
   const file = (kind: string) => `/api/files/${doc.id}/${kind}?inline=1`;
   const parts = doc.yellowParts ?? [];
+  const pending = await pendingEdit(db, doc);
 
   return (
     <PageShell user={user}>
@@ -96,6 +98,12 @@ export default async function CheckPage({ params }: PageProps<"/documents/[id]/c
         uploadMode={getStorage().mode}
         initial={{ productName: doc.productName ?? "", fileNr: doc.fileNr ?? "", batch: doc.batch ?? "" }}
         naming={{ type: doc.type, entity: doc.entity, batchLocked: !!doc.batch }}
+        edit={{
+          documentId: doc.id,
+          sourceUrl: doc.sourceKey ? file("source") : null,
+          draftUrl: `/api/files/${doc.id}/docx`,
+          pending: pending && { ...pending, url: `/api/files/${doc.id}/docx?edited=1` },
+        }}
       />
     </PageShell>
   );

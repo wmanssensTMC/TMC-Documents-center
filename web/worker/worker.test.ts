@@ -1,17 +1,18 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Actor } from "../lib/audit";
 import { createPgliteDb, type Db } from "../lib/db";
-import { documents, jobs } from "../lib/db/schema";
+import { documents, feedback, jobs } from "../lib/db/schema";
 import { newUploadKey } from "../lib/files";
 import { createJobs } from "../lib/jobs";
 import { claimNextJob, MAX_ATTEMPTS, requeueStaleJobs } from "../lib/jobs/worker-state";
 import { localStorage, type Storage } from "../lib/storage";
 import { cleanLog, engineArgv } from "./engine";
+import { changeWarnings } from "../lib/documents/changes";
 import { approveDraft, requestFinalise } from "../lib/documents/check";
 import { plainName, processFinaliseJob, processNeutraliseJob, safeName } from "./process";
 
@@ -234,6 +235,51 @@ c.save()`;
       pdfFilename: "TMC_COA_840.S0997_Sodium_Benzoate_SB-2026-114.pdf",
       pdfKey: draft.pdfKey, // the engine's own PDF, only the name follows the rule
     });
+  }, 300_000);
+
+  it("edited on screen: a new number not in the original is a warning; once confirmed it is Final and kept as feedback", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tmc-edit-"));
+    const pdfPath = path.join(dir, "coa.pdf");
+    syntheticCoa(pdfPath);
+    await createJobs(db, storage, willem, [
+      { route: "coa", entity: "TMC", productName: "Sodium Benzoate", fileNr: "840.S0996", supplierFile: await upload(new Uint8Array(readFileSync(pdfPath)), "coa.pdf") },
+    ]);
+    await processNeutraliseJob(db, storage, (await claimNextJob(db))!);
+    const [draft] = await db.select().from(documents);
+
+    // the person changes the assay 99.6 into 99.9 in the editor
+    const file = await storage.get(draft.docxKey!);
+    const chunks: Uint8Array[] = [];
+    for await (const c of file!.stream as unknown as AsyncIterable<Uint8Array>) chunks.push(c);
+    const before = path.join(dir, "draft.docx");
+    const after = path.join(dir, "edited.docx");
+    writeFileSync(before, Buffer.concat(chunks));
+    execFileSync(python!, ["-c", [
+      "import sys", "from docx import Document", "d = Document(sys.argv[1])",
+      "cells = [c for t in d.tables for r in t.rows for c in r.cells]",
+      "runs = [r for p in d.paragraphs for r in p.runs] + [r for c in cells for p in c.paragraphs for r in p.runs]",
+      "[setattr(r, 'text', r.text.replace('99.6', '99.9')) for r in runs]", "d.save(sys.argv[2])",
+    ].join("; "), before, after]);
+    const key = newUploadKey("docx");
+    await storage.put(key, new Uint8Array(readFileSync(after)), "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    const metadata = { productName: "Sodium Benzoate", fileNr: "840.S0996", batch: "SB-2026-114" };
+
+    await requestFinalise(db, storage, willem, draft.id, { mode: "edited", metadata, docx: { key, filename: "e.docx" } });
+    const first = (await claimNextJob(db))!;
+    await processFinaliseJob(db, storage, first);
+    const [stopped] = await db.select().from(jobs).where(eq(jobs.id, first.id));
+    expect(stopped.state, stopped.log ?? "").toBe("failed");
+    expect(changeWarnings(stopped.log)?.[0]?.unknown).toContain("99.9");
+    expect((await db.select().from(documents))[0].status).toBe("To check");
+
+    await requestFinalise(db, storage, willem, draft.id, { mode: "edited", metadata, acceptChanges: true, docx: { key, filename: "e.docx" } });
+    const second = (await claimNextJob(db))!;
+    await processFinaliseJob(db, storage, second);
+    const [done] = await db.select().from(jobs).where(eq(jobs.id, second.id));
+    expect(done.state, done.log ?? "").toBe("done");
+    expect((await db.select().from(documents))[0]).toMatchObject({ status: "Final", docxKey: key });
+    const fb = await db.select().from(feedback);
+    expect(fb.some((f) => f.kind === "edited" && (f.after ?? "").includes("99.9") && (f.context ?? "").includes("99.9"))).toBe(true);
   }, 300_000);
 
   it("a document the engine does not recognise fails the job and stores nothing", async () => {

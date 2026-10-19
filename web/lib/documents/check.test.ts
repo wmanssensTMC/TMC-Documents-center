@@ -90,6 +90,18 @@ describe("finalise request (on-screen editor)", () => {
     ).rejects.toThrow(CheckError);
   });
 
+  it("edited on screen: queued with the edited Word file; feedback only once it is Final (Willem 19/10)", async () => {
+    const d = await draft();
+    await expect(
+      requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, docx: { key: newUploadKey("pdf"), filename: "x" } }),
+    ).rejects.toThrow(/save the edited document/);
+    const key = newUploadKey("docx");
+    files.set(key, DOCX);
+    await requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, acceptChanges: true, docx: { key, filename: "e.docx" } });
+    expect((await db.select().from(jobs))[0].payload).toMatchObject({ mode: "edited", acceptChanges: true, docx: { key } });
+    expect(await db.select().from(feedback)).toHaveLength(0); // the worker records the changes when it is Final
+  });
+
   it("Word upload: only a real Word file under its own key", async () => {
     const d = await draft();
     const bad = newUploadKey("docx");

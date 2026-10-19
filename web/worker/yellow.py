@@ -8,6 +8,7 @@ on the check screen -- never automatically (BRIEF 7.2).
   python yellow.py --engine DIR list DOCX                     -> JSON list on stdout
   python yellow.py --engine DIR apply DOCX FIXES.json OUT.docx
   python yellow.py --engine DIR preview DOCX OUT.pdf          -> PDF stamped DRAFT
+  python yellow.py --engine DIR changes DRAFT EDITED SOURCE.pdf -> JSON list of changes on stdout
   python yellow.py --engine DIR check DOCX FORBID.json [SHOWN.json]
                                      -> exit 1 if unsafe, names the supplier, or does not
                                         print a value of its file name (SHOWN: [[label, value]])
@@ -170,6 +171,95 @@ def latin_only(value):
     return all(ord(ch) < 128 or unicodedata.combining(ch) or not ch.isalnum() for ch in t)
 
 
+MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+
+
+def paragraph_texts(docx):
+    """Every paragraph's text in reading order: body (tables, text boxes), then headers and
+    footers. A text box is stored twice by Word; only the shown version is read."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+    P, T = f"{W_NS}p", f"{W_NS}t"
+
+    def walk(el, out):
+        for c in el:
+            if c.tag == MC_FALLBACK:
+                continue
+            if c.tag == P:
+                own, nested = [], []
+                collect(c, own, nested)
+                out.append("".join(own))
+                out.extend(nested)
+            else:
+                walk(c, out)
+
+    def collect(el, own, nested):
+        for c in el:
+            if c.tag == MC_FALLBACK:
+                continue
+            if c.tag == T:
+                own.append(c.text or "")
+            elif c.tag == P:
+                walk(_wrap(c), nested)          # a text box inside this paragraph
+            else:
+                collect(c, own, nested)
+
+    def _wrap(p):
+        holder = ET.Element("holder")
+        holder.append(p)
+        return holder
+
+    out = []
+    with zipfile.ZipFile(docx) as z:
+        names = z.namelist()
+        parts = ["word/document.xml"] + sorted(n for n in names if re.fullmatch(r"word/(header|footer)\d*\.xml", n))
+        for n in parts:
+            if n in names:
+                walk(ET.fromstring(z.read(n)), out)
+    return [t.strip() for t in out if t.strip()]
+
+
+# A word or a number as written: "99.6", "0,4", "SB-2026-114" stay whole, so 99.6 -> 6.99 is a change.
+WORD = re.compile(r"[^\W_]+(?:[.,/:-][^\W_]+)*")
+
+
+def words(text):
+    import unicodedata
+    return {w.lower() for w in WORD.findall(unicodedata.normalize("NFKC", text))}
+
+
+def cmd_changes(draft, edited, source_pdf):
+    """What a person changed on screen, as JSON: [{before, after, unknown}]. unknown = new words
+    or numbers that are not in the supplier original: a warning, the person may go on (Willem
+    19/10). Nothing is refused here; the safety checks are in cmd_check."""
+    import difflib
+    import unicodedata
+    import pdfplumber
+
+    try:
+        with pdfplumber.open(source_pdf) as pdf:
+            source = "\n".join(p.extract_text() or "" for p in pdf.pages[:200])
+    except Exception:
+        source = ""                                # unreadable original: every new value warns
+    known = words(source)
+
+    a, b = paragraph_texts(draft), paragraph_texts(edited)
+    changes = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        before, after = "\n".join(a[i1:i2]), "\n".join(b[j1:j2])
+        had = words(before)
+        unknown = []
+        for word in WORD.findall(unicodedata.normalize("NFKC", after)):
+            if word.lower() not in had and word.lower() not in known and word not in unknown:
+                unknown.append(word)
+        changes.append({"before": before[:500], "after": after[:500], "unknown": unknown[:20]})
+        if len(changes) >= 200:
+            break
+    json.dump(changes, sys.stdout, ensure_ascii=False)
+
+
 def cmd_preview(docx, out, engine_scripts):
     sys.path.insert(0, str(engine_scripts))
     from tmc_common import render_pdf          # the engine's own Word -> PDF
@@ -203,7 +293,7 @@ def cmd_preview(docx, out, engine_scripts):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", required=True, help="engine folder (contains scripts/)")
-    ap.add_argument("command", choices=["list", "apply", "preview", "check"])
+    ap.add_argument("command", choices=["list", "apply", "preview", "check", "changes"])
     ap.add_argument("paths", nargs="+")
     a = ap.parse_args()
     scripts = Path(a.engine) / "scripts"
@@ -214,6 +304,8 @@ def main():
         cmd_apply(*a.paths)
     elif a.command == "preview" and len(a.paths) == 2:
         cmd_preview(a.paths[0], a.paths[1], scripts)
+    elif a.command == "changes" and len(a.paths) == 3:
+        cmd_changes(a.paths[0], a.paths[1], a.paths[2])
     elif a.command == "check" and len(a.paths) in (2, 3):
         cmd_check(a.paths[0], a.paths[1], scripts, a.paths[2] if len(a.paths) == 3 else None)
     else:

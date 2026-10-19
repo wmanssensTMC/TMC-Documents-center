@@ -95,10 +95,11 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
   const r = z
     .object({
       metadata: metadataInput,
-      mode: z.enum(["editor", "upload"]),
+      mode: z.enum(["editor", "upload", "edited"]),
       fixes: fixesInput.optional(),
       docx: z.object({ key: z.string().max(200), filename: z.string().max(300) }).optional(),
       confirmReplace: z.boolean().optional(),
+      acceptChanges: z.boolean().optional(),
     })
     .safeParse(raw);
   if (!r.success) throw new CheckError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
@@ -133,12 +134,17 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
   } else {
     const ref = input.docx;
     const parsed = ref && parseUploadKey(ref.key);
-    if (!ref || !parsed || parsed.kind !== "docx") throw new CheckError("upload the checked Word file");
+    if (!ref || !parsed || parsed.kind !== "docx") throw new CheckError(input.mode === "edited" ? "save the edited document first" : "upload the checked Word file");
     const head = await storage.head(ref.key, 8);
     if (!head || head.size > MAX_FILE_BYTES || !detectType("docx", head.bytes)) throw new CheckError("the file is not a Word document");
     const filename = cleanFilename(ref.filename);
-    notes.push({ actor: actor.email, documentId: doc.id, kind: "word_upload", after: filename });
-    payload = { mode: "upload", docx: { key: ref.key, filename }, metadata: input.metadata };
+    if (input.mode === "edited") {
+      // edited on screen: the worker records every change when it becomes Final
+      payload = { mode: "edited", docx: { key: ref.key, filename }, metadata: input.metadata, acceptChanges: input.acceptChanges === true };
+    } else {
+      notes.push({ actor: actor.email, documentId: doc.id, kind: "word_upload", after: filename });
+      payload = { mode: "upload", docx: { key: ref.key, filename }, metadata: input.metadata };
+    }
   }
   await queueFinalise(db, actor, doc, { ...payload, replaces }, notes);
 }

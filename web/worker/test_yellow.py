@@ -159,7 +159,27 @@ with tempfile.TemporaryDirectory() as d:
     rc, _, err = run("check", d / "tracked.docx", d / "forbid.json")
     check("check: tracked changes are refused, deleted supplier text included (N1)", rc == 1 and "tracked" in err, err)
 
-    (d / "zip.docx").write_bytes(b"PK not really a zip")
+    # on-screen edits (Willem 19/10): what changed, and what is not in the supplier original
+    from reportlab.pdfgen import canvas as pdfcanvas
+    src = pdfcanvas.Canvas(str(d / "source.pdf")); src.drawString(72, 720, "Assay 99.6 % Loss on drying 0.4 %"); src.save()
+    before = Document(); before.add_paragraph("Assay 99.6 %"); t = before.add_table(rows=1, cols=1)
+    t.cell(0, 0).text = "Loss on drying 0.4 %"; before.save(d / "before.docx")
+    after = Document(); after.add_paragraph("Assay 99.9 %"); t = after.add_table(rows=1, cols=1)
+    t.cell(0, 0).text = "Loss on drying 0.4 %"; after.add_paragraph("Loss on drying 0.4 %"); after.save(d / "after.docx")
+    rc, out, err = run("changes", d / "before.docx", d / "after.docx", d / "source.pdf")
+    got = json.loads(out) if rc == 0 else []
+    check("changes: each change listed with before and after", rc == 0 and len(got) == 2 and got[0]["before"] == "Assay 99.6 %"
+          and got[0]["after"] == "Assay 99.9 %", out + err)
+    check("changes: a number not in the original is a warning", got and got[0]["unknown"] == ["99.9"], out)
+    check("changes: text taken from the original is not", len(got) > 1 and got[1]["unknown"] == [], out)
+    rc, out, err = run("changes", d / "before.docx", d / "before.docx", d / "source.pdf")
+    check("changes: nothing changed, nothing listed", rc == 0 and json.loads(out) == [], out + err)
+    swap = Document(); swap.add_paragraph("Assay 6.99 %"); t = swap.add_table(rows=1, cols=1)
+    t.cell(0, 0).text = "Loss on drying 0.4 %"; swap.save(d / "swap.docx")
+    rc, out, err = run("changes", d / "before.docx", d / "swap.docx", d / "source.pdf")
+    check("changes: digits moved around is still a new number (6.99 is not 99.6)", rc == 0 and json.loads(out)[0]["unknown"] == ["6.99"], out + err)
+
+    (d / "zip.docx").write_bytes(b"PK\x03\x04 not really a zip")
     rc, _, err = run("check", d / "zip.docx", d / "forbid.json")
     check("check: refused when it is not a real Word file", rc == 1, err)
 
