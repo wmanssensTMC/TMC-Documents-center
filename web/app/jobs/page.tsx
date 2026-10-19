@@ -62,7 +62,7 @@ export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
                   <div className="text-xs text-gray-500">{job.createdBy}</div>
                 </td>
                 <td className="px-3 py-2 break-all">
-                  {job.supplierFile.filename}
+                  {job.supplierFile?.filename ?? "Finalise"}
                   {job.commercialFiles.length > 0 && (
                     <div className="text-xs text-gray-500">+ {job.commercialFiles.map((f) => f.filename).join(", ")}</div>
                   )}
@@ -84,8 +84,9 @@ export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
                 </td>
                 <td className="px-3 py-2">
                   {documents.map((d) => (
-                    <Link key={d.id} href={`/documents/${d.id}`} className="block break-all text-tmc underline">
+                    <Link key={d.id} href={d.status === "To check" ? `/documents/${d.id}/check` : `/documents/${d.id}`} className="block break-all text-tmc underline">
                       {d.name}
+                      <span className="ml-1 text-xs text-gray-500">({d.status})</span>
                     </Link>
                   ))}
                 </td>

@@ -46,6 +46,13 @@ export const entities = pgTable("entities", {
 });
 
 export type JobFile = { key: string; filename: string };
+export type YellowPart = { id: string; text: string; context: string };
+export type DocMetadata = { productName: string; fileNr: string | null; batch: string | null };
+/** finalise jobs: either the on-screen fixes, or a checked Word file the person uploaded. */
+export type FinalisePayload = { metadata: DocMetadata } & (
+  | { mode: "editor"; fixes: Record<string, { value: string }> }
+  | { mode: "upload"; docx: JobFile }
+);
 
 // One neutralise job = one supplier document (+ commercial documents for a COA), run by the
 // worker. A COA with several batches can give several documents (documents.job_id).
@@ -62,10 +69,11 @@ export const jobs = pgTable(
     fileNr: text("file_nr"),
     batch: text("batch"),
     supplierName: text("supplier_name"), // internal metadata for the library, never passed to the engine
-    supplierFile: jsonb("supplier_file").$type<JobFile>().notNull(),
+    supplierFile: jsonb("supplier_file").$type<JobFile>(), // neutralise jobs only
     commercialFiles: jsonb("commercial_files").$type<JobFile[]>().notNull().default([]),
-    // finalise jobs: the draft being finalised
+    // finalise jobs: the draft being finalised, and what the person decided
     documentId: uuid("document_id").references((): AnyPgColumn => documents.id),
+    payload: jsonb("payload").$type<FinalisePayload>(),
     exitCode: integer("exit_code"),
     log: text("log"),
     attempts: integer("attempts").notNull().default(0),
@@ -126,6 +134,9 @@ export const documents = pgTable(
     approvedAt: timestamp("approved_at", { withTimezone: true }),
     jobId: uuid("job_id").references((): AnyPgColumn => jobs.id),
     rejectedReason: text("rejected_reason"),
+    // Engine drafts: the yellow parts to check, and a preview PDF stamped DRAFT (view only).
+    yellowParts: jsonb("yellow_parts").$type<YellowPart[]>(),
+    previewKey: text("preview_key"),
   },
   (t) => [
     // Never two Final versions of the same document. Drafts may sit next to the Final one.
@@ -135,6 +146,7 @@ export const documents = pgTable(
     uniqueIndex("documents_pdf_key").on(t.pdfKey),
     uniqueIndex("documents_docx_key").on(t.docxKey),
     uniqueIndex("documents_source_key").on(t.sourceKey),
+    uniqueIndex("documents_preview_key").on(t.previewKey),
     index("documents_created_at").on(t.createdAt),
     // A Final document always has its PDF, a version number and a product name (BRIEF 7.2, 7.6).
     check(
@@ -160,7 +172,29 @@ export const auditLog = pgTable(
   (t) => [index("audit_log_document").on(t.documentId, t.at)],
 );
 
+// What people corrected or decided at the check: the feedback overview for the admin, to
+// improve the engine's reading rules. Never used to change a document automatically.
+export const FEEDBACK_KINDS = ["corrected", "confirmed", "rejected", "word_upload"] as const;
+export const feedbackKind = pgEnum("feedback_kind", FEEDBACK_KINDS);
+export const feedback = pgTable(
+  "feedback",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+    actor: text("actor").notNull(),
+    documentId: uuid("document_id").references(() => documents.id),
+    kind: feedbackKind("kind").notNull(),
+    partId: text("part_id"),
+    before: text("before"),
+    after: text("after"),
+    context: text("context"),
+    reason: text("reason"),
+  },
+  (t) => [index("feedback_at").on(t.at)],
+);
+
 export type Document = typeof documents.$inferSelect;
+export type Feedback = typeof feedback.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
 export type EntityRecord = typeof entities.$inferSelect;

@@ -15,7 +15,7 @@ const TIMEOUT_MS = 10 * 60 * 1000;
 const LOG_MAX = 8000;
 const OUTPUT_KEEP = 256 * 1024;
 
-export type EngineRun = { code: number; log: string };
+export type EngineRun = { code: number; log: string; stdout: string };
 
 export type EngineArgs = {
   inputs: string[]; // files in the job folder, supplier document first
@@ -42,7 +42,8 @@ export function finaliseArgv(docx: string): string[] {
   return ["-I", path.join(ENGINE_DIR, "scripts", "neutralize.py"), docx, "--finalise"];
 }
 
-export function runPython(argv: string[], workDir: string): Promise<EngineRun> {
+/** keepStdout: also return standard output on its own (machine-readable output of yellow.py). */
+export function runPython(argv: string[], workDir: string, opts: { keepStdout?: boolean } = {}): Promise<EngineRun> {
   const env = {
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
     HOME: workDir,
@@ -59,10 +60,17 @@ export function runPython(argv: string[], workDir: string): Promise<EngineRun> {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
+    let stdout = "";
+    let stdoutTooLong = false;
     const keep = (chunk: Buffer) => {
       out = (out + chunk.toString("utf8")).slice(-OUTPUT_KEEP); // bounded memory
     };
-    child.stdout.on("data", keep);
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (opts.keepStdout) {
+        if (stdout.length + chunk.length > 2 * 1024 * 1024) stdoutTooLong = true;
+        else stdout += chunk.toString("utf8");
+      } else keep(chunk);
+    });
     child.stderr.on("data", keep);
 
     let timedOut = false;
@@ -71,11 +79,12 @@ export function runPython(argv: string[], workDir: string): Promise<EngineRun> {
       timedOut = true;
       killTree(child.pid);
     }, TIMEOUT_MS);
-    const finish = (code: number, note = "") => {
+    const finish = (exitCode: number, note = "") => {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      resolve({ code, log: cleanLog(out + note, workDir) });
+      const tooLong = stdoutTooLong ? "\n[worker] output too long" : "";
+      resolve({ code: tooLong ? 1 : exitCode, log: cleanLog(out + note + tooLong, workDir), stdout });
     };
     child.on("error", (err: NodeJS.ErrnoException) => finish(1, `\n[worker] could not start the engine (${err.code ?? "error"})`));
     child.on("close", (code) => {
@@ -106,4 +115,9 @@ export function cleanLog(log: string, workDir: string) {
   let out = log.split(workDir).join("<job>");
   for (const [p, label] of HIDE) if (p.length > 1) out = out.split(p).join(label);
   return out.length > LOG_MAX ? `…${out.slice(-LOG_MAX)}` : out;
+}
+
+/** web/worker/yellow.py (list / apply / preview), which reuses the engine's own helpers. */
+export function yellowArgv(command: "list" | "apply" | "preview", ...paths: string[]): string[] {
+  return ["-I", path.join(__dirname, "yellow.py"), `--engine=${ENGINE_DIR}`, command, ...paths];
 }

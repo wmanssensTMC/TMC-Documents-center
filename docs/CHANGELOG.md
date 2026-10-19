@@ -1,5 +1,13 @@
 # Changelog
 
+## 19/10/2026 · Phase 2c: check screen (branch `phase-2-neutralise`)
+- Worker: for each yellow draft it lists the yellow parts (web/worker/yellow.py, reusing the engine's own yellow_runs walk) and makes a preview PDF stamped "DRAFT - NOT FOR USE" (view only, never a download).
+- Check screen (/documents/[id]/check): supplier original left, draft preview right; every yellow part with an edit box and "OK as is"; library details (product, dossier, batch) confirmed by the person. Finalise only when every part is confirmed; the worker writes the fixes in, removes yellow only there, and runs the engine's own --finalise (refuses while anything is yellow). Alternative: upload a checked Word file. Approve for drafts without yellow. Reject with a reason.
+- Final = one transaction: supersedes the previous Final of the same name, next version number, approver = the person who checked; neutralise job "done" when no draft is left to check.
+- Feedback table: every correction, confirmation, Word upload and rejection (for the overview in 2d).
+- Menu: "To check" (library filtered on drafts).
+
+
 ## 17/10/2026 · Phase 2b: worker (branch `phase-2-neutralise`)
 - Worker (`web/worker/`): Node program that runs the engine unchanged. Woken by the app (POST /wake with a secret), checks every 30 min as a safety net, one job at a time, 10-minute limit, crashed runs retried up to 3 times.
 - Engine called with an argument list (no shell), values as --option=value, safe local file names, no secrets in the engine's environment, log capped at 8 000 characters and stripped of server paths (review N2/N3).

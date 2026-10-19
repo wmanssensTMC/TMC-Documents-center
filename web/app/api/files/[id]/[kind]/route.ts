@@ -16,7 +16,7 @@ export async function GET(req: Request, ctx: RouteContext<"/api/files/[id]/[kind
 
   const db = await getDb();
   const doc = await getDocument(db, id);
-  const key = doc && { pdf: doc.pdfKey, docx: doc.docxKey, source: doc.sourceKey }[kind];
+  const key = doc && { pdf: doc.pdfKey, docx: doc.docxKey, source: doc.sourceKey, preview: doc.previewKey }[kind];
   if (!doc || !key) return new Response("Not found", { status: 404 });
 
   const storage = getStorage();
@@ -25,9 +25,12 @@ export async function GET(req: Request, ctx: RouteContext<"/api/files/[id]/[kind
   const file = type ? await storage.get(key) : null;
   if (!type || !file) return new Response("File missing", { status: 404 });
 
-  const inline = new URL(req.url).searchParams.get("inline") === "1" && type === "application/pdf";
+  // The DRAFT preview is for the check screen only: always shown, never a download.
+  const inline = kind === "preview" || (new URL(req.url).searchParams.get("inline") === "1" && type === "application/pdf");
   const filename =
-    kind === "source" ? (doc.sourceFilename ?? `source${EXTENSION[type]}`) : `${doc.name}${EXTENSION[type]}`;
+    kind === "source"
+      ? (doc.sourceFilename ?? `source${EXTENSION[type]}`)
+      : `${doc.name}${kind === "preview" ? "_DRAFT_PREVIEW" : ""}${EXTENSION[type]}`;
   await logAudit(db, user, inline ? "document.viewed" : "document.downloaded", doc.id, { file: kind });
 
   const headers = new Headers({

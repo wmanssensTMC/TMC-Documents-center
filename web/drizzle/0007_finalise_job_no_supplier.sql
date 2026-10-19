@@ -1,0 +1,1 @@
+ALTER TABLE "jobs" ALTER COLUMN "supplier_file" DROP NOT NULL;

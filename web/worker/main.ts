@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { getDb } from "../lib/db";
 import { claimNextJob, requeueStaleJobs } from "../lib/jobs/worker-state";
 import { getStorage } from "../lib/storage";
-import { processNeutraliseJob } from "./process";
+import { processFinaliseJob, processNeutraliseJob } from "./process";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const SECRET = process.env.WORKER_WAKE_SECRET ?? "";
@@ -32,8 +32,8 @@ async function drain() {
       await requeueStaleJobs(db);
       for (let job = await claimNextJob(db); job; job = await claimNextJob(db)) {
         console.log(`job ${job.id} started (${job.kind}, ${job.route})`);
-        // Finalise jobs arrive in step 2c.
         if (job.kind === "neutralise") await processNeutraliseJob(db, getStorage(), job);
+        else await processFinaliseJob(db, getStorage(), job);
         console.log(`job ${job.id} finished`);
       }
     } while (again);

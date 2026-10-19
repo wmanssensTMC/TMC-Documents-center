@@ -14,6 +14,10 @@ const ACTIONS: Record<string, string> = {
   "document.superseded": "Replaced by a newer version",
   "document.downloaded": "Downloaded",
   "document.viewed": "Viewed",
+  "document.drafted": "Draft made by the neutralizer",
+  "document.finalise_requested": "Sent for finalising",
+  "document.finalised": "Finalised",
+  "document.rejected": "Rejected",
 };
 
 function Field({ label, value }: { label: string; value?: string | null }) {
@@ -64,12 +68,20 @@ export default async function DocumentPage({ params, searchParams }: PageProps<"
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {doc.status === "To check" && (
+            <Link href={`/documents/${doc.id}/check`} className="rounded-md bg-tmc px-3 py-1.5 text-sm font-medium text-white hover:bg-tmc/90">
+              Check this draft
+            </Link>
+          )}
           {doc.pdfKey && <Download href={file("pdf")} label="Download PDF" />}
           {doc.docxKey && <Download href={file("docx")} label="Download Word" />}
           {doc.sourceKey && <Download href={file("source")} label="Supplier original" />}
         </div>
       </div>
       <Notice ok={sp.ok} error={sp.error} />
+      {doc.status === "Rejected" && doc.rejectedReason && (
+        <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-900 ring-1 ring-red-200">Rejected: {doc.rejectedReason}</p>
+      )}
       {doc.status === "Superseded" && (
         <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-amber-200">
           This is an old version. The current version is in the list below.

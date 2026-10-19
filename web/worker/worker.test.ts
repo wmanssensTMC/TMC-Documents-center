@@ -12,7 +12,8 @@ import { createJobs } from "../lib/jobs";
 import { claimNextJob, MAX_ATTEMPTS, requeueStaleJobs } from "../lib/jobs/worker-state";
 import { localStorage, type Storage } from "../lib/storage";
 import { cleanLog, engineArgv } from "./engine";
-import { processNeutraliseJob, safeName } from "./process";
+import { requestFinalise } from "../lib/documents/check";
+import { processFinaliseJob, processNeutraliseJob, safeName } from "./process";
 
 const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]);
 const willem: Actor = { email: "wilman@transmare.com", name: "Willem", role: "admin" };
@@ -71,7 +72,7 @@ describe("job queue", () => {
     ]);
     const first = await claimNextJob(db);
     const second = await claimNextJob(db);
-    expect([first?.supplierFile.filename, second?.supplierFile.filename]).toEqual(["a.pdf", "b.pdf"]);
+    expect([first?.supplierFile?.filename, second?.supplierFile?.filename]).toEqual(["a.pdf", "b.pdf"]);
     expect(first?.state).toBe("running");
     expect(first?.attempts).toBe(1);
     expect(await claimNextJob(db)).toBeNull();
@@ -94,7 +95,7 @@ describe("job queue", () => {
 // set ENGINE_PYTHON (GitHub checks do; a laptop without Python skips it).
 const python = process.env.ENGINE_PYTHON;
 describe.skipIf(!python)("neutralise with the real engine", () => {
-  function syntheticCoa(file: string) {
+  function syntheticCoa(file: string, dates = true) {
     // Same layout as engine/tests/test_v060_routes.py
     const script = `
 from reportlab.lib.pagesizes import A4
@@ -104,7 +105,7 @@ c = canvas.Canvas(sys.argv[1], pagesize=A4); W, H = A4
 c.setFont("Helvetica", 9); c.drawString(40, H - 40, "ACME Chemicals GmbH, Tel +49 30 1234567")
 c.setFont("Helvetica-Bold", 16); c.drawString(40, H - 80, "CERTIFICATE OF ANALYSIS")
 c.setFont("Helvetica", 10); y = H - 110
-for t in ["Product: Sodium Benzoate", "Batch No: SB-2026-114", "Manufacturing Date: 02/09/2026", "Expiry Date: 01/09/2029"]:
+for t in ["Product: Sodium Benzoate", "Batch No: SB-2026-114"] + (["Manufacturing Date: 02/09/2026", "Expiry Date: 01/09/2029"] if sys.argv[2] == "1" else []):
     c.drawString(40, y, t); y -= 14
 y -= 10
 for row in [("Test", "Specification", "Result", "Unit"), ("Appearance", "White powder", "Complies", "-"),
@@ -113,7 +114,7 @@ for row in [("Test", "Specification", "Result", "Unit"), ("Appearance", "White p
         c.drawString(x, y, v)
     y -= 14
 c.save()`;
-    execFileSync(python!, ["-c", script, file]);
+    execFileSync(python!, ["-c", script, file, dates ? "1" : "0"]);
   }
 
   it("turns a supplier COA into a TMC draft waiting for a person", async () => {
@@ -144,6 +145,46 @@ c.save()`;
     // Engine output is never Final by itself (Willem 17/10).
     expect(docs.some((x) => x.status === "Final")).toBe(false);
   }, 180_000);
+
+  it("yellow draft: parts listed, DRAFT preview, a person confirms, the worker finalises to Final", async () => {
+    const pdfPath = path.join(mkdtempSync(path.join(os.tmpdir(), "tmc-coa-")), "coa-no-dates.pdf");
+    syntheticCoa(pdfPath, false); // no dates on the source: the engine marks them yellow
+    await createJobs(db, storage, willem, [
+      {
+        route: "coa",
+        entity: "TMC",
+        productName: "Sodium Benzoate",
+        fileNr: "840.S0998",
+        supplierFile: await upload(new Uint8Array(readFileSync(pdfPath)), "coa-no-dates.pdf"),
+      },
+    ]);
+    await processNeutraliseJob(db, storage, (await claimNextJob(db))!);
+    const [job] = await db.select().from(jobs);
+    expect(job.state, job.log ?? "").toBe("to_check");
+    const [draft] = await db.select().from(documents);
+    expect(draft.pdfKey).toBeNull(); // yellow: no PDF until checked
+    expect(draft.yellowParts?.length, JSON.stringify(draft.yellowParts)).toBeGreaterThan(0);
+    expect(draft.previewKey).toBeTruthy();
+
+    const fixes = Object.fromEntries(draft.yellowParts!.map((p) => [p.id, { value: p.text }]));
+    await requestFinalise(db, storage, willem, draft.id, {
+      mode: "editor",
+      metadata: { productName: "Sodium Benzoate", fileNr: "840.S0998", batch: "SB-2026-114" },
+      fixes,
+    });
+    const finaliseJob = (await claimNextJob(db))!;
+    expect(finaliseJob.kind).toBe("finalise");
+    await processFinaliseJob(db, storage, finaliseJob);
+
+    const [fj] = await db.select().from(jobs).where(eq(jobs.id, finaliseJob.id));
+    expect(fj.state, fj.log ?? "").toBe("done");
+    const [final] = await db.select().from(documents);
+    expect(final).toMatchObject({ status: "Final", version: 1, approvedBy: willem.email, batch: "SB-2026-114" });
+    expect(final.pdfKey).toBeTruthy();
+    const head = await storage.head(final.pdfKey!, 5);
+    expect(Buffer.from(head!.bytes).toString()).toBe("%PDF-");
+    expect((await db.select().from(jobs).where(eq(jobs.id, job.id)))[0].state).toBe("done");
+  }, 300_000);
 
   it("a document the engine does not recognise fails the job and stores nothing", async () => {
     const pdfPath = path.join(mkdtempSync(path.join(os.tmpdir(), "tmc-x-")), "letter.pdf");

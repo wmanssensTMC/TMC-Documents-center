@@ -40,6 +40,8 @@ jobs:
           exit $status
       - name: File names match the web library (shared cases)
         run: python tests/test_naming_parity.py
+      - name: Yellow-part helper of the check screen (web/worker/yellow.py)
+        run: python ../web/worker/test_yellow.py
       - name: Provenance gate blocks invented SDS values (skips without sample)
         run: python tests/test_sds_rejects_invented_values.py
       - name: Scan and batch tests (skips without samples)
