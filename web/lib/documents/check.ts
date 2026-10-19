@@ -16,6 +16,8 @@ import { fileStem, plainName } from "../naming";
 import type { Storage } from "../storage";
 
 export class CheckError extends Error {}
+/** The new name lands on the Final of another document: the person must confirm (review M1). */
+export class ReplaceConfirmError extends CheckError {}
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -96,11 +98,13 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
       mode: z.enum(["editor", "upload"]),
       fixes: fixesInput.optional(),
       docx: z.object({ key: z.string().max(200), filename: z.string().max(300) }).optional(),
+      confirmReplace: z.boolean().optional(),
     })
     .safeParse(raw);
   if (!r.success) throw new CheckError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
   const input = { ...r.data, metadata: lockBatch(doc, r.data.metadata) };
-  finalName(doc, input.metadata);
+  const confirmReplace = input.confirmReplace === true;
+  await guardReplace(db, doc, finalName(doc, input.metadata), confirmReplace);
   const parts = doc.yellowParts ?? [];
 
   let payload: FinalisePayload;
@@ -136,7 +140,21 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
     notes.push({ actor: actor.email, documentId: doc.id, kind: "word_upload", after: filename });
     payload = { mode: "upload", docx: { key: ref.key, filename }, metadata: input.metadata };
   }
-  await queueFinalise(db, actor, doc, payload, notes);
+  await queueFinalise(db, actor, doc, { ...payload, confirmReplace }, notes);
+}
+
+/** A name that lands on another document's Final replaces it: only with the person's ok (review M1). */
+async function guardReplace(db: Db | Tx, doc: Document, name: string, confirmed: boolean) {
+  if (name === doc.name || confirmed) return;
+  const [other] = await db
+    .select({ version: documents.version })
+    .from(documents)
+    .where(and(eq(documents.name, name), eq(documents.status, "Final")));
+  if (other) {
+    throw new ReplaceConfirmError(
+      `with these details the file name becomes ${name}, which replaces Final version ${other.version} of another document. Tick "Replace it" only if that is intended`,
+    );
+  }
 }
 
 async function queueFinalise(db: Db, actor: Actor, doc: Document, payload: FinalisePayload, notes: (typeof feedback.$inferInsert)[]) {
@@ -168,6 +186,7 @@ export async function makeFinal(
   doc: Document,
   files: { pdfKey: string; pdfFilename: string; docxKey: string; docxFilename: string },
   metadata: DocMetadata,
+  confirmReplace = false,
 ) {
   const name = finalName(doc, metadata);
   const [current] = await tx
@@ -179,6 +198,10 @@ export async function makeFinal(
     .select({ last: sql<number | null>`max(${documents.version})` })
     .from(documents)
     .where(eq(documents.name, name));
+  // checked again here: another Final may have appeared since the request (review M1)
+  if (current && name !== doc.name && !confirmReplace) {
+    throw new ReplaceConfirmError(`the file name ${name} now replaces Final version ${current.version} of another document; confirm it on the check screen`);
+  }
   if (current) {
     await tx.update(documents).set({ status: "Superseded" }).where(eq(documents.id, current.id));
     await logAudit(tx, actor, "document.superseded", current.id, { name, version: current.version });
@@ -206,7 +229,7 @@ export async function makeFinal(
   if (!updated.length) throw new CheckError("the document changed while finalising");
   await logAudit(tx, actor, "document.finalised", doc.id, {
     name,
-    ...(name !== doc.name ? { renamedFrom: doc.name } : {}),
+    ...(name !== doc.name ? { renamedFrom: doc.name, replacedOtherDocument: !!current } : {}),
     version,
     superseded: current?.version ?? null,
   });
@@ -228,7 +251,7 @@ async function closeNeutraliseJobIfDone(tx: Tx, jobId: string | null) {
  * A draft the engine left without any yellow: a person still approves it (Willem 17/10). It goes
  * through the worker too, which checks the details are printed in the document (Willem 19/10).
  */
-export async function approveDraft(db: Db, actor: Actor, documentId: string, rawMetadata: unknown) {
+export async function approveDraft(db: Db, actor: Actor, documentId: string, rawMetadata: unknown, confirmReplace = false) {
   const m = metadataInput.safeParse(rawMetadata);
   if (!m.success) throw new CheckError(m.error.issues.map((i) => i.message).join("; "));
   const doc = await loadDraft(db, documentId);
@@ -236,8 +259,8 @@ export async function approveDraft(db: Db, actor: Actor, documentId: string, raw
   if ((doc.yellowParts ?? []).length) throw new CheckError("this draft has yellow parts: check them first");
   if (!doc.pdfKey || !doc.pdfFilename || !doc.docxKey || !doc.docxFilename) throw new CheckError("this draft has no PDF yet");
   const metadata = lockBatch(doc, m.data);
-  finalName(doc, metadata);
-  await queueFinalise(db, actor, doc, { mode: "approve", metadata }, []);
+  await guardReplace(db, doc, finalName(doc, metadata), confirmReplace);
+  await queueFinalise(db, actor, doc, { mode: "approve", metadata, confirmReplace }, []);
 }
 
 export async function rejectDraft(db: Db, actor: Actor, documentId: string, rawReason: unknown) {

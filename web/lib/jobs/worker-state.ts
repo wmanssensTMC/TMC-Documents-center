@@ -131,6 +131,6 @@ export async function saveFinal(
     const [doc] = await tx.select().from(documents).where(eq(documents.id, documentId));
     if (!doc) throw new CheckError("document not found");
     // The person who confirmed the yellow parts is the approver (anyone may, Willem 17/10).
-    await makeFinal(tx, { email: job.createdBy }, doc, files, metadata);
+    await makeFinal(tx, { email: job.createdBy }, doc, files, metadata, job.payload?.confirmReplace === true);
   });
 }

@@ -45,17 +45,22 @@ def sds(pdf, picto_a, picto_b, logo):
     y = lambda top, h=0: H - top - h            # noqa: E731  pdfplumber top -> reportlab y
     c.drawImage(str(logo), 450, y(15, 40), 100, 40)                       # header band
     c.setFont("Helvetica-Bold", 16); c.drawString(40, y(60), "SODIUM BENZOATE")
-    c.setFont("Helvetica-Bold", 11); c.drawString(40, y(150), "SECTION 2: Hazards identification")
-    c.setFont("Helvetica", 8)
-
     def kv(top, label, value):
+        c.setFont("Helvetica", 8)
         c.drawString(40, y(top), label); c.drawString(210, y(top), ":"); c.drawString(220, y(top), value)
-    kv(180, "Signal word", "Warning")
-    c.drawImage(str(picto_a), 220, y(200, PICTO_PT), PICTO_PT, PICTO_PT)
-    c.drawImage(str(picto_b), 280, y(200, PICTO_PT), PICTO_PT, PICTO_PT)
-    kv(215, "Hazard pictograms", "")
-    kv(270, "Hazard statements", "H319 Causes serious eye irritation.")
-    c.setFont("Helvetica-Bold", 11); c.drawString(40, y(320), "SECTION 3: Composition")
+
+    # section 1.3 is where the engine finds the supplier identity it replaces
+    c.setFont("Helvetica-Bold", 11); c.drawString(40, y(110), "SECTION 1: Identification")
+    c.setFont("Helvetica-Bold", 9); c.drawString(40, y(128), "1.3. Details of the supplier of the safety data sheet")
+    kv(142, "Company", "ACME Chemicals GmbH")
+    kv(154, "E-mail", "sds@acme-chem.de")
+    c.setFont("Helvetica-Bold", 11); c.drawString(40, y(180), "SECTION 2: Hazards identification")
+    kv(205, "Signal word", "Warning")
+    c.drawImage(str(picto_a), 220, y(222, PICTO_PT), PICTO_PT, PICTO_PT)
+    c.drawImage(str(picto_b), 280, y(222, PICTO_PT), PICTO_PT, PICTO_PT)
+    kv(238, "Hazard pictograms", "")
+    kv(290, "Hazard statements", "H319 Causes serious eye irritation.")
+    c.setFont("Helvetica-Bold", 11); c.drawString(40, y(330), "SECTION 3: Composition")
     c.save()
 
 
@@ -96,6 +101,7 @@ with tempfile.TemporaryDirectory() as d:
     widths = [int(x) for x in re.findall(r'<wp:extent cx="(\d+)"', body)]
     want = round(PICTO_PT / 72 * 2.54 * 360000)  # EMU
     check("the printed size is kept (never scaled)", widths and all(abs(w - want) < 2000 for w in widths), (widths, want))
+    check("the supplier is gone from the output", "acme" not in body.lower(), body[:500])
 
 print(f"\n{ok} passed, {bad} failed")
 sys.exit(1 if bad else 0)

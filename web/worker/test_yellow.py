@@ -147,6 +147,12 @@ with tempfile.TemporaryDirectory() as d:
     (d / "notshown.json").write_text(json.dumps([["product name", "Benzoate Pure"]]))
     rc, _, err = run("check", d / "shown.docx", d / "forbid.json", d / "notshown.json")
     check("check: refused when the file name has a value the document does not print", rc == 1 and "not printed" in err, err)
+    (d / "part.json").write_text(json.dumps([["product name", "Sodium Benzo"]]))
+    rc, _, err = run("check", d / "shown.docx", d / "forbid.json", d / "part.json")
+    check("check: part of a printed word does not count (review M2)", rc == 1 and "not printed" in err, err)
+    (d / "cyr.json").write_text(json.dumps([["product name", "Ацетон"]]))
+    rc, _, err = run("check", d / "shown.docx", d / "forbid.json", d / "cyr.json")
+    check("check: a value in non-Latin letters cannot slip through unchecked (review M2)", rc == 1 and "cannot be checked" in err, err)
 
     patched("all.docx", "tracked.docx", "word/document.xml", b"</w:body>",
             b'<w:p><w:del w:id="9" w:author="x"><w:r><w:delText>Acme Chemicals GmbH</w:delText></w:r></w:del></w:p></w:body>')

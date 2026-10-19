@@ -151,9 +151,22 @@ def cmd_check(docx, forbid_path, engine_scripts, shown_path=None):
 
     for label, value in json.loads(Path(shown_path).read_text(encoding="utf-8")) if shown_path else []:
         n = norm(value)
-        if n and f" {n} " not in f" {haystack} " and n.replace(" ", "") not in compact:
+        # norm() keeps Latin letters and digits only: a value with other letters, or too
+        # short to mean anything, cannot be checked and is refused (review M2)
+        if not latin_only(value) or len(n.replace(" ", "")) < 2:
+            sys.exit(f"refused: the {label} '{value}' cannot be checked against the document; "
+                     "use Latin letters and digits")
+        # whole words only: "Acetone" must not match inside another name
+        if f" {n} " not in f" {haystack} ":
             sys.exit(f"refused: the {label} '{value}' is not printed in the document; "
                      "the file name must match the document, so change one of them")
+
+
+def latin_only(value):
+    """True when every letter or digit is plain Latin once accents are taken off."""
+    import unicodedata
+    t = unicodedata.normalize("NFKD", value)
+    return all(ord(ch) < 128 or unicodedata.combining(ch) or not ch.isalnum() for ch in t)
 
 
 def cmd_preview(docx, out, engine_scripts):

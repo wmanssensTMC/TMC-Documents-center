@@ -26,7 +26,15 @@ type Props = {
 export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial, naming }: Props) {
   const router = useRouter();
   const ready = useSyncExternalStore(noSubscribe, () => true, () => false);
-  const [meta, setMeta] = useState(initial);
+  const [meta, setMetaState] = useState(initial);
+  // The new name lands on another document's Final: shown once the server says so (review M1).
+  const [askReplace, setAskReplace] = useState(false);
+  const [replace, setReplace] = useState(false);
+  const setMeta = (m: typeof initial) => {
+    setMetaState(m);
+    setAskReplace(false);
+    setReplace(false);
+  };
   const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(parts.map((p) => [p.id, p.text])));
   const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
   const [reason, setReason] = useState("");
@@ -44,6 +52,7 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
     try {
       const r = await fn();
       setMessage(r.ok ? { ok: true, text: r.message } : { ok: false, text: r.error });
+      if (!r.ok && r.confirmReplace) setAskReplace(true);
       if (r.ok) router.refresh();
     } catch {
       setMessage({ ok: false, text: "That did not work. Try again." });
@@ -83,6 +92,12 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
           File name: <span className="break-all font-mono">{name}</span>. Each value in it must be printed in the document; change the
           document and these details together.
         </p>
+        {askReplace && (
+          <label className="flex items-center gap-2 rounded-md bg-amber-50 p-2 text-sm text-amber-900 ring-1 ring-amber-300 sm:col-span-3">
+            <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} />
+            Replace it: this document becomes the new Final under {name}
+          </label>
+        )}
       </section>
 
       {parts.length > 0 && (
@@ -135,6 +150,7 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
                 finaliseDraft(documentId, {
                   mode: "editor",
                   metadata,
+                  confirmReplace: replace,
                   fixes: Object.fromEntries(
                     parts.filter((p) => confirmed[p.id]).map((p) => [p.id, { value: values[p.id] ?? "", confirmed: true as const }]),
                   ),
@@ -155,7 +171,7 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
           <button
             type="button"
             disabled={disabled || !meta.productName.trim()}
-            onClick={() => act(() => approve(documentId, metadata))}
+            onClick={() => act(() => approve(documentId, metadata, replace))}
             className="mt-3 rounded-md bg-tmc px-4 py-2 font-medium text-white hover:bg-tmc/90 disabled:opacity-50"
           >
             Approve as Final
@@ -184,7 +200,7 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
               if (!word) return { ok: false, error: "Choose the checked Word file." };
               if (word.size > MAX_FILE_BYTES) return { ok: false, error: "The file is larger than 25 MB." };
               const key = await sendFile(uploadMode, "docx", word);
-              return finaliseDraft(documentId, { mode: "upload", metadata, docx: { key, filename: word.name } });
+              return finaliseDraft(documentId, { mode: "upload", metadata, confirmReplace: replace, docx: { key, filename: word.name } });
             })
           }
           className="mt-3 rounded-md border border-tmc px-4 py-2 text-sm font-medium text-tmc hover:bg-tmc-light disabled:opacity-50"

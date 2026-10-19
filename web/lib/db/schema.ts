@@ -49,7 +49,11 @@ export type JobFile = { key: string; filename: string };
 export type YellowPart = { id: string; text: string; context: string; truncated?: boolean };
 export type DocMetadata = { productName: string; fileNr: string | null; batch: string | null };
 /** finalise jobs: either the on-screen fixes, or a checked Word file the person uploaded. */
-export type FinalisePayload = { metadata: DocMetadata } & (
+export type FinalisePayload = {
+  metadata: DocMetadata;
+  /** The person confirmed that the new name replaces the Final of another document (review M1). */
+  confirmReplace?: boolean;
+} & (
   | { mode: "editor"; fixes: Record<string, { value: string; confirmed: true }> }
   | { mode: "upload"; docx: JobFile }
   // a draft without yellow: the worker checks name and content agree, then it is Final

@@ -5,7 +5,7 @@ import { createPgliteDb, type Db } from "../db";
 import { documents, feedback, jobs } from "../db/schema";
 import { newUploadKey } from "../files";
 import type { Storage } from "../storage";
-import { approveDraft, CheckError, finalName, makeFinal, rejectDraft, requestFinalise, shownValues } from "./check";
+import { approveDraft, CheckError, finalName, makeFinal, rejectDraft, ReplaceConfirmError, requestFinalise, shownValues } from "./check";
 
 const kars: Actor = { email: "kars@transmare.com", name: "Kars", role: "user" };
 const DOCX = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]);
@@ -190,6 +190,19 @@ describe("file name follows the details (Willem 19/10)", () => {
       ["batch", "SB-1"],
     ]);
     expect(shownValues({ type: "MSDS", entity: "TMC" }, { ...meta, fileNr: null })).toEqual([["product name", "Sodium Benzoate"]]);
+  });
+
+  it("a new name that lands on another document's Final needs the person's explicit ok (review M1)", async () => {
+    await draft({ status: "Final", version: 1, productName: "Sodium Benzoate", yellowParts: [], pdfKey: newUploadKey("pdf"), pdfFilename: "a.pdf" });
+    const d = await draft({ yellowParts: [], name: "TMC_COA_840.S0999_Old_Name_SB-1", pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf" });
+    await expect(approveDraft(db, kars, d.id, meta)).rejects.toThrow(ReplaceConfirmError);
+    expect(await db.select().from(jobs)).toHaveLength(0);
+    await approveDraft(db, kars, d.id, meta, true);
+    expect((await db.select().from(jobs))[0].payload).toMatchObject({ mode: "approve", confirmReplace: true });
+    // checked again when it becomes Final: without the ok, nothing is replaced
+    const files = { pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf", docxKey: newUploadKey("docx"), docxFilename: "x.docx" };
+    await expect(db.transaction(async (tx) => makeFinal(tx, kars, d, files, meta))).rejects.toThrow(ReplaceConfirmError);
+    expect(await db.transaction(async (tx) => makeFinal(tx, kars, d, files, meta, true))).toEqual({ version: 2, supersededVersion: 1 });
   });
 
   it("the batch the document was made for cannot be changed", async () => {

@@ -25,8 +25,16 @@ const SAFE_TEXT = /^[^\u0000-\u001f\u007f\u2028\u2029\p{Cf}]{0,100}$/u;
 async function engineBatch(outDir: string, stem: string): Promise<string | null> {
   const raw = await readFile(path.join(outDir, `${stem}.meta.json`), "utf8").catch(() => null);
   if (!raw) return null;
-  const batch = (JSON.parse(raw) as { batch?: unknown }).batch;
-  return typeof batch === "string" && batch.trim() && SAFE_TEXT.test(batch.trim()) ? batch.trim() : null;
+  let batch: unknown;
+  try {
+    batch = (JSON.parse(raw) as { batch?: unknown }).batch;
+  } catch {
+    throw new Error("the engine wrote unreadable batch details");
+  }
+  if (batch === "") return null; // the engine found no batch: it is marked yellow in the document
+  // anything else odd stops the job: the batch lock must never fall away silently (review L3)
+  if (typeof batch !== "string" || !batch.trim() || !SAFE_TEXT.test(batch.trim())) throw new Error("the engine wrote an unusable batch");
+  return batch.trim();
 }
 
 /** A safe local file name from the user's file name (never used as-is: review N2). */
@@ -191,8 +199,16 @@ export async function processFinaliseJob(db: Db, storage: Storage, job: Job) {
       if (applied.code !== 0) return failJob(db, job, applied.code, `[worker] the corrections could not be written in\n${applied.log}`);
     } else if (payload.mode === "approve") {
       if (!doc.docxKey || !doc.pdfKey) return failJob(db, job, null, "[worker] the draft has no Word file or PDF");
+      if ((doc.yellowParts ?? []).length) return failJob(db, job, null, `[worker] the draft has yellow parts
+${stays}`);
       approved = { pdfKey: doc.pdfKey, docxKey: doc.docxKey };
       await download(storage, doc.docxKey, finalDocx);
+      // Hard rule 2, checked again on the file itself: nothing yellow becomes Final (review L1)
+      const listed = await runPython(yellowArgv("list", finalDocx), dir, { keepStdout: true });
+      if (listed.code !== 0 || parseYellowParts(listed.stdout).length) {
+        return failJob(db, job, listed.code, `[worker] the Word file still has yellow parts
+${stays}`);
+      }
     } else {
       await download(storage, payload.docx.key, finalDocx);
     }

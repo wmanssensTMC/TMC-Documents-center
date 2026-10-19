@@ -735,8 +735,8 @@ def column_batches(data, path):
 
     -> (batches, held_back, notes, readings). held_back: lots no document is made for
     (conflicting analysis results, or only one scan reading found the lot); a person
-    checks them against the original. readings: the texts read from the source, for
-    the provenance gate."""
+    checks them against the original. readings: per lot, the texts read from that lot's
+    own column, for the provenance gate (a lot never borrows another lot's readings)."""
     found = _column_reading(path)
     if not found:
         return None
@@ -750,15 +750,16 @@ def column_batches(data, path):
     notes = list(notes) + [(w, m) for w, m in issues if w == "ocr"]
 
     base = parse_coa_fields(data)
-    batches, readings = [], []
+    batches, readings = [], {}
     for lot, fields in per_lot.items():
         f = dict(base)
-        f.update(batch_lot=lot, manufacture_date=None, expiry_date=None)
+        f.update(batch_lot=lot, manufacture_date=None, expiry_date=None, _lot=lot)
+        lot_readings = readings.setdefault(lot, [])
         lot_doubts = [(label, unit, reading) for _p, l, label, unit, reading in doubts if l == lot and label]
         unverified = {_param_key(label) for label, _u, reading in lot_doubts if reading is not None}
         rows, yellow = [], set()
         for key, (value, unit, label) in fields.items():
-            readings += [label, value, unit]
+            lot_readings += [label, value, unit]
             if key not in unverified:
                 if _DATE_MADE.search(label) and not f["manufacture_date"]:
                     f["manufacture_date"] = value
@@ -773,13 +774,13 @@ def column_batches(data, path):
         for label, unit, reading in lot_doubts:
             if reading is None and _param_key(label) not in shown:
                 shown.add(_param_key(label))
-                readings += [label, unit]
+                lot_readings += [label, unit]
                 yellow.add(len(rows))
                 rows.append([label, "", DOUBT, unit, ""])
         f["results_table"] = rows
         f["_yellow_results"] = yellow
         batches.append(f)
-    return batches, held, notes, [r for r in readings if r]
+    return batches, held, notes, {lot: [r for r in rs if r] for lot, rs in readings.items()}
 
 # ---------------------------------------------------------------------------
 # Never invent an identity.
@@ -1041,7 +1042,7 @@ def main():
     jobs      = []
     refused   = []          # whole input refused: nothing of it is written
     held_back = []          # one batch held back for a person; the other batches go on
-    readings  = {}          # source path -> texts the column reading took from the source
+    readings  = {}          # (source path, lot) -> texts read from that lot's own column
     import coa_batches as CB
     import pdfplumber
     for fpath in coa_paths:
@@ -1061,7 +1062,9 @@ def main():
         held  = []
         found = column_batches(data, fpath)
         if found:
-            batch_list, held, notes, readings[fpath] = found
+            batch_list, held, notes, lot_readings = found
+            for lot, texts in lot_readings.items():
+                readings[(fpath, lot)] = texts
             print(f"  i  {name}: {len(batch_list) + len(held)} batch(es) side by side")
             for what, why in notes:
                 print(f"  i  {name} {what}: {why}")
@@ -1133,7 +1136,7 @@ def main():
         src_texts = [src.get("full_text", "")] + [p.get("text", "") for p in src.get("pages", [])]
         src_texts += [" ".join(c for c in row if c) for row in rows]
         src_texts += [c.replace("\n", " ") for row in rows for c in row if c]
-        src_texts += readings.get(coa_fields.get("_source"), [])
+        src_texts += readings.get((coa_fields.get("_source"), coa_fields.get("_lot")), [])
         src_texts += [close_hyphens(t) for t in src_texts]
         allowed = [product_name or "", best_ref.get("doc_ref") or "", coa_fields.get("batch_lot") or "",
                    "Production date", "[not on the source - check]", NO_PRODUCT, DOUBT]
