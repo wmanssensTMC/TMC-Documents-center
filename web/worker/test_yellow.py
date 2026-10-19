@@ -51,7 +51,7 @@ with tempfile.TemporaryDirectory() as d:
     (d / "some.json").write_text(json.dumps({"y0": {"value": "Sodium Benzoate"}, "y1": {"value": "01/09/2029"}}))
     rc, out, err = run("apply", d / "d.docx", d / "some.json", d / "some.docx")
     left = yellow_runs(d / "some.docx")
-    # yellow_runs (the engine) lists a merged cell once per grid column, so compare unique texts
+    # unique texts: older engine versions listed a merged cell once per grid column
     check("only confirmed parts lose their yellow; the rest stays", rc == 0 and sorted(set(left)) == ["footer sentence kept"], err + str(left))
     text = "\n".join(p.text for p in Document(str(d / "some.docx")).paragraphs)
     check("corrections are written in", "Product: Sodium Benzoate" in text, text)

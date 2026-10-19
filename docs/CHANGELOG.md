@@ -1,5 +1,10 @@
 # Changelog
 
+## 19/10/2026 · Engine: yellow check reads the whole document (Willem: review L2)
+- `engine/scripts/tmc_common.py`: new `iter_highlighted()` finds yellow marks in body text, tables, tables inside tables, text boxes, and the headers and footers of every section (first page, even pages). A text box is stored twice by Word; only the shown version counts. `yellow_runs()` (used by --finalise) and the check screen's helper both use it, so they can never disagree.
+- Test: `engine/tests/test_yellow_coverage.py` (a mark left only in a header still blocks Final).
+
+
 ## 19/10/2026 · Phase 2d: feedback overview (branch `phase-2-neutralise`)
 - Settings > Feedback (admin only): numbers per period (drafts made, Final via neutralizer = KPI K8, rejected, failed runs, corrected vs confirmed yellow parts), most frequent corrections (same misreading grouped), all corrections (engine read -> person made it), rejected drafts with reason, failed runs with log.
 - CSV download for Excel (UTF-8, semicolons; cells starting with = + - @ neutralised against formula injection). Export is logged in the audit trail.

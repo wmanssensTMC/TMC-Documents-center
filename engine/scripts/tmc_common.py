@@ -129,22 +129,42 @@ def mark_yellow(run):
     run.font.highlight_color = WD_COLOR_INDEX.YELLOW
 
 
-def yellow_runs(docx_path):
-    """Every highlighted run that is still in the document."""
-    from docx import Document
-    doc = Document(str(docx_path))
-    left = []
-    def scan(paragraphs):
-        for p in paragraphs:
+def iter_highlighted(doc):
+    """Every highlighted run in the whole document, in reading order, each once:
+    body text, tables, tables inside tables, text boxes, and the headers and footers of
+    every section (first page, even pages). Yields (run, paragraph).
+
+    Extended 19/10/2026 (Willem): before, only body paragraphs and top-level table cells
+    were read, so a yellow mark in a header, footer, nested table or text box could pass
+    --finalise. A text box is stored twice (DrawingML + a VML fallback): only the version
+    Word shows is read, the fallback copy is skipped."""
+    from docx.text.paragraph import Paragraph
+
+    containers = [(doc.element.body, doc)]
+    seen_parts = set()
+    for s in doc.sections:
+        for hf in (s.header, s.footer, s.first_page_header, s.first_page_footer,
+                   s.even_page_header, s.even_page_footer):
+            if hf.is_linked_to_previous:
+                continue
+            el = hf._element
+            if id(el) in seen_parts:
+                continue
+            seen_parts.add(id(el))
+            containers.append((el, hf))
+
+    for element, parent in containers:
+        for p_el in element.xpath('.//w:p[not(ancestor::*[local-name()="Fallback"])]'):
+            p = Paragraph(p_el, parent)
             for r in p.runs:
                 if r.font.highlight_color not in (None, WD_COLOR_INDEX.AUTO) and r.text.strip():
-                    left.append(r.text)
-    scan(doc.paragraphs)
-    for t in doc.tables:
-        for row in t.rows:
-            for c in row.cells:
-                scan(c.paragraphs)
-    return left
+                    yield r, p
+
+
+def yellow_runs(docx_path):
+    """Every highlighted run that is still in the document (see iter_highlighted)."""
+    from docx import Document
+    return [r.text for r, _p in iter_highlighted(Document(str(docx_path)))]
 
 
 def black(run):

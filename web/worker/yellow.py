@@ -15,28 +15,11 @@ from pathlib import Path
 
 
 def runs_in_order(doc):
-    """Highlighted runs in the order yellow_runs() reads them, each run once
-    (a merged table cell appears several times in python-docx)."""
-    from docx.enum.text import WD_COLOR_INDEX
-    seen = set()
-    out = []
-
-    def scan(paragraphs):
-        for p in paragraphs:
-            for r in p.runs:
-                if r.font.highlight_color in (None, WD_COLOR_INDEX.AUTO) or not r.text.strip():
-                    continue
-                if id(r._r) in seen:
-                    continue
-                seen.add(id(r._r))
-                out.append((r, p))
-
-    scan(doc.paragraphs)
-    for t in doc.tables:
-        for row in t.rows:
-            for c in row.cells:
-                scan(c.paragraphs)
-    return out
+    """Highlighted runs exactly as the engine reads them (tmc_common.iter_highlighted):
+    body, tables, nested tables, text boxes, headers and footers. One walk for both the
+    check screen and the engine's --finalise, so they can never disagree."""
+    from tmc_common import iter_highlighted
+    return list(iter_highlighted(doc))
 
 
 def cmd_list(docx):
