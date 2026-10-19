@@ -18,12 +18,14 @@ export class CheckError extends Error {}
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
-const clean = (max: number) =>
-  z
-    .string()
-    .trim()
-    .max(max)
-    .refine((s) => !/[\u0000-\u001f\u007f]/.test(s), "contains control characters");
+// Control characters, invisible format characters (bidi overrides, zero-width) and line
+// separators are refused (review I1).
+const SAFE = (s: string) => !/[\u0000-\u001f\u007f\u2028\u2029\p{Cf}]/u.test(s);
+
+const clean = (max: number) => z.string().trim().max(max).refine(SAFE, "contains control characters");
+
+/** Yellow-part values are kept exactly as typed: no trimming, so "OK as is" changes nothing (review M1). */
+const exact = (max: number) => z.string().max(max).refine(SAFE, "contains control characters");
 
 export const metadataInput = z.object({
   productName: clean(200).min(1, "product name is required"),
@@ -31,10 +33,16 @@ export const metadataInput = z.object({
   batch: clean(100).transform((s) => s || null),
 });
 
-const fixesInput = z.record(z.string().regex(/^y\d{1,4}$/), z.object({ value: clean(500) }));
+// Every part carries the person's own confirmation (review L1).
+const fixesInput = z.record(
+  z.string().regex(/^y\d{1,4}$/),
+  z.object({ value: exact(500), confirmed: z.literal(true, { error: "confirm every yellow part" }) }),
+);
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function loadDraft(db: Db | Tx, id: string): Promise<Document> {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new CheckError("document not found");
+  if (!UUID.test(id)) throw new CheckError("document not found");
   const [doc] = await db.select().from(documents).where(eq(documents.id, id));
   if (!doc) throw new CheckError("document not found");
   if (doc.status !== "To check") throw new CheckError(`this document is ${doc.status}, not waiting for a check`);
@@ -73,6 +81,7 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
     if (missing.length) throw new CheckError(`confirm every yellow part first (${missing.length} left)`);
     const unknown = Object.keys(fixes).filter((id) => !parts.some((p) => p.id === id));
     if (unknown.length) throw new CheckError("unknown yellow part");
+    if (parts.some((p) => p.truncated)) throw new CheckError("a yellow part is too long for the on-screen check: check it in Word");
     if (!doc.docxKey) throw new CheckError("the draft has no Word file");
     for (const p of parts) {
       const after = fixes[p.id].value;
@@ -98,14 +107,20 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
     payload = { mode: "upload", docx: { key: ref.key, filename }, metadata: input.metadata };
   }
 
-  await db.transaction(async (tx) => {
-    const [job] = await tx
-      .insert(jobs)
-      .values({ kind: "finalise", documentId: doc.id, entity: doc.entity, payload, createdBy: actor.email })
-      .returning({ id: jobs.id });
-    if (notes.length) await tx.insert(feedback).values(notes);
-    await logAudit(tx, actor, "document.finalise_requested", doc.id, { job: job.id, mode: payload.mode });
-  });
+  try {
+    await db.transaction(async (tx) => {
+      const [job] = await tx
+        .insert(jobs)
+        .values({ kind: "finalise", documentId: doc.id, entity: doc.entity, payload, createdBy: actor.email })
+        .returning({ id: jobs.id });
+      if (notes.length) await tx.insert(feedback).values(notes);
+      await logAudit(tx, actor, "document.finalise_requested", doc.id, { job: job.id, mode: payload.mode });
+    });
+  } catch (err) {
+    // jobs_one_open_finalise: someone else just sent it (review L3)
+    if (isUniqueViolation(err)) throw new CheckError("this document is already being finalised");
+    throw err;
+  }
   await wakeWorker();
 }
 
@@ -149,6 +164,7 @@ export async function makeFinal(
       approvedBy: actor.email,
       approvedAt: now,
       yellowParts: [],
+      previewKey: null, // the DRAFT preview is no longer shown (review L6)
     })
     .where(and(eq(documents.id, doc.id), eq(documents.status, "To check")))
     .returning({ id: documents.id });
@@ -172,6 +188,8 @@ async function closeNeutraliseJobIfDone(tx: Tx, jobId: string | null) {
 export async function approveDraft(db: Db, actor: Actor, documentId: string, rawMetadata: unknown) {
   const m = metadataInput.safeParse(rawMetadata);
   if (!m.success) throw new CheckError(m.error.issues.map((i) => i.message).join("; "));
+  if (!UUID.test(documentId)) throw new CheckError("document not found");
+  if (await openFinaliseJob(db, documentId)) throw new CheckError("this document is being finalised");
   return db.transaction(async (tx) => {
     const doc = await loadDraft(tx, documentId);
     if ((doc.yellowParts ?? []).length) throw new CheckError("this draft has yellow parts: check them first");
@@ -189,12 +207,18 @@ export async function approveDraft(db: Db, actor: Actor, documentId: string, raw
 export async function rejectDraft(db: Db, actor: Actor, documentId: string, rawReason: unknown) {
   const reason = clean(500).min(3, "give a short reason").safeParse(rawReason);
   if (!reason.success) throw new CheckError(reason.error.issues.map((i) => i.message).join("; "));
+  if (!UUID.test(documentId)) throw new CheckError("document not found");
   if (await openFinaliseJob(db, documentId)) throw new CheckError("this document is being finalised");
   await db.transaction(async (tx) => {
     const doc = await loadDraft(tx, documentId);
-    await tx.update(documents).set({ status: "Rejected", rejectedReason: reason.data }).where(eq(documents.id, doc.id));
+    await tx.update(documents).set({ status: "Rejected", rejectedReason: reason.data, previewKey: null }).where(eq(documents.id, doc.id));
     await tx.insert(feedback).values({ actor: actor.email, documentId: doc.id, kind: "rejected", reason: reason.data });
     await logAudit(tx, actor, "document.rejected", doc.id, { reason: reason.data });
     await closeNeutraliseJobIfDone(tx, doc.jobId);
   });
+}
+
+function isUniqueViolation(err: unknown) {
+  const e = err as { code?: string; cause?: { code?: string } };
+  return e?.code === "23505" || e?.cause?.code === "23505";
 }

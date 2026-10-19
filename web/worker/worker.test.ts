@@ -166,7 +166,7 @@ c.save()`;
     expect(draft.yellowParts?.length, JSON.stringify(draft.yellowParts)).toBeGreaterThan(0);
     expect(draft.previewKey).toBeTruthy();
 
-    const fixes = Object.fromEntries(draft.yellowParts!.map((p) => [p.id, { value: p.text }]));
+    const fixes = Object.fromEntries(draft.yellowParts!.map((p) => [p.id, { value: p.text, confirmed: true }]));
     await requestFinalise(db, storage, willem, draft.id, {
       mode: "editor",
       metadata: { productName: "Sodium Benzoate", fileNr: "840.S0998", batch: "SB-2026-114" },

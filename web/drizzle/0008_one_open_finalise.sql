@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "jobs_one_open_finalise" ON "jobs" USING btree ("document_id") WHERE "jobs"."kind" = 'finalise' and "jobs"."state" in ('queued', 'running');

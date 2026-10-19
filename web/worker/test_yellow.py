@@ -51,7 +51,8 @@ with tempfile.TemporaryDirectory() as d:
     (d / "some.json").write_text(json.dumps({"y0": {"value": "Sodium Benzoate"}, "y1": {"value": "01/09/2029"}}))
     rc, out, err = run("apply", d / "d.docx", d / "some.json", d / "some.docx")
     left = yellow_runs(d / "some.docx")
-    check("only confirmed parts lose their yellow; the rest stays", rc == 0 and left == ["footer sentence kept"], err + str(left))
+    # yellow_runs (the engine) lists a merged cell once per grid column, so compare unique texts
+    check("only confirmed parts lose their yellow; the rest stays", rc == 0 and sorted(set(left)) == ["footer sentence kept"], err + str(left))
     text = "\n".join(p.text for p in Document(str(d / "some.docx")).paragraphs)
     check("corrections are written in", "Product: Sodium Benzoate" in text, text)
 
@@ -67,6 +68,42 @@ with tempfile.TemporaryDirectory() as d:
     (d / "ctrl.json").write_text(json.dumps({"y0": {"value": "a\u0007b"}}))
     rc, _, err = run("apply", d / "d.docx", d / "ctrl.json", d / "ctrl.docx")
     check("control characters refused", rc == 1, err)
+
+    (d / "same.json").write_text(json.dumps({"y0": {"value": "PRODUCTNAME"}, "y1": {"value": "01/09/2O29"}, "y2": {"value": "footer sentence kept"}}))
+    run("apply", d / "d.docx", d / "same.json", d / "same.docx")
+    a = [r.text for p in Document(str(d / "d.docx")).paragraphs for r in p.runs]
+    b = [r.text for p in Document(str(d / "same.docx")).paragraphs for r in p.runs]
+    check("OK as is never changes the text", a == b, f"{a} != {b}")
+
+    long_doc = Document(); long_doc.add_paragraph().add_run("x" * 600).font.highlight_color = WD_COLOR_INDEX.YELLOW
+    long_doc.save(d / "long.docx")
+    _, out, _ = run("list", d / "long.docx")
+    check("parts over 500 characters are flagged for Word", json.loads(out)[0]["truncated"] is True, out)
+    (d / "long.json").write_text(json.dumps({"y0": {"value": "x" * 500}}))
+    rc, _, _ = run("apply", d / "long.docx", d / "long.json", d / "long_out.docx")
+    check("and cannot be finalised on screen", rc == 1)
+
+    (d / "forbid.json").write_text(json.dumps(["Acme Chemicals GmbH"]))
+    rc, _, err = run("check", d / "all.docx", d / "forbid.json")
+    check("check: a clean Word file passes", rc == 0, err)
+    named = Document(); named.add_paragraph("Made by ACME   chemicals gmbh, Berlin"); named.save(d / "named.docx")
+    rc, _, err = run("check", d / "named.docx", d / "forbid.json")
+    check("check: refused when the supplier is named (any case or spacing)", rc == 1 and "supplier" in err, err)
+    hf = Document(); hf.sections[0].footer.paragraphs[0].text = "Acme Chemicals GmbH"; hf.save(d / "hf.docx")
+    rc, _, err = run("check", d / "hf.docx", d / "forbid.json")
+    check("check: also looks in headers and footers", rc == 1, err)
+    import zipfile
+    with zipfile.ZipFile(d / "all.docx") as src, zipfile.ZipFile(d / "ext.docx", "w") as dst:
+        for i in src.infolist():
+            data = src.read(i)
+            if i.filename == "word/_rels/document.xml.rels":
+                data = data.replace(b"</Relationships>", b'<Relationship Id="rX" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="http://evil.example/x.png" TargetMode="External"/></Relationships>')
+            dst.writestr(i, data)
+    rc, _, err = run("check", d / "ext.docx", d / "forbid.json")
+    check("check: refused when it links to outside content", rc == 1 and "outside" in err, err)
+    (d / "zip.docx").write_bytes(b"PK not really a zip")
+    rc, _, err = run("check", d / "zip.docx", d / "forbid.json")
+    check("check: refused when it is not a real Word file", rc == 1, err)
 
     if shutil.which("soffice") or shutil.which("libreoffice"):
         rc, _, err = run("preview", d / "d.docx", d / "p.pdf")

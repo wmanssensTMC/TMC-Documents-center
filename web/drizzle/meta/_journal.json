@@ -57,6 +57,13 @@
       "when": 1792431952805,
       "tag": "0007_finalise_job_no_supplier",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792433187985,
+      "tag": "0008_one_open_finalise",
+      "breakpoints": true
     }
   ]
 }

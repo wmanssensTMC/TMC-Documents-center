@@ -51,7 +51,7 @@ describe("finalise request (on-screen editor)", () => {
   it("refuses while any yellow part is not confirmed", async () => {
     const d = await draft();
     await expect(
-      requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: meta, fixes: { y0: { value: "Sodium Benzoate" } } }),
+      requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: meta, fixes: { y0: { value: "Sodium Benzoate", confirmed: true } } }),
     ).rejects.toThrow(/confirm every yellow part/);
     expect(await db.select().from(jobs)).toHaveLength(0);
   });
@@ -61,7 +61,7 @@ describe("finalise request (on-screen editor)", () => {
     await requestFinalise(db, storage, kars, d.id, {
       mode: "editor",
       metadata: meta,
-      fixes: { y0: { value: "Sodium Benzoate" }, y1: { value: "01/09/2O29" } },
+      fixes: { y0: { value: "Sodium Benzoate", confirmed: true }, y1: { value: "01/09/2O29", confirmed: true } },
     });
     const [job] = await db.select().from(jobs);
     expect(job).toMatchObject({ kind: "finalise", state: "queued", documentId: d.id, createdBy: kars.email });
@@ -76,14 +76,14 @@ describe("finalise request (on-screen editor)", () => {
 
   it("refuses a second finalise while one is open, unknown parts and missing product name", async () => {
     const d = await draft();
-    const fixes = { y0: { value: "a" }, y1: { value: "b" } };
+    const fixes = { y0: { value: "a", confirmed: true }, y1: { value: "b", confirmed: true } };
     await requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: meta, fixes });
     await expect(requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: meta, fixes })).rejects.toThrow(
       /already being finalised/,
     );
     const d2 = await draft({ name: "TMC_COA_other" });
     await expect(
-      requestFinalise(db, storage, kars, d2.id, { mode: "editor", metadata: meta, fixes: { ...fixes, y7: { value: "x" } } }),
+      requestFinalise(db, storage, kars, d2.id, { mode: "editor", metadata: meta, fixes: { ...fixes, y7: { value: "x", confirmed: true } } }),
     ).rejects.toThrow(/unknown yellow part/);
     await expect(
       requestFinalise(db, storage, kars, d2.id, { mode: "editor", metadata: { ...meta, productName: " " }, fixes }),
@@ -104,6 +104,45 @@ describe("finalise request (on-screen editor)", () => {
     files.set(good, DOCX);
     await requestFinalise(db, storage, kars, d.id, { mode: "upload", metadata: meta, docx: { key: good, filename: "checked.docx" } });
     expect((await db.select().from(feedback))[0]).toMatchObject({ kind: "word_upload", after: "checked.docx" });
+  });
+});
+
+describe("finalise rules from the security review", () => {
+  it("every part needs its own confirmation (L1)", async () => {
+    const d = await draft();
+    await expect(
+      requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: meta, fixes: { y0: { value: "a" }, y1: { value: "b" } } }),
+    ).rejects.toThrow(/confirm every yellow part/);
+  });
+
+  it("values are kept exactly as typed: no trimming (M1)", async () => {
+    const d = await draft({ yellowParts: [{ id: "y0", text: " mg/L", context: "Unit mg/L" }] });
+    await requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: meta, fixes: { y0: { value: " mg/L", confirmed: true } } });
+    const [job] = await db.select().from(jobs);
+    expect(job.payload).toMatchObject({ fixes: { y0: { value: " mg/L" } } });
+    expect((await db.select().from(feedback))[0].kind).toBe("confirmed");
+  });
+
+  it("a part too long for the screen must be checked in Word (M1)", async () => {
+    const d = await draft({ yellowParts: [{ id: "y0", text: "x".repeat(500), context: "", truncated: true }] });
+    await expect(
+      requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: meta, fixes: { y0: { value: "x".repeat(500), confirmed: true } } }),
+    ).rejects.toThrow(/check it in Word/);
+  });
+
+  it("invisible characters are refused (I1)", async () => {
+    const d = await draft({ yellowParts: [{ id: "y0", text: "a", context: "" }] });
+    await expect(
+      requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: meta, fixes: { y0: { value: "a‮b", confirmed: true } } }),
+    ).rejects.toThrow(CheckError);
+  });
+
+  it("approve and reject wait while a finalise is open; the database allows only one open finalise (L3)", async () => {
+    const d = await draft({ yellowParts: [], pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf" });
+    await db.insert(jobs).values({ kind: "finalise", documentId: d.id, createdBy: kars.email });
+    await expect(approveDraft(db, kars, d.id, meta)).rejects.toThrow(/being finalised/);
+    await expect(rejectDraft(db, kars, d.id, "wrong document")).rejects.toThrow(/being finalised/);
+    await expect(db.insert(jobs).values({ kind: "finalise", documentId: d.id, createdBy: kars.email })).rejects.toThrow();
   });
 });
 

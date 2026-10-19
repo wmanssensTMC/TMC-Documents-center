@@ -46,11 +46,11 @@ export const entities = pgTable("entities", {
 });
 
 export type JobFile = { key: string; filename: string };
-export type YellowPart = { id: string; text: string; context: string };
+export type YellowPart = { id: string; text: string; context: string; truncated?: boolean };
 export type DocMetadata = { productName: string; fileNr: string | null; batch: string | null };
 /** finalise jobs: either the on-screen fixes, or a checked Word file the person uploaded. */
 export type FinalisePayload = { metadata: DocMetadata } & (
-  | { mode: "editor"; fixes: Record<string, { value: string }> }
+  | { mode: "editor"; fixes: Record<string, { value: string; confirmed: true }> }
   | { mode: "upload"; docx: JobFile }
 );
 
@@ -82,7 +82,14 @@ export const jobs = pgTable(
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
-  (t) => [index("jobs_state_created").on(t.state, t.createdAt), index("jobs_created_by").on(t.createdBy, t.createdAt)],
+  (t) => [
+    index("jobs_state_created").on(t.state, t.createdAt),
+    index("jobs_created_by").on(t.createdBy, t.createdAt),
+    // One open finalise per document at a time (review L3).
+    uniqueIndex("jobs_one_open_finalise")
+      .on(t.documentId)
+      .where(sql`${t.kind} = 'finalise' and ${t.state} in ('queued', 'running')`),
+  ],
 );
 
 export const users = pgTable("users", {

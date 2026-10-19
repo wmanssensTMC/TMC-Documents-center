@@ -6,6 +6,7 @@
 - Final = one transaction: supersedes the previous Final of the same name, next version number, approver = the person who checked; neutralise job "done" when no draft is left to check.
 - Feedback table: every correction, confirmation, Word upload and rejection (for the overview in 2d).
 - Menu: "To check" (library filtered on drafts).
+- Security review 2c (85/100) fixes: "OK as is" never changes the text (no trimming; parts over 500 characters go via Word); every part needs its own confirmation on the server; uploaded Word files are refused with outside links, macros, embedded objects or when they unpack too large; before Final the worker refuses a document that names the supplier (body, tables, headers, footers); one open finalise per document (database); stricter names, invisible characters refused, DRAFT preview cleared at Final/Reject. Open for Willem: the engine's yellow check does not look in headers/footers/nested tables (L2, engine change).
 
 
 ## 17/10/2026 · Phase 2b: worker (branch `phase-2-neutralise`)

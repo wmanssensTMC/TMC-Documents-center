@@ -32,6 +32,7 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
   const left = parts.filter((p) => !confirmed[p.id]).length;
+  const tooLong = parts.some((p) => p.truncated);
   const disabled = !ready || working || busy;
 
   async function act(fn: () => Promise<CheckResult>) {
@@ -82,6 +83,11 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
                 <div className="text-xs text-gray-600">
                   {i + 1}. In: <span className="italic">“{p.context || p.text}”</span>
                 </div>
+                {p.truncated && (
+                  <p className="mt-1 text-xs font-medium text-amber-800">
+                    Too long for the on-screen check: use “Check in Word yourself” below.
+                  </p>
+                )}
                 <div className="mt-2 flex flex-wrap items-center gap-3">
                   <input
                     value={values[p.id] ?? ""}
@@ -107,13 +113,15 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
           </ol>
           <button
             type="button"
-            disabled={disabled || left > 0 || !meta.productName.trim()}
+            disabled={disabled || left > 0 || tooLong || !meta.productName.trim()}
             onClick={() =>
               act(() =>
                 finaliseDraft(documentId, {
                   mode: "editor",
                   metadata,
-                  fixes: Object.fromEntries(parts.map((p) => [p.id, { value: values[p.id] ?? "" }])),
+                  fixes: Object.fromEntries(
+                    parts.filter((p) => confirmed[p.id]).map((p) => [p.id, { value: values[p.id] ?? "", confirmed: true as const }]),
+                  ),
                 }),
               )
             }

@@ -15,7 +15,9 @@ import { cleanLog, engineArgv, finaliseArgv, runPython, yellowArgv } from "./eng
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const PDF = "application/pdf";
-const NAME_RE = /^(TMC|TMCGULF|PHARMALABO)_(COA|MSDS|TDS)_/;
+// The whole name, so it is always a plain file name (review L4).
+const NAME_RE = /^(TMC|TMCGULF|PHARMALABO)_(COA|MSDS|TDS)_[\p{L}\p{N}._-]+$/u;
+const plainName = (n: string) => NAME_RE.test(n) && !n.includes("..") && path.basename(n) === n;
 
 /** A safe local file name from the user's file name (never used as-is: review N2). */
 export function safeName(original: string, index: number) {
@@ -79,7 +81,7 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
     for (const docxName of names) {
       const stem = docxName.slice(0, -5);
       const m = NAME_RE.exec(stem);
-      if (!m) return failJob(db, job, run.code, `${run.log}\n[worker] unexpected output name: ${stem}`);
+      if (!m || !plainName(stem)) return failJob(db, job, run.code, `${run.log}\n[worker] unexpected output name: ${stem}`);
       const pdfName = `${stem}.pdf`;
       const pdf = await readFile(path.join(outDir, pdfName)).catch(() => null);
 
@@ -142,7 +144,7 @@ export function parseYellowParts(stdout: string): YellowPart[] {
   return raw.slice(0, 500).map((p, i) => {
     const o = p as Record<string, unknown>;
     if (o.id !== `y${i}` || typeof o.text !== "string" || typeof o.context !== "string") throw new Error("bad yellow list");
-    return { id: o.id, text: o.text.slice(0, 500), context: o.context.slice(0, 300) };
+    return { id: o.id, text: o.text.slice(0, 500), context: o.context.slice(0, 300), truncated: o.truncated === true };
   });
 }
 
@@ -157,7 +159,7 @@ export async function processFinaliseJob(db: Db, storage: Storage, job: Job) {
     if (!job.documentId || !payload) return failJob(db, job, null, "[worker] finalise job without document");
     const [doc] = await db.select().from(documents).where(eq(documents.id, job.documentId));
     if (!doc || doc.status !== "To check") return failJob(db, job, null, "[worker] the document is not waiting for a check");
-    if (!NAME_RE.test(doc.name)) return failJob(db, job, null, "[worker] unexpected document name");
+    if (!plainName(doc.name)) return failJob(db, job, null, "[worker] unexpected document name");
 
     const outDir = path.join(dir, "final");
     await mkdir(outDir);
@@ -178,6 +180,14 @@ ${applied.log}`);
       await download(storage, payload.docx.key, finalDocx);
       docxKey = payload.docx.key; // the person's checked Word file is the master
     }
+
+    // Before anything is rendered: the Word file must be safe to process, and must not name the
+    // supplier (reviews M2/M3). Checked on the person's fixes and on uploaded Word files alike.
+    const forbid = path.join(dir, "forbid.json");
+    await writeFile(forbid, JSON.stringify([doc.supplierName].filter(Boolean)), "utf8");
+    const safe = await runPython(yellowArgv("check", finalDocx, forbid), dir);
+    if (safe.code !== 0) return failJob(db, job, safe.code, `${safe.log}
+[worker] not finalised: the document stays waiting for a check`);
 
     const run = await runPython(finaliseArgv(finalDocx), dir);
     const pdfPath = path.join(outDir, `${doc.name}.pdf`);
