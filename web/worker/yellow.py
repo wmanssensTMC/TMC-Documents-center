@@ -153,7 +153,8 @@ def cmd_check(docx, forbid_path, engine_scripts, shown_path=None):
         n = norm(value)
         # norm() keeps Latin letters and digits only: a value with other letters, or too
         # short to mean anything, cannot be checked and is refused (review M2)
-        if not latin_only(value) or len(n.replace(" ", "")) < 2:
+        shortest = 3 if label == "product name" else 2      # review R3
+        if not latin_only(value) or len(n.replace(" ", "")) < shortest:
             sys.exit(f"refused: the {label} '{value}' cannot be checked against the document; "
                      "use Latin letters and digits")
         # whole words only: "Acetone" must not match inside another name

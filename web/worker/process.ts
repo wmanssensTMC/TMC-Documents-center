@@ -22,9 +22,13 @@ const PDF = "application/pdf";
 const SAFE_TEXT = /^[^\u0000-\u001f\u007f\u2028\u2029\p{Cf}]{0,100}$/u;
 
 /** The batch the engine says this document is for (COA route, <stem>.meta.json). */
-async function engineBatch(outDir: string, stem: string): Promise<string | null> {
+async function engineBatch(outDir: string, stem: string, isCoa: boolean): Promise<string | null> {
   const raw = await readFile(path.join(outDir, `${stem}.meta.json`), "utf8").catch(() => null);
-  if (!raw) return null;
+  if (!raw) {
+    // the COA route always writes it: without it the batch lock would fall away (review R1)
+    if (isCoa) throw new Error("the engine wrote no batch details for a COA");
+    return null;
+  }
   let batch: unknown;
   try {
     batch = (JSON.parse(raw) as { batch?: unknown }).batch;
@@ -146,7 +150,7 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
         yellow: !pdf,
         yellowParts,
         previewKey,
-        batch: await engineBatch(outDir, stem),
+        batch: await engineBatch(outDir, stem, m[2] === "COA"),
       });
     }
     await saveDrafts(db, job, drafts, run.code, run.log);

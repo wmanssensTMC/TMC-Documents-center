@@ -104,7 +104,7 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
   if (!r.success) throw new CheckError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
   const input = { ...r.data, metadata: lockBatch(doc, r.data.metadata) };
   const confirmReplace = input.confirmReplace === true;
-  await guardReplace(db, doc, finalName(doc, input.metadata), confirmReplace);
+  const replaces = await guardReplace(db, doc, finalName(doc, input.metadata), confirmReplace);
   const parts = doc.yellowParts ?? [];
 
   let payload: FinalisePayload;
@@ -140,21 +140,25 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
     notes.push({ actor: actor.email, documentId: doc.id, kind: "word_upload", after: filename });
     payload = { mode: "upload", docx: { key: ref.key, filename }, metadata: input.metadata };
   }
-  await queueFinalise(db, actor, doc, { ...payload, confirmReplace }, notes);
+  await queueFinalise(db, actor, doc, { ...payload, replaces }, notes);
 }
 
-/** A name that lands on another document's Final replaces it: only with the person's ok (review M1). */
-async function guardReplace(db: Db | Tx, doc: Document, name: string, confirmed: boolean) {
-  if (name === doc.name || confirmed) return;
+/**
+ * A name that lands on another document's Final replaces it: only with the person's ok (review M1).
+ * -> the id of the Final the person agreed to replace, so the worker replaces that one and no other (R2).
+ */
+async function guardReplace(db: Db | Tx, doc: Document, name: string, confirmed: boolean): Promise<string | null> {
+  if (name === doc.name) return null;
   const [other] = await db
-    .select({ version: documents.version })
+    .select({ id: documents.id, version: documents.version })
     .from(documents)
     .where(and(eq(documents.name, name), eq(documents.status, "Final")));
-  if (other) {
+  if (other && !confirmed) {
     throw new ReplaceConfirmError(
       `with these details the file name becomes ${name}, which replaces Final version ${other.version} of another document. Tick "Replace it" only if that is intended`,
     );
   }
+  return other?.id ?? null;
 }
 
 async function queueFinalise(db: Db, actor: Actor, doc: Document, payload: FinalisePayload, notes: (typeof feedback.$inferInsert)[]) {
@@ -186,7 +190,7 @@ export async function makeFinal(
   doc: Document,
   files: { pdfKey: string; pdfFilename: string; docxKey: string; docxFilename: string },
   metadata: DocMetadata,
-  confirmReplace = false,
+  replaces: string | null = null,
 ) {
   const name = finalName(doc, metadata);
   const [current] = await tx
@@ -199,7 +203,7 @@ export async function makeFinal(
     .from(documents)
     .where(eq(documents.name, name));
   // checked again here: another Final may have appeared since the request (review M1)
-  if (current && name !== doc.name && !confirmReplace) {
+  if (current && name !== doc.name && current.id !== replaces) {
     throw new ReplaceConfirmError(`the file name ${name} now replaces Final version ${current.version} of another document; confirm it on the check screen`);
   }
   if (current) {
@@ -259,8 +263,8 @@ export async function approveDraft(db: Db, actor: Actor, documentId: string, raw
   if ((doc.yellowParts ?? []).length) throw new CheckError("this draft has yellow parts: check them first");
   if (!doc.pdfKey || !doc.pdfFilename || !doc.docxKey || !doc.docxFilename) throw new CheckError("this draft has no PDF yet");
   const metadata = lockBatch(doc, m.data);
-  await guardReplace(db, doc, finalName(doc, metadata), confirmReplace);
-  await queueFinalise(db, actor, doc, { mode: "approve", metadata, confirmReplace }, []);
+  const replaces = await guardReplace(db, doc, finalName(doc, metadata), confirmReplace);
+  await queueFinalise(db, actor, doc, { mode: "approve", metadata, replaces }, []);
 }
 
 export async function rejectDraft(db: Db, actor: Actor, documentId: string, rawReason: unknown) {

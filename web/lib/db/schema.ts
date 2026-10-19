@@ -51,8 +51,8 @@ export type DocMetadata = { productName: string; fileNr: string | null; batch: s
 /** finalise jobs: either the on-screen fixes, or a checked Word file the person uploaded. */
 export type FinalisePayload = {
   metadata: DocMetadata;
-  /** The person confirmed that the new name replaces the Final of another document (review M1). */
-  confirmReplace?: boolean;
+  /** The Final of another document the person confirmed this one replaces (reviews M1/R2). */
+  replaces?: string | null;
 } & (
   | { mode: "editor"; fixes: Record<string, { value: string; confirmed: true }> }
   | { mode: "upload"; docx: JobFile }
