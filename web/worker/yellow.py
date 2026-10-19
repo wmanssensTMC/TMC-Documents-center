@@ -10,7 +10,7 @@ on the check screen -- never automatically (BRIEF 7.2).
   python yellow.py --engine DIR preview DOCX OUT.pdf          -> PDF stamped DRAFT
   python yellow.py --engine DIR check DOCX FORBID.json        -> exit 1 if unsafe or names the supplier
 """
-import argparse, io, json, shutil, sys, tempfile
+import argparse, io, json, re, shutil, sys, tempfile
 from pathlib import Path
 
 
@@ -59,54 +59,85 @@ def cmd_apply(docx, fixes_path, out):
     doc.save(str(out))
 
 
-# Uploaded Word files are untrusted (review M2): limits before python-docx or LibreOffice see them.
+# Uploaded Word files are untrusted (reviews M2/N1/N2). Checked on the raw file, before
+# python-docx or LibreOffice read it.
 MAX_UNZIPPED = 100 * 1024 * 1024
 MAX_ENTRIES = 2000
 FORBIDDEN_PARTS = ("vbaproject.bin", "/embeddings/", "/activex/")
+# Field codes that make Word or LibreOffice fetch or include outside content.
+FIELD_RE = re.compile(r"\b(INCLUDEPICTURE|INCLUDETEXT|INCLUDE|LINK|DDEAUTO|DDE|IMPORT)\b", re.I)
+REL_HYPERLINK = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
-def all_text(doc):
-    parts = []
-
-    def walk(container):
-        for p in container.paragraphs:
-            parts.append(p.text)
-        for t in container.tables:
-            for row in t.rows:
-                for c in row.cells:
-                    walk(c)
-
-    walk(doc)
-    for s in doc.sections:
-        for hf in (s.header, s.footer, s.first_page_header, s.first_page_footer, s.even_page_header, s.even_page_footer):
-            walk(hf)
-    return "\n".join(parts)
+def read_all(z, info, budget):
+    """Real bytes, not the size the zip claims (a crafted file can understate it)."""
+    out = bytearray()
+    with z.open(info) as f:
+        while chunk := f.read(65536):
+            out += chunk
+            budget[0] -= len(chunk)
+            if budget[0] < 0:
+                sys.exit("refused: the Word file unpacks too large")
+    return bytes(out)
 
 
-def norm(s):
-    return " ".join(str(s).casefold().split())
+def xml_text(data):
+    """Visible text of a WordprocessingML part: w:t joined per paragraph."""
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(data)
+    lines = []
+    for p in root.iter(f"{W_NS}p"):
+        lines.append("".join(t.text or "" for t in p.iter(f"{W_NS}t")))
+    return "\n".join(lines)
 
 
-def cmd_check(docx, forbid_path):
+def cmd_check(docx, forbid_path, engine_scripts):
     """Refuses a Word file that is not safe to process, or that names the supplier (rule 3)."""
+    import xml.etree.ElementTree as ET
     import zipfile
+    sys.path.insert(0, str(engine_scripts))
+    from provenance import norm               # the engine's own normalisation
+
+    texts = []
+    budget = [MAX_UNZIPPED]
     try:
         with zipfile.ZipFile(docx) as z:
             infos = z.infolist()
-            if len(infos) > MAX_ENTRIES or sum(i.file_size for i in infos) > MAX_UNZIPPED:
-                sys.exit("refused: the Word file unpacks too large")
+            if len(infos) > MAX_ENTRIES:
+                sys.exit("refused: the Word file has too many parts")
             for i in infos:
                 name = "/" + i.filename.lower()
                 if any(f in name for f in FORBIDDEN_PARTS):
                     sys.exit("refused: the Word file contains macros or embedded objects")
-                if name.endswith(".rels") and b'TargetMode="External"' in z.read(i):
-                    sys.exit("refused: the Word file links to outside content")
-    except zipfile.BadZipFile:
-        sys.exit("refused: not a Word file")
-    from docx import Document
-    text = norm(all_text(Document(str(docx))))
-    for name in json.loads(Path(forbid_path).read_text(encoding="utf-8")):
-        if len(norm(name)) >= 3 and norm(name) in text:
+                data = read_all(z, i, budget)
+                if name.endswith(".rels"):
+                    for rel in ET.fromstring(data):
+                        mode = next((v for k, v in rel.attrib.items() if k.lower() == "targetmode"), "")
+                        if mode.lower() == "external" and rel.attrib.get("Type") != REL_HYPERLINK:
+                            sys.exit("refused: the Word file links to outside content")
+                elif name.startswith("/word/") and name.endswith(".xml"):
+                    if b"instrText" in data or b"fldSimple" in data:
+                        root = ET.fromstring(data)
+                        codes = [t.text or "" for t in root.iter(f"{W_NS}instrText")]
+                        codes += [e.get(f"{W_NS}instr", "") for e in root.iter(f"{W_NS}fldSimple")]
+                        if any(FIELD_RE.search(c) for c in codes):
+                            sys.exit("refused: the Word file includes outside content through a field")
+                    # body, headers, footers, footnotes, endnotes, comments, text boxes
+                    texts.append(xml_text(data))
+                elif name in ("/docprops/core.xml", "/docprops/app.xml"):
+                    root = ET.fromstring(data)
+                    texts.extend(e.text or "" for e in root.iter())
+    except (zipfile.BadZipFile, ET.ParseError):
+        sys.exit("refused: not a valid Word file")
+
+    haystack = norm("\n".join(texts))
+    compact = haystack.replace(" ", "")
+    for supplier in json.loads(Path(forbid_path).read_text(encoding="utf-8")):
+        n = norm(supplier)
+        if len(n) < 3:
+            continue
+        if f" {n} " in f" {haystack} " or (len(n.replace(' ', '')) >= 6 and n.replace(" ", "") in compact):
             sys.exit("refused: the document still names the supplier")
 
 
@@ -155,7 +186,7 @@ def main():
     elif a.command == "preview" and len(a.paths) == 2:
         cmd_preview(a.paths[0], a.paths[1], scripts)
     elif a.command == "check" and len(a.paths) == 2:
-        cmd_check(*a.paths)
+        cmd_check(a.paths[0], a.paths[1], scripts)
     else:
         ap.error("wrong number of paths")
 

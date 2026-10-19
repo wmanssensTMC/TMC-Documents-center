@@ -1,5 +1,10 @@
 # Changelog
 
+## 19/10/2026 · Hardening before real data (reviews N1/N2)
+- Word-file check reads the file's real structure, before python-docx or LibreOffice see it: relationships parsed as XML (any outside link refused except normal web links), fields that include outside content (INCLUDEPICTURE, INCLUDETEXT, LINK, DDE, IMPORT) refused, real unpacked bytes counted (max 100 MB).
+- Supplier-name check now also reads footnotes, endnotes, comments, text boxes and document properties (author, title), using the engine's own normalisation (accents and punctuation ignored, also written together).
+
+
 ## 19/10/2026 · Engine: yellow check reads the whole document (Willem: review L2)
 - `engine/scripts/tmc_common.py`: new `iter_highlighted()` finds yellow marks in body text, tables, tables inside tables, text boxes, and the headers and footers of every section (first page, even pages). A text box is stored twice by Word; only the shown version counts. `yellow_runs()` (used by --finalise) and the check screen's helper both use it, so they can never disagree.
 - Test: `engine/tests/test_yellow_coverage.py` (a mark left only in a header still blocks Final).
