@@ -37,6 +37,7 @@ def cmd_list(docx):
 
 def cmd_apply(docx, fixes_path, out):
     from docx import Document
+    from tmc_common import clear_mark
     fixes = json.loads(Path(fixes_path).read_text(encoding="utf-8"))
     doc = Document(str(docx))
     found = runs_in_order(doc)
@@ -58,7 +59,7 @@ def cmd_apply(docx, fixes_path, out):
             sys.exit(1)
         if value != r.text:          # "OK as is" never touches the text (review M1)
             r.text = value
-        r.font.highlight_color = None
+        clear_mark(r)                # highlight and yellow shading
     doc.save(str(out))
 
 
@@ -123,6 +124,7 @@ def cmd_check(docx, forbid_path, engine_scripts, shown_path=None):
                         mode = next((v for k, v in rel.attrib.items() if k.lower() == "targetmode"), "")
                         if mode.lower() == "external" and rel.attrib.get("Type") != REL_HYPERLINK:
                             sys.exit("refused: the Word file links to outside content")
+                        texts.append(rel.attrib.get("Target", ""))   # link addresses too (review F2)
                 elif name.startswith("/word/") and name.endswith(".xml"):
                     root = ET.fromstring(data)
                     # Tracked changes keep deleted text that a PDF may still show (review N1).
@@ -135,6 +137,9 @@ def cmd_check(docx, forbid_path, engine_scripts, shown_path=None):
                             sys.exit("refused: the Word file includes outside content through a field")
                     # body, headers, footers, footnotes, endnotes, comments, text boxes, charts
                     texts.append(xml_text(root))
+                    # field codes (HYPERLINK "...") and bookmark-link targets are not shown as text
+                    texts.extend(t.text or "" for t in root.iter(f"{W_NS}instrText"))
+                    texts.extend(h.get(f"{W_NS}anchor", "") for h in root.iter(f"{W_NS}hyperlink"))
                 elif name in ("/docprops/core.xml", "/docprops/app.xml"):
                     root = ET.fromstring(data)
                     texts.extend(e.text or "" for e in root.iter())
@@ -213,6 +218,8 @@ def paragraph_texts(docx):
     with zipfile.ZipFile(docx) as z:
         names = z.namelist()
         parts = ["word/document.xml"] + sorted(n for n in names if re.fullmatch(r"word/(header|footer)\d*\.xml", n))
+        # also footnotes, endnotes and comments (review F7)
+        parts += ["word/footnotes.xml", "word/endnotes.xml", "word/comments.xml"]
         for n in parts:
             if n in names:
                 walk(ET.fromstring(z.read(n)), out)
@@ -226,6 +233,14 @@ WORD = re.compile(r"[^\W_]+(?:[.,/:-][^\W_]+)*")
 def words(text):
     import unicodedata
     return {w.lower() for w in WORD.findall(unicodedata.normalize("NFKC", text))}
+
+
+def pictures(docx):
+    """Fingerprints of the pictures in a Word file."""
+    import hashlib
+    import zipfile
+    with zipfile.ZipFile(docx) as z:
+        return {hashlib.sha256(z.read(n)).hexdigest() for n in z.namelist() if n.lower().startswith("word/media/")}
 
 
 def cmd_changes(draft, edited, source_pdf):
@@ -243,8 +258,12 @@ def cmd_changes(draft, edited, source_pdf):
         source = ""                                # unreadable original: every new value warns
     known = words(source)
 
-    a, b = paragraph_texts(draft), paragraph_texts(edited)
+    # capped so a huge file cannot hold the worker for minutes (review F6)
+    a, b = paragraph_texts(draft)[:20000], paragraph_texts(edited)[:20000]
     changes = []
+    # a picture that was not in the draft: it could be a supplier logo (review F2)
+    for _ in range(len(pictures(edited) - pictures(draft))):
+        changes.append({"before": "", "after": "[new picture added]", "unknown": ["picture: check it is not a supplier logo"]})
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
         if tag == "equal":
             continue

@@ -12,7 +12,7 @@ sys.path.insert(0, str(HERE.parent / "scripts"))
 from docx import Document                              # noqa: E402
 from docx.enum.text import WD_COLOR_INDEX              # noqa: E402
 from docx.oxml import parse_xml                        # noqa: E402
-from tmc_common import finalise, iter_highlighted, yellow_runs  # noqa: E402
+from tmc_common import clear_mark, finalise, iter_highlighted, yellow_runs  # noqa: E402
 
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -45,6 +45,9 @@ def build(path):
         f'<w:hyperlink xmlns:w="{W}"><w:r><w:rPr><w:highlight w:val="yellow"/></w:rPr><w:t>LINKED</w:t></w:r></w:hyperlink>'))
     p._p.append(parse_xml(
         f'<w:ins xmlns:w="{W}" w:id="1" w:author="x"><w:r><w:rPr><w:highlight w:val="yellow"/></w:rPr><w:t>INSERTED</w:t></w:r></w:ins>'))
+    # yellow shading instead of the highlighter counts too (security review F1, 20/10)
+    shaded = doc.add_paragraph().add_run("SHADED")
+    shaded._r.get_or_add_rPr().append(parse_xml(f'<w:shd xmlns:w="{W}" w:val="clear" w:color="auto" w:fill="FFFF00"/>'))
     s = doc.sections[0]
     yellow(s.header.paragraphs[0], "HEADER")
     yellow(s.footer.paragraphs[0], "FOOTER")
@@ -64,7 +67,7 @@ with tempfile.TemporaryDirectory() as d:
     d = Path(d)
     build(d / "draft.docx")
     found = yellow_runs(d / "draft.docx")
-    expected = ["BODY", "NESTED", "TEXTBOX", "LINKED", "INSERTED", "HEADER", "FOOTER", "FIRSTPAGE"]
+    expected = ["BODY", "NESTED", "TEXTBOX", "LINKED", "INSERTED", "SHADED", "HEADER", "FOOTER", "FIRSTPAGE"]
     check("finds yellow in body, nested table, text box, hyperlink, tracked insert, header, footer, first page",
           sorted(found) == sorted(expected), str(found))
     check("a text box counts once (its fallback copy is skipped)", found.count("TEXTBOX") == 1, str(found))
@@ -73,14 +76,14 @@ with tempfile.TemporaryDirectory() as d:
     doc = Document(str(d / "draft.docx"))
     for r, _p in list(iter_highlighted(doc)):
         if r.text != "HEADER":
-            r.font.highlight_color = None
+            clear_mark(r)
     doc.save(d / "header_left.docx")
     check("a yellow mark left only in the header still blocks", yellow_runs(d / "header_left.docx") == ["HEADER"],
           str(yellow_runs(d / "header_left.docx")))
 
     doc = Document(str(d / "draft.docx"))
     for r, _p in list(iter_highlighted(doc)):
-        r.font.highlight_color = None
+        clear_mark(r)
     doc.save(d / "clean.docx")
     check("after every mark is cleared nothing is left", yellow_runs(d / "clean.docx") == [])
 

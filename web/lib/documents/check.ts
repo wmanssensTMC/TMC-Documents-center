@@ -13,6 +13,7 @@ import { documents, feedback, jobs, type DocMetadata, type Document, type Finali
 import { detectType, MAX_FILE_BYTES, parseUploadKey, cleanFilename } from "../files";
 import { countOpenJobs, MAX_OPEN_JOBS_PER_USER, wakeWorker } from "../jobs";
 import { fileStem, plainName } from "../naming";
+import { pendingEdit } from "./changes-pending";
 import type { Storage } from "../storage";
 
 export class CheckError extends Error {}
@@ -140,7 +141,10 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
     const filename = cleanFilename(ref.filename);
     if (input.mode === "edited") {
       // edited on screen: the worker records every change when it becomes Final
-      payload = { mode: "edited", docx: { key: ref.key, filename }, metadata: input.metadata, acceptChanges: input.acceptChanges === true };
+      // a confirmation only counts for the saved version whose warnings were shown (review F5)
+      const shown = input.acceptChanges === true ? await pendingEdit(db, doc) : null;
+      const acceptChanges = !!shown && shown.key === ref.key && shown.warnings.length > 0;
+      payload = { mode: "edited", docx: { key: ref.key, filename }, metadata: input.metadata, acceptChanges };
     } else {
       notes.push({ actor: actor.email, documentId: doc.id, kind: "word_upload", after: filename });
       payload = { mode: "upload", docx: { key: ref.key, filename }, metadata: input.metadata };

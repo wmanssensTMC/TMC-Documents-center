@@ -273,7 +273,7 @@ ${stays}`);
       kind: "edited" as const,
       before: c.before,
       after: c.after,
-      context: c.unknown.length ? `not in the original, confirmed: ${c.unknown.join(" ")}`.slice(0, 300) : null,
+      context: c.unknown.length ? `not in the original, accepted after the warning: ${c.unknown.join(" ")}`.slice(0, 300) : null,
     }));
     await saveFinal(db, job, { ...files, pdfKey, docxKey }, run.log, feedbackRows);
   } catch (err) {

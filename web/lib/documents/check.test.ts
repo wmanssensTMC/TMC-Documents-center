@@ -98,7 +98,8 @@ describe("finalise request (on-screen editor)", () => {
     const key = newUploadKey("docx");
     files.set(key, DOCX);
     await requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, acceptChanges: true, docx: { key, filename: "e.docx" } });
-    expect((await db.select().from(jobs))[0].payload).toMatchObject({ mode: "edited", acceptChanges: true, docx: { key } });
+    // no warnings were shown for this version, so the tick does not count (review F5)
+    expect((await db.select().from(jobs))[0].payload).toMatchObject({ mode: "edited", acceptChanges: false, docx: { key } });
     expect(await db.select().from(feedback)).toHaveLength(0); // the worker records the changes when it is Final
   });
 

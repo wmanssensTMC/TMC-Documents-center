@@ -6,6 +6,7 @@
 - The last edit that did not become Final can be reopened, so no work is lost.
 - Editor: SuperDoc 2.24.0 (npm), runs in the browser only, its usage reporting switched off. Licence: AGPL-3.0 (free) or a paid commercial licence: decision for Willem before go-live (see BRIEF 11).
 - The quick yellow-parts list and "check in Word yourself" stay as alternatives.
+- Security review fixes (first score 80): yellow shading counts as yellow too, and the editor was shown to keep the yellow highlight when it saves (F1); link addresses are read for the supplier name and a picture added in the editor is a warning (F2); in production the browser may only connect to this app and the file store (F4); a confirmation only counts for the saved version whose warnings were shown (F5); size cap on the comparison (F6); footnotes, endnotes and comments are compared too (F7). Open for Willem: F3 (see BRIEF 11).
 
 
 ## 19/10/2026 · COA batches, file-name rule, MSDS pictograms (security gate PASS 92/100)
