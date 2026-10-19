@@ -15,9 +15,10 @@ import { cleanLog, engineArgv, finaliseArgv, runPython, yellowArgv } from "./eng
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const PDF = "application/pdf";
-// The whole name, so it is always a plain file name (review L4).
-const NAME_RE = /^(TMC|TMCGULF|PHARMALABO)_(COA|MSDS|TDS)_[\p{L}\p{N}._-]+$/u;
-const plainName = (n: string) => NAME_RE.test(n) && !n.includes("..") && path.basename(n) === n;
+// The whole name, as the engine makes it (tmc_common.safe_part removes \ / : * ? " < > |), so it is
+// always a plain file name (review L4/N3).
+const NAME_RE = /^(TMC|TMCGULF|PHARMALABO)_(COA|MSDS|TDS)_[^\/\\:*?"<>|\u0000-\u001f]+$/u;
+export const plainName = (n: string) => NAME_RE.test(n) && !n.includes("..") && path.basename(n) === n;
 
 /** A safe local file name from the user's file name (never used as-is: review N2). */
 export function safeName(original: string, index: number) {

@@ -13,7 +13,7 @@ import { claimNextJob, MAX_ATTEMPTS, requeueStaleJobs } from "../lib/jobs/worker
 import { localStorage, type Storage } from "../lib/storage";
 import { cleanLog, engineArgv } from "./engine";
 import { requestFinalise } from "../lib/documents/check";
-import { processFinaliseJob, processNeutraliseJob, safeName } from "./process";
+import { plainName, processFinaliseJob, processNeutraliseJob, safeName } from "./process";
 
 const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]);
 const willem: Actor = { email: "wilman@transmare.com", name: "Willem", role: "admin" };
@@ -56,6 +56,15 @@ describe("engine call safety (review N2/N3)", () => {
     expect(safeName("-rf supplier COA.pdf", 1)).toBe("01_rf_supplier_COA.pdf");
     expect(safeName("..", 2)).toBe("02_document.pdf");
     expect(safeName("Crème brûlée.pdf", 3)).toBe("03_Cr_me_br_l_e.pdf");
+  });
+
+  it("accepts every name the engine can make, refuses path tricks (review L4/N3)", () => {
+    for (const ok of ["TMC_TDS_Glycerin_(USP)_99,5%", "TMC_MSDS_A&B+C_Crème", "TMC_COA_840.S0850_Betaine_AI_test_BT-3877"]) {
+      expect(plainName(ok), ok).toBe(true);
+    }
+    for (const bad of ["TMC_TDS_a/b", "TMC_TDS_a\b", "TMC_TDS_..", "TMC_TDS_x..y", "../TMC_TDS_x", "OTHER_TDS_x", "TMC_TDS_"]) {
+      expect(plainName(bad), bad).toBe(false);
+    }
   });
 
   it("cleans paths out of the log and caps its length", () => {
