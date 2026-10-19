@@ -1,5 +1,13 @@
 # Changelog
 
+## 20/10/2026 · On-screen document editor (branch `phase-2e-editor`, not merged)
+- Check screen, "Edit the document": the draft opens as the real Word document in the browser, supplier original on the left. Any text and formatting can be changed (Willem 19/10, option A).
+- Save and finalise: the worker runs every Final check on the edited file (no macros or outside links, no supplier name, file-name values printed, no yellow left). Changes that bring in words or numbers not found in the supplier original come back as warnings; the person ticks "I checked these changes" and goes on. Every change is kept in the feedback overview ("Edited on screen") and CSV.
+- The last edit that did not become Final can be reopened, so no work is lost.
+- Editor: SuperDoc 2.24.0 (npm), runs in the browser only, its usage reporting switched off. Licence: AGPL-3.0 (free) or a paid commercial licence: decision for Willem before go-live (see BRIEF 11).
+- The quick yellow-parts list and "check in Word yourself" stay as alternatives.
+
+
 ## 19/10/2026 · COA batches, file-name rule, MSDS pictograms (security gate PASS 92/100)
 - Engine: a COA with batches side by side (one result column per batch) gives one document per batch, each with its own values and dates. The same lot twice: kept once when only the quantity differs (noted in the log), held back for a person when an analysis result differs. Scan values the two readings do not agree on are marked yellow, never chosen. "Page 1 of 3" in a shorter file is refused as incomplete.
 - A typed batch on a COA with several batches is refused (Neutralise screen: leave Batch empty).
