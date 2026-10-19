@@ -1,5 +1,11 @@
 # Changelog
 
+## 19/10/2026 · Phase 2d: feedback overview (branch `phase-2-neutralise`)
+- Settings > Feedback (admin only): numbers per period (drafts made, Final via neutralizer = KPI K8, rejected, failed runs, corrected vs confirmed yellow parts), most frequent corrections (same misreading grouped), all corrections (engine read -> person made it), rejected drafts with reason, failed runs with log.
+- CSV download for Excel (UTF-8, semicolons; cells starting with = + - @ neutralised against formula injection). Export is logged in the audit trail.
+- Read-only: nothing here changes a document.
+
+
 ## 19/10/2026 · Phase 2c: check screen (branch `phase-2-neutralise`)
 - Worker: for each yellow draft it lists the yellow parts (web/worker/yellow.py, reusing the engine's own yellow_runs walk) and makes a preview PDF stamped "DRAFT - NOT FOR USE" (view only, never a download).
 - Check screen (/documents/[id]/check): supplier original left, draft preview right; every yellow part with an edit box and "OK as is"; library details (product, dossier, batch) confirmed by the person. Finalise only when every part is confirmed; the worker writes the fixes in, removes yellow only there, and runs the engine's own --finalise (refuses while anything is yellow). Alternative: upload a checked Word file. Approve for drafts without yellow. Reject with a reason.

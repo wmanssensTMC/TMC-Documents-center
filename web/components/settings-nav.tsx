@@ -3,6 +3,7 @@ import Link from "next/link";
 const TABS = [
   { key: "users", href: "/settings/users", label: "Users" },
   { key: "entities", href: "/settings/entities", label: "Entities" },
+  { key: "feedback", href: "/settings/feedback", label: "Feedback" },
 ] as const;
 
 export function SettingsNav({ current }: { current: (typeof TABS)[number]["key"] }) {
