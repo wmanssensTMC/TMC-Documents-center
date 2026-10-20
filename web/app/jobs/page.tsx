@@ -75,7 +75,10 @@ export default async function JobsPage({ searchParams }: PageProps<"/jobs">) {
                 </td>
                 <td className={`px-3 py-2 font-medium ${STATE[job.state].className}`}>
                   {STATE[job.state].label}
-                  {job.state === "failed" && job.log && (
+                  {job.state === "to_check" && job.log?.includes("HELD BACK") && (
+                    <span className="mt-1 block text-xs font-normal text-amber-700">Some batches got no document: see the log</span>
+                  )}
+                  {(job.state === "failed" || job.state === "to_check") && job.log && (
                     <details className="mt-1 text-xs font-normal text-gray-700">
                       <summary className="cursor-pointer">Show log</summary>
                       <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-gray-50 p-2">{job.log.slice(-4000)}</pre>

@@ -39,6 +39,12 @@ def build(path):
     inner = outer.cell(0, 0).add_table(rows=1, cols=1)
     yellow(inner.cell(0, 0).paragraphs[0], "NESTED")
     text_box(doc.add_paragraph(), "TEXTBOX")
+    # inside a hyperlink and inside inserted (tracked) text: not direct children of the paragraph
+    p = doc.add_paragraph()
+    p._p.append(parse_xml(
+        f'<w:hyperlink xmlns:w="{W}"><w:r><w:rPr><w:highlight w:val="yellow"/></w:rPr><w:t>LINKED</w:t></w:r></w:hyperlink>'))
+    p._p.append(parse_xml(
+        f'<w:ins xmlns:w="{W}" w:id="1" w:author="x"><w:r><w:rPr><w:highlight w:val="yellow"/></w:rPr><w:t>INSERTED</w:t></w:r></w:ins>'))
     s = doc.sections[0]
     yellow(s.header.paragraphs[0], "HEADER")
     yellow(s.footer.paragraphs[0], "FOOTER")
@@ -58,8 +64,8 @@ with tempfile.TemporaryDirectory() as d:
     d = Path(d)
     build(d / "draft.docx")
     found = yellow_runs(d / "draft.docx")
-    expected = ["BODY", "NESTED", "TEXTBOX", "HEADER", "FOOTER", "FIRSTPAGE"]
-    check("finds yellow in body, nested table, text box, header, footer and first-page header",
+    expected = ["BODY", "NESTED", "TEXTBOX", "LINKED", "INSERTED", "HEADER", "FOOTER", "FIRSTPAGE"]
+    check("finds yellow in body, nested table, text box, hyperlink, tracked insert, header, footer, first page",
           sorted(found) == sorted(expected), str(found))
     check("a text box counts once (its fallback copy is skipped)", found.count("TEXTBOX") == 1, str(found))
     check("finalise refuses while any of them is yellow", finalise(d / "draft.docx") is None)

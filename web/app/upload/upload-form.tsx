@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
 import { ENTITIES } from "@/lib/constants";
+import { DropZone } from "@/components/drop-zone";
 import { sendFile } from "@/lib/client-upload";
 import { MAX_FILE_BYTES, type FileKind } from "@/lib/files";
 import { fileStem, NAMED_TYPES } from "@/lib/naming";
@@ -190,18 +191,14 @@ export function UploadForm({ uploadMode }: { uploadMode: "blob" | "local" }) {
       <section className="space-y-4 rounded-lg bg-white p-5 shadow-sm ring-1 ring-black/5">
         <h2 className="font-semibold">Files</h2>
         {SLOTS.map((s) => (
-          <label key={s.kind} className="block text-sm">
-            {s.label}
-            {s.required && " *"}
-            <input
-              name={s.kind}
-              type="file"
-              accept={s.accept}
-              required={s.required}
-              className="mt-1 block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-tmc-light file:px-3 file:py-2 file:text-tmc"
-            />
-            <span className="text-xs text-gray-500">{s.help} Max 25 MB.</span>
-          </label>
+          <DropZone
+            key={s.kind}
+            name={s.kind}
+            accept={s.accept}
+            required={s.required}
+            label={s.label}
+            help={`${s.help} Max 25 MB.`}
+          />
         ))}
         {error && (
           <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-800 ring-1 ring-red-200">

@@ -8,9 +8,11 @@ on the check screen -- never automatically (BRIEF 7.2).
   python yellow.py --engine DIR list DOCX                     -> JSON list on stdout
   python yellow.py --engine DIR apply DOCX FIXES.json OUT.docx
   python yellow.py --engine DIR preview DOCX OUT.pdf          -> PDF stamped DRAFT
-  python yellow.py --engine DIR check DOCX FORBID.json        -> exit 1 if unsafe or names the supplier
+  python yellow.py --engine DIR check DOCX FORBID.json [SHOWN.json]
+                                     -> exit 1 if unsafe, names the supplier, or does not
+                                        print a value of its file name (SHOWN: [[label, value]])
 """
-import argparse, io, json, shutil, sys, tempfile
+import argparse, io, json, re, shutil, sys, tempfile
 from pathlib import Path
 
 
@@ -28,7 +30,7 @@ def cmd_list(docx):
     items = []
     for i, (r, p) in enumerate(runs_in_order(doc)):
         # Over 500 characters: too long for the on-screen editor, check it in Word (review M1).
-        items.append({"id": f"y{i}", "text": r.text[:500], "context": p.text[:300], "truncated": len(r.text) > 500})
+        items.append({"id": f"y{i}", "text": r.text[:500], "context": (p.text if p is not None else r.text)[:300], "truncated": len(r.text) > 500})
     json.dump(items, sys.stdout, ensure_ascii=False)
 
 
@@ -59,55 +61,113 @@ def cmd_apply(docx, fixes_path, out):
     doc.save(str(out))
 
 
-# Uploaded Word files are untrusted (review M2): limits before python-docx or LibreOffice see them.
+# Uploaded Word files are untrusted (reviews M2/N1/N2). Checked on the raw file, before
+# python-docx or LibreOffice read it.
 MAX_UNZIPPED = 100 * 1024 * 1024
 MAX_ENTRIES = 2000
 FORBIDDEN_PARTS = ("vbaproject.bin", "/embeddings/", "/activex/")
+# Field codes that make Word or LibreOffice fetch or include outside content.
+FIELD_RE = re.compile(r"\b(INCLUDEPICTURE|INCLUDETEXT|INCLUDE|LINK|DDEAUTO|DDE|IMPORT)\b", re.I)
+REL_HYPERLINK = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
-def all_text(doc):
-    parts = []
-
-    def walk(container):
-        for p in container.paragraphs:
-            parts.append(p.text)
-        for t in container.tables:
-            for row in t.rows:
-                for c in row.cells:
-                    walk(c)
-
-    walk(doc)
-    for s in doc.sections:
-        for hf in (s.header, s.footer, s.first_page_header, s.first_page_footer, s.even_page_header, s.even_page_footer):
-            walk(hf)
-    return "\n".join(parts)
+def read_all(z, info, budget):
+    """Real bytes, not the size the zip claims (a crafted file can understate it)."""
+    out = bytearray()
+    with z.open(info) as f:
+        while chunk := f.read(65536):
+            out += chunk
+            budget[0] -= len(chunk)
+            if budget[0] < 0:
+                sys.exit("refused: the Word file unpacks too large")
+    return bytes(out)
 
 
-def norm(s):
-    return " ".join(str(s).casefold().split())
+A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 
 
-def cmd_check(docx, forbid_path):
-    """Refuses a Word file that is not safe to process, or that names the supplier (rule 3)."""
+def xml_text(root):
+    """All text of a part, per paragraph: Word text (w:t), deleted text (w:delText) and text
+    in charts and diagrams (a:t) -- review N1."""
+    kinds = (f"{W_NS}t", f"{W_NS}delText", f"{A_NS}t")
+    lines = []
+    for p in list(root.iter(f"{W_NS}p")) + list(root.iter(f"{A_NS}p")):
+        lines.append("".join(e.text or "" for e in p.iter() if e.tag in kinds))
+    return "\n".join(lines)
+
+
+def cmd_check(docx, forbid_path, engine_scripts, shown_path=None):
+    """Refuses a Word file that is not safe to process, that names the supplier (rule 3), or
+    that does not print a value its file name is made of (name and content agree, Willem 19/10)."""
+    import xml.etree.ElementTree as ET
     import zipfile
+    sys.path.insert(0, str(engine_scripts))
+    from provenance import norm               # the engine's own normalisation
+
+    texts = []
+    budget = [MAX_UNZIPPED]
     try:
         with zipfile.ZipFile(docx) as z:
             infos = z.infolist()
-            if len(infos) > MAX_ENTRIES or sum(i.file_size for i in infos) > MAX_UNZIPPED:
-                sys.exit("refused: the Word file unpacks too large")
+            if len(infos) > MAX_ENTRIES:
+                sys.exit("refused: the Word file has too many parts")
             for i in infos:
                 name = "/" + i.filename.lower()
                 if any(f in name for f in FORBIDDEN_PARTS):
                     sys.exit("refused: the Word file contains macros or embedded objects")
-                if name.endswith(".rels") and b'TargetMode="External"' in z.read(i):
-                    sys.exit("refused: the Word file links to outside content")
-    except zipfile.BadZipFile:
-        sys.exit("refused: not a Word file")
-    from docx import Document
-    text = norm(all_text(Document(str(docx))))
-    for name in json.loads(Path(forbid_path).read_text(encoding="utf-8")):
-        if len(norm(name)) >= 3 and norm(name) in text:
+                data = read_all(z, i, budget)
+                if name.endswith(".rels"):
+                    for rel in ET.fromstring(data):
+                        mode = next((v for k, v in rel.attrib.items() if k.lower() == "targetmode"), "")
+                        if mode.lower() == "external" and rel.attrib.get("Type") != REL_HYPERLINK:
+                            sys.exit("refused: the Word file links to outside content")
+                elif name.startswith("/word/") and name.endswith(".xml"):
+                    root = ET.fromstring(data)
+                    # Tracked changes keep deleted text that a PDF may still show (review N1).
+                    if next(root.iter(f"{W_NS}ins"), None) is not None or next(root.iter(f"{W_NS}del"), None) is not None:
+                        sys.exit("refused: the Word file has tracked changes; accept or reject all changes first")
+                    if b"instrText" in data or b"fldSimple" in data:
+                        codes = [t.text or "" for t in root.iter(f"{W_NS}instrText")]
+                        codes += [e.get(f"{W_NS}instr", "") for e in root.iter(f"{W_NS}fldSimple")]
+                        if any(FIELD_RE.search(c) for c in codes):
+                            sys.exit("refused: the Word file includes outside content through a field")
+                    # body, headers, footers, footnotes, endnotes, comments, text boxes, charts
+                    texts.append(xml_text(root))
+                elif name in ("/docprops/core.xml", "/docprops/app.xml"):
+                    root = ET.fromstring(data)
+                    texts.extend(e.text or "" for e in root.iter())
+    except (zipfile.BadZipFile, ET.ParseError):
+        sys.exit("refused: not a valid Word file")
+
+    haystack = norm("\n".join(texts))
+    compact = haystack.replace(" ", "")
+    for supplier in json.loads(Path(forbid_path).read_text(encoding="utf-8")):
+        n = norm(supplier)
+        if len(n) < 3:
+            continue
+        if f" {n} " in f" {haystack} " or (len(n.replace(' ', '')) >= 6 and n.replace(" ", "") in compact):
             sys.exit("refused: the document still names the supplier")
+
+    for label, value in json.loads(Path(shown_path).read_text(encoding="utf-8")) if shown_path else []:
+        n = norm(value)
+        # norm() keeps Latin letters and digits only: a value with other letters, or too
+        # short to mean anything, cannot be checked and is refused (review M2)
+        shortest = 3 if label == "product name" else 2      # review R3
+        if not latin_only(value) or len(n.replace(" ", "")) < shortest:
+            sys.exit(f"refused: the {label} '{value}' cannot be checked against the document; "
+                     "use Latin letters and digits")
+        # whole words only: "Acetone" must not match inside another name
+        if f" {n} " not in f" {haystack} ":
+            sys.exit(f"refused: the {label} '{value}' is not printed in the document; "
+                     "the file name must match the document, so change one of them")
+
+
+def latin_only(value):
+    """True when every letter or digit is plain Latin once accents are taken off."""
+    import unicodedata
+    t = unicodedata.normalize("NFKD", value)
+    return all(ord(ch) < 128 or unicodedata.combining(ch) or not ch.isalnum() for ch in t)
 
 
 def cmd_preview(docx, out, engine_scripts):
@@ -154,8 +214,8 @@ def main():
         cmd_apply(*a.paths)
     elif a.command == "preview" and len(a.paths) == 2:
         cmd_preview(a.paths[0], a.paths[1], scripts)
-    elif a.command == "check" and len(a.paths) == 2:
-        cmd_check(*a.paths)
+    elif a.command == "check" and len(a.paths) in (2, 3):
+        cmd_check(a.paths[0], a.paths[1], scripts, a.paths[2] if len(a.paths) == 3 else None)
     else:
         ap.error("wrong number of paths")
 

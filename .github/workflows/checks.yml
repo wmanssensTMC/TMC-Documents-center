@@ -64,6 +64,26 @@ jobs:
             echo "::error title=Yellow helper::$msg"
           fi
           exit $status
+      - name: COA batches side by side, duplicate lots, page markers, batch guard
+        shell: bash
+        run: |
+          set +e
+          python tests/test_coa_batches_route.py > batches.log 2>&1
+          status=$?
+          cat batches.log
+          { echo "### COA batches (exit $status)"; echo '```'; tail -60 batches.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          [ $status -eq 0 ] || echo "::error title=COA batches::$(grep -E 'XX|Traceback|Error' batches.log | head -5 | tr '\n' ' ')"
+          exit $status
+      - name: MSDS hazard pictograms kept in place, supplier logo dropped
+        shell: bash
+        run: |
+          set +e
+          python tests/test_sds_pictograms.py > picto.log 2>&1
+          status=$?
+          cat picto.log
+          { echo "### MSDS pictograms (exit $status)"; echo '```'; tail -60 picto.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          [ $status -eq 0 ] || echo "::error title=MSDS pictograms::$(grep -E 'XX|Traceback|Error' picto.log | head -5 | tr '\n' ' ')"
+          exit $status
       - name: Provenance gate blocks invented SDS values (skips without sample)
         run: python tests/test_sds_rejects_invented_values.py
       - name: Scan and batch tests (skips without samples)

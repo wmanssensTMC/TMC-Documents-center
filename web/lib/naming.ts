@@ -41,6 +41,11 @@ function safePart(s: string | null | undefined) {
   return cut(t.replace(/\s+/gu, "_"), 80);
 }
 
+/** An engine document name: a plain file name with a product part (reviews L4/N3). */
+const NAME_RE = /^(TMC|TMCGULF|PHARMALABO)_(COA|MSDS|TDS)_[^\/\\:*?"<>|\u0000-\u001f]+$/u;
+export const plainName = (n: string) => NAME_RE.test(n) && !n.includes("..");
+export const nameParts = (n: string) => NAME_RE.exec(n);
+
 export function fileStem(p: NameParts): string {
   const code = p.entity || "TMC";
   switch (p.type) {

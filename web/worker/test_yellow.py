@@ -101,6 +101,64 @@ with tempfile.TemporaryDirectory() as d:
             dst.writestr(i, data)
     rc, _, err = run("check", d / "ext.docx", d / "forbid.json")
     check("check: refused when it links to outside content", rc == 1 and "outside" in err, err)
+    def patched(src_name, out_name, part, old, new):
+        with zipfile.ZipFile(d / src_name) as src, zipfile.ZipFile(d / out_name, "w") as dst:
+            for i in src.infolist():
+                data = src.read(i)
+                if i.filename == part:
+                    data = data.replace(old, new)
+                dst.writestr(i, data)
+
+    patched("all.docx", "ext2.docx", "word/_rels/document.xml.rels", b"</Relationships>",
+            b"<Relationship Id='rY' Type='http://schemas.openxmlformats.org/officeDocument/2006/relationships/image' "
+            b"Target='file:///etc/passwd' targetmode='EXTERNAL'/></Relationships>")
+    rc, _, err = run("check", d / "ext2.docx", d / "forbid.json")
+    check("check: outside link refused however it is written (N1)", rc == 1 and "outside" in err, err)
+
+    patched("all.docx", "link.docx", "word/_rels/document.xml.rels", b"</Relationships>",
+            b'<Relationship Id="rZ" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" '
+            b'Target="https://www.transmare.com" TargetMode="External"/></Relationships>')
+    rc, _, err = run("check", d / "link.docx", d / "forbid.json")
+    check("check: a normal web link is allowed", rc == 0, err)
+
+    patched("all.docx", "field.docx", "word/document.xml", b"</w:body>",
+            b'<w:p><w:r><w:instrText xml:space="preserve"> INCLUDEPICTURE "http://evil.example/x.png" </w:instrText></w:r></w:p></w:body>')
+    rc, _, err = run("check", d / "field.docx", d / "forbid.json")
+    check("check: a field that includes outside content is refused (N1)", rc == 1 and "field" in err, err)
+
+    props = Document(); props.add_paragraph("clean text"); props.core_properties.author = "Acme Chemicals GmbH"
+    props.save(d / "props.docx")
+    rc, _, err = run("check", d / "props.docx", d / "forbid.json")
+    check("check: supplier in the document properties is refused (N2)", rc == 1 and "supplier" in err, err)
+
+    punct = Document(); punct.add_paragraph("Produced by ACME-Chemicals, G.m.b.H."); punct.save(d / "punct.docx")
+    rc, _, err = run("check", d / "punct.docx", d / "forbid.json")
+    check("check: supplier written with punctuation is refused (N2)", rc == 1 and "supplier" in err, err)
+
+    other = Document(); other.add_paragraph("Acme is a common word; chemicals too."); other.save(d / "other.docx")
+    rc, _, err = run("check", d / "other.docx", d / "forbid.json")
+    check("check: parts of the name alone do not trigger", rc == 0, err)
+
+    # name and content agree (Willem 19/10): each value of the file name is printed
+    (d / "shown.json").write_text(json.dumps([["product name", "Sodium Benzoate"], ["batch", "SB-1"]]))
+    shown = Document(); shown.add_paragraph("Product: SODIUM BENZOATE"); shown.add_paragraph("Lot SB-1"); shown.save(d / "shown.docx")
+    rc, _, err = run("check", d / "shown.docx", d / "forbid.json", d / "shown.json")
+    check("check: passes when every value of the file name is printed", rc == 0, err)
+    (d / "notshown.json").write_text(json.dumps([["product name", "Benzoate Pure"]]))
+    rc, _, err = run("check", d / "shown.docx", d / "forbid.json", d / "notshown.json")
+    check("check: refused when the file name has a value the document does not print", rc == 1 and "not printed" in err, err)
+    (d / "part.json").write_text(json.dumps([["product name", "Sodium Benzo"]]))
+    rc, _, err = run("check", d / "shown.docx", d / "forbid.json", d / "part.json")
+    check("check: part of a printed word does not count (review M2)", rc == 1 and "not printed" in err, err)
+    (d / "cyr.json").write_text(json.dumps([["product name", "Ацетон"]]))
+    rc, _, err = run("check", d / "shown.docx", d / "forbid.json", d / "cyr.json")
+    check("check: a value in non-Latin letters cannot slip through unchecked (review M2)", rc == 1 and "cannot be checked" in err, err)
+
+    patched("all.docx", "tracked.docx", "word/document.xml", b"</w:body>",
+            b'<w:p><w:del w:id="9" w:author="x"><w:r><w:delText>Acme Chemicals GmbH</w:delText></w:r></w:del></w:p></w:body>')
+    rc, _, err = run("check", d / "tracked.docx", d / "forbid.json")
+    check("check: tracked changes are refused, deleted supplier text included (N1)", rc == 1 and "tracked" in err, err)
+
     (d / "zip.docx").write_bytes(b"PK not really a zip")
     rc, _, err = run("check", d / "zip.docx", d / "forbid.json")
     check("check: refused when it is not a real Word file", rc == 1, err)

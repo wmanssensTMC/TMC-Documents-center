@@ -60,14 +60,22 @@ def _read(pdf_path, dpi, psm, clean):
     return out
 
 
-def read_with_consensus(pdf_path):
+def read_with_consensus(pdf_path, doubts=None):
     """-> (batches, disagreements). batches maps (page, lot) -> {param: (value, unit)}
-    containing ONLY values both passes read identically."""
+    containing ONLY values both passes read identically.
+
+    doubts (optional list) receives (page, lot, label, unit, reading) for every value
+    that is not trusted, so the COA route marks it yellow instead of dropping it
+    (19/10/2026). label None = the whole batch. reading is the value when only one
+    pass ran (unverified), None when the passes disagree (no value is chosen)."""
     a = _read(pdf_path, **PASSES[0])
     b = _read(pdf_path, **PASSES[1])
     if a is None or b is None:
-        return (a or b or {}), [("ocr", "only one OCR pass available; "
-                                        "values are unverified")]
+        one = a or b or {}
+        if doubts is not None:
+            for (pno, lot), fields in one.items():
+                doubts.extend((pno, lot, v[2], v[1], v[0]) for v in fields.values())
+        return one, [("ocr", "only one OCR pass available; values are unverified")]
 
     agreed, issues = {}, []
     for key in sorted(set(a) | set(b), key=lambda k: (k[0], str(k[1]))):
@@ -76,18 +84,25 @@ def read_with_consensus(pdf_path):
         if ra is None or rb is None:
             issues.append((f"page {pno+1} lot {lot}",
                            "only one of the two readings found this batch"))
+            if doubts is not None:
+                doubts.append((pno, lot, None, "", None))
             continue
         fields = {}
-        for param in sorted(set(ra) | set(rb)):
+        # document order, not alphabetical: the output table follows the certificate
+        for param in list(ra) + [k for k in rb if k not in ra]:
             va, vb = ra.get(param), rb.get(param)
             if va is None or vb is None:
                 only = va or vb
                 issues.append((f"page {pno+1} lot {lot} / {only[2]}",
                                f"present in one reading only ({only[0]!r})"))
+                if doubts is not None:
+                    doubts.append((pno, lot, only[2], only[1], None))
                 continue
             if va[0] != vb[0]:
                 issues.append((f"page {pno+1} lot {lot} / {va[2]}",
                                f"readings disagree: {va[0]!r} vs {vb[0]!r}"))
+                if doubts is not None:
+                    doubts.append((pno, lot, va[2], va[1], None))
                 continue
             fields[param] = va
         agreed[key] = fields

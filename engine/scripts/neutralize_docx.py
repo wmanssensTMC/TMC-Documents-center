@@ -692,6 +692,96 @@ def split_coa_by_batch(data):
         result.append(merged)
     return result if result else [base]
 
+
+# Side-by-side batches: one result column per batch (19/10/2026, coa_batches /
+# coa_consensus wired in). A value the scan readings do not agree on is never
+# chosen: it is printed as DOUBT and marked yellow for a person.
+DOUBT = "[unclear in the scan - check the original]"
+_DATE_MADE = re.compile(r"manufactur\w*\s*date|production\s*date|prod\.?\s*date|mfg\.?\s*date"
+                        r"|date\s*of\s*manufactur", re.I)
+_DATE_EXP = re.compile(r"expir\w*|best\s*before|use\s*(by|before)", re.I)
+
+
+def _column_reading(path):
+    """-> (agreed, doubts, issues) or None when the COA has no side-by-side batches.
+    agreed maps (page, lot) -> {param: (value, unit, label)}, as coa_consensus."""
+    import pdfplumber
+    import coa_batches as CB
+    with pdfplumber.open(path) as pdf:
+        scan = _is_text_sparse("".join(p.extract_text() or "" for p in pdf.pages))
+        if not scan:
+            from coa_consensus import _param_key
+            agreed = {}
+            for pno, page in enumerate(pdf.pages):
+                found = CB.find_column_batches(page)
+                if not found:
+                    continue
+                lots, centres, top = found
+                header = CB.find_header_columns(page)
+                per = CB.split_columns(page, lots, centres, top, header["unit_centre"] if header else None)
+                for lot, rows in per.items():
+                    agreed[(pno, lot)] = {_param_key(r[0]): (r[2], r[3], r[0]) for r in rows}
+            return (agreed, [], []) if agreed else None
+    from coa_consensus import read_with_consensus
+    doubts = []
+    agreed, issues = read_with_consensus(path, doubts)
+    if not agreed and not any(label is None for _p, _l, label, _u, _r in doubts):
+        return None
+    return agreed, doubts, issues
+
+
+def column_batches(data, path):
+    """One coa_fields per lot for a side-by-side COA, or None for any other layout.
+
+    -> (batches, held_back, notes, readings). held_back: lots no document is made for
+    (conflicting analysis results, or only one scan reading found the lot); a person
+    checks them against the original. readings: per lot, the texts read from that lot's
+    own column, for the provenance gate (a lot never borrows another lot's readings)."""
+    found = _column_reading(path)
+    if not found:
+        return None
+    agreed, doubts, issues = found
+    from coa_consensus import merge_duplicate_lots, _param_key
+    per_lot, notes, conflicts = merge_duplicate_lots(agreed)
+    held = list(conflicts)
+    for _p, lot, label, _u, _r in doubts:
+        if label is None and lot not in per_lot and not any(w == f"lot {lot}" for w, _ in held):
+            held.append((f"lot {lot}", "only one of the two scan readings found this batch"))
+    notes = list(notes) + [(w, m) for w, m in issues if w == "ocr"]
+
+    base = parse_coa_fields(data)
+    batches, readings = [], {}
+    for lot, fields in per_lot.items():
+        f = dict(base)
+        f.update(batch_lot=lot, manufacture_date=None, expiry_date=None, _lot=lot)
+        lot_readings = readings.setdefault(lot, [])
+        lot_doubts = [(label, unit, reading) for _p, l, label, unit, reading in doubts if l == lot and label]
+        unverified = {_param_key(label) for label, _u, reading in lot_doubts if reading is not None}
+        rows, yellow = [], set()
+        for key, (value, unit, label) in fields.items():
+            lot_readings += [label, value, unit]
+            if key not in unverified:
+                if _DATE_MADE.search(label) and not f["manufacture_date"]:
+                    f["manufacture_date"] = value
+                    continue
+                if _DATE_EXP.search(label) and not f["expiry_date"]:
+                    f["expiry_date"] = value
+                    continue
+            else:
+                yellow.add(len(rows))
+            rows.append([label, "", value, unit, ""])
+        shown = set(fields)
+        for label, unit, reading in lot_doubts:
+            if reading is None and _param_key(label) not in shown:
+                shown.add(_param_key(label))
+                lot_readings += [label, unit]
+                yellow.add(len(rows))
+                rows.append([label, "", DOUBT, unit, ""])
+        f["results_table"] = rows
+        f["_yellow_results"] = yellow
+        batches.append(f)
+    return batches, held, notes, {lot: [r for r in rs if r] for lot, rs in readings.items()}
+
 # ---------------------------------------------------------------------------
 # Never invent an identity.
 # Product name, TMC file number and lot normally arrive from the platform. When
@@ -836,7 +926,8 @@ def build_docx(coa_fields, ref_fields, product_name, output_path, entity=None, r
         tbl1._tbl.remove(row._tr)
 
     test_data = coa_fields.get("results_table") or []
-    for param, spec, result, uom, method in test_data:
+    unsure    = coa_fields.get("_yellow_results") or ()
+    for n, (param, spec, result, uom, method) in enumerate(test_data):
         lim_min, lim_max = parse_spec(spec)
         unit              = uom if uom.lower() not in _CELL_EMPTY else ""
         # Quality standard = the specification exactly as printed (rule of 16/09).
@@ -847,6 +938,9 @@ def build_docx(coa_fields, ref_fields, product_name, output_path, entity=None, r
         for i, val in enumerate(values):
             if i < len(new_row.cells):
                 set_c(new_row.cells[i], val)
+        if n in unsure and len(new_row.cells) > 3:
+            # the scan readings did not agree on this value: a person checks it
+            _yellow_cell(new_row.cells[3], result or DOUBT)
 
     if not test_data:
         clone_row(tbl1, template_row)
@@ -944,11 +1038,51 @@ def main():
         text_data, _ = classify_results[fpath]
         ref_docs.append(parse_ref_fields(text_data))
 
-    out_dir = Path(args.output_dir) if args.output_dir else None
-    jobs    = []
+    out_dir   = Path(args.output_dir) if args.output_dir else None
+    jobs      = []
+    refused   = []          # whole input refused: nothing of it is written
+    held_back = []          # one batch held back for a person; the other batches go on
+    readings  = {}          # (source path, lot) -> texts read from that lot's own column
+    import coa_batches as CB
+    import pdfplumber
     for fpath in coa_paths:
-        data       = coa_data_map[fpath]
-        batch_list = split_coa_by_batch(data)
+        data = coa_data_map[fpath]
+        name = Path(fpath).name
+        # "Page 1 of 3" in a one-page file: the input is incomplete (coa_batches).
+        with pdfplumber.open(fpath) as pdf:
+            real_pages = len(pdf.pages)
+        ok, msg = CB.page_marker_check([p.get("text", "") for p in data.get("pages", [])], real_pages)
+        if not ok:
+            print(f"  x  {name}: {msg}")
+            refused.append((name, msg))
+            continue
+        if msg:
+            print(f"  !  {name}: {msg}")
+
+        held  = []
+        found = column_batches(data, fpath)
+        if found:
+            batch_list, held, notes, lot_readings = found
+            for lot, texts in lot_readings.items():
+                readings[(fpath, lot)] = texts
+            print(f"  i  {name}: {len(batch_list) + len(held)} batch(es) side by side")
+            for what, why in notes:
+                print(f"  i  {name} {what}: {why}")
+            for what, why in held:
+                print(f"  x  HELD BACK {name} {what}: {why}. No document made; check the original.")
+                held_back.append((f"{name} {what}", why))
+        else:
+            batch_list = split_coa_by_batch(data)
+        # A typed batch number on a COA with several batches would give every batch
+        # the same number: refused (19/10/2026). Leave Batch empty instead.
+        n_batches = len(batch_list) + len(held)
+        if args.batch is not None and args.batch.strip() and n_batches > 1:
+            lots = ", ".join([f.get("batch_lot") or "?" for f in batch_list] + [w for w, _ in held])
+            msg = (f"this COA covers {n_batches} batches ({lots}); "
+                   "leave Batch empty so each batch gets its own document")
+            print(f"  x  {name}: {msg}")
+            refused.append((name, msg))
+            continue
         best_ref   = match_best_ref_doc(parse_coa_fields(data), ref_docs)
         for coa_fields in batch_list:
             product_name = match_pfi_product(coa_fields, best_ref.get("_products", []))
@@ -962,6 +1096,15 @@ def main():
                 coa_fields = dict(coa_fields); coa_fields["batch_lot"] = args.batch.strip()
             test_count   = len(coa_fields.get("results_table") or [])
             jobs.append((coa_fields, best_ref, product_name, test_count))
+
+    if refused:
+        print("\nREFUSED - nothing was written:")
+        for name, why in refused:
+            print(f"  x  {name}: {why}")
+        sys.exit(1)
+    if not jobs:
+        print("\nFAIL  No batch could be made; every batch was held back (see above).")
+        sys.exit(1)
 
     print(f"\nGenerating {len(jobs)} {code} COA(s) ...")
     pdf_failures = []
@@ -993,22 +1136,32 @@ def main():
         src_texts = [src.get("full_text", "")] + [p.get("text", "") for p in src.get("pages", [])]
         src_texts += [" ".join(c for c in row if c) for row in rows]
         src_texts += [c.replace("\n", " ") for row in rows for c in row if c]
+        src_texts += readings.get((coa_fields.get("_source"), coa_fields.get("_lot")), [])
         src_texts += [close_hyphens(t) for t in src_texts]
         allowed = [product_name or "", best_ref.get("doc_ref") or "", coa_fields.get("batch_lot") or "",
-                   "Production date", "[not on the source - check]", NO_PRODUCT]
+                   "Production date", "[not on the source - check]", NO_PRODUCT, DOUBT]
         allowed += list(entity.values())
-        allowed += [r.get("doc_ref", "") for r in ref_docs] + [p for r in ref_docs for p in r.get("_products", [])]
+        # product names from the commercial documents (each entry is {name, quantity}: 20/10/2026,
+        # a real order confirmation crashed the gate with the whole entry)
+        allowed += [r.get("doc_ref", "") for r in ref_docs] + [p.get("name", "") for r in ref_docs for p in r.get("_products", [])]
         try:
             provenance.assert_clean(docx_path, src_texts, allowed, template_path=str(TEMPLATE_DOC),
                                     on_fail=lambda: Path(docx_path).unlink(missing_ok=True))
             print("  ok  provenance: every string traced to the source or a supplied value")
+            # The batch this document is for, so the platform names and files it
+            # exactly as printed (one document per batch; Willem 19/10).
+            import json
+            Path(docx_path).with_suffix(".meta.json").write_text(
+                json.dumps({"batch": coa_fields.get("batch_lot") or ""}), encoding="utf-8")
         except RuntimeError as exc:
             print(f"  x  {exc}")
             pdf_failures.append((Path(docx_path).name, "provenance gate"))
             continue
         print(f"  ok  DOCX -> {Path(docx_path).name}  ({test_count} test row(s))")
-        if review or no_product:
+        unsure = coa_fields.get("_yellow_results") or ()
+        if review or no_product or unsure:
             names = (["Product name"] if no_product else []) + [lbl for k, lbl in REQUIRED if k in review]
+            names += [f"{len(unsure)} unclear scan value(s)"] if unsure else []
             print(f"  !  REVIEW: marked yellow, PDF held back until checked: {', '.join(names)}")
             drafts.append(Path(docx_path).name)
             continue
@@ -1046,6 +1199,11 @@ def main():
         for d in drafts:
             print(f"  !  {d}")
         print("Check them in Word, remove the highlight, then run with --finalise <docx>.\n")
+    if held_back:
+        print(f"\nHELD BACK - {len(held_back)} batch(es) got no document; check the original:")
+        for what, why in held_back:
+            print(f"  x  {what}: {why}")
+    if drafts or held_back:
         sys.exit(EXIT_REVIEW)
     print("\nDone. Every output delivered as .docx + .pdf pair.\n")
 

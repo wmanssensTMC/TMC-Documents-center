@@ -11,10 +11,13 @@ import { logAudit, type Actor } from "../audit";
 import type { Db } from "../db";
 import { documents, feedback, jobs, type DocMetadata, type Document, type FinalisePayload } from "../db/schema";
 import { detectType, MAX_FILE_BYTES, parseUploadKey, cleanFilename } from "../files";
-import { wakeWorker } from "../jobs";
+import { countOpenJobs, MAX_OPEN_JOBS_PER_USER, wakeWorker } from "../jobs";
+import { fileStem, plainName } from "../naming";
 import type { Storage } from "../storage";
 
 export class CheckError extends Error {}
+/** The new name lands on the Final of another document: the person must confirm (review M1). */
+export class ReplaceConfirmError extends CheckError {}
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -41,6 +44,31 @@ const fixesInput = z.record(
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Name and content agree (Willem 19/10): the file name is made from the checked details by the
+// naming rule, each value in it must be printed in the document (the worker checks), and the
+// batch the document was made for cannot be changed (one document per batch).
+type NameSource = Pick<Document, "type" | "entity">;
+
+/** The name a checked document gets. */
+export function finalName(doc: NameSource, m: DocMetadata): string {
+  const name = fileStem({ type: doc.type, entity: doc.entity, productName: m.productName, fileNr: m.fileNr, batch: m.batch });
+  if (!plainName(name)) throw new CheckError("these details do not give a valid file name; check the product name");
+  return name;
+}
+
+/** The values the file name is made of, as [label, value]: each must be printed in the document. */
+export function shownValues(doc: NameSource, m: DocMetadata): [string, string][] {
+  const all: [string, string | null][] =
+    doc.type === "COA" ? [["product name", m.productName], ["dossier", m.fileNr], ["batch", m.batch]] : [["product name", m.productName]];
+  return all.filter((v): v is [string, string] => !!v[1]);
+}
+
+/** The batch is fixed once the document has one. */
+function lockBatch(doc: Document, m: DocMetadata): DocMetadata {
+  if (doc.batch && m.batch !== doc.batch) throw new CheckError(`the batch of this document is ${doc.batch} and cannot be changed`);
+  return m;
+}
+
 async function loadDraft(db: Db | Tx, id: string): Promise<Document> {
   if (!UUID.test(id)) throw new CheckError("document not found");
   const [doc] = await db.select().from(documents).where(eq(documents.id, id));
@@ -61,16 +89,22 @@ async function openFinaliseJob(db: Db, documentId: string) {
 export async function requestFinalise(db: Db, storage: Storage, actor: Actor, documentId: string, raw: unknown) {
   const doc = await loadDraft(db, documentId);
   if (await openFinaliseJob(db, doc.id)) throw new CheckError("this document is already being finalised");
+  if ((await countOpenJobs(db, actor.email)) >= MAX_OPEN_JOBS_PER_USER) {
+    throw new CheckError("you already have many documents waiting; try again when some are done"); // review N6
+  }
   const r = z
     .object({
       metadata: metadataInput,
       mode: z.enum(["editor", "upload"]),
       fixes: fixesInput.optional(),
       docx: z.object({ key: z.string().max(200), filename: z.string().max(300) }).optional(),
+      confirmReplace: z.boolean().optional(),
     })
     .safeParse(raw);
   if (!r.success) throw new CheckError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
-  const input = r.data;
+  const input = { ...r.data, metadata: lockBatch(doc, r.data.metadata) };
+  const confirmReplace = input.confirmReplace === true;
+  const replaces = await guardReplace(db, doc, finalName(doc, input.metadata), confirmReplace);
   const parts = doc.yellowParts ?? [];
 
   let payload: FinalisePayload;
@@ -106,7 +140,28 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
     notes.push({ actor: actor.email, documentId: doc.id, kind: "word_upload", after: filename });
     payload = { mode: "upload", docx: { key: ref.key, filename }, metadata: input.metadata };
   }
+  await queueFinalise(db, actor, doc, { ...payload, replaces }, notes);
+}
 
+/**
+ * A name that lands on another document's Final replaces it: only with the person's ok (review M1).
+ * -> the id of the Final the person agreed to replace, so the worker replaces that one and no other (R2).
+ */
+async function guardReplace(db: Db | Tx, doc: Document, name: string, confirmed: boolean): Promise<string | null> {
+  if (name === doc.name) return null;
+  const [other] = await db
+    .select({ id: documents.id, version: documents.version })
+    .from(documents)
+    .where(and(eq(documents.name, name), eq(documents.status, "Final")));
+  if (other && !confirmed) {
+    throw new ReplaceConfirmError(
+      `with these details the file name becomes ${name}, which replaces Final version ${other.version} of another document. Tick "Replace it" only if that is intended`,
+    );
+  }
+  return other?.id ?? null;
+}
+
+async function queueFinalise(db: Db, actor: Actor, doc: Document, payload: FinalisePayload, notes: (typeof feedback.$inferInsert)[]) {
   try {
     await db.transaction(async (tx) => {
       const [job] = await tx
@@ -135,19 +190,25 @@ export async function makeFinal(
   doc: Document,
   files: { pdfKey: string; pdfFilename: string; docxKey: string; docxFilename: string },
   metadata: DocMetadata,
+  replaces: string | null = null,
 ) {
+  const name = finalName(doc, metadata);
   const [current] = await tx
     .select({ id: documents.id, version: documents.version })
     .from(documents)
-    .where(and(eq(documents.name, doc.name), eq(documents.status, "Final")))
+    .where(and(eq(documents.name, name), eq(documents.status, "Final")))
     .for("update");
   const [{ last }] = await tx
     .select({ last: sql<number | null>`max(${documents.version})` })
     .from(documents)
-    .where(eq(documents.name, doc.name));
+    .where(eq(documents.name, name));
+  // checked again here: another Final may have appeared since the request (review M1)
+  if (current && name !== doc.name && current.id !== replaces) {
+    throw new ReplaceConfirmError(`the file name ${name} now replaces Final version ${current.version} of another document; confirm it on the check screen`);
+  }
   if (current) {
     await tx.update(documents).set({ status: "Superseded" }).where(eq(documents.id, current.id));
-    await logAudit(tx, actor, "document.superseded", current.id, { name: doc.name, version: current.version });
+    await logAudit(tx, actor, "document.superseded", current.id, { name, version: current.version });
   }
   const version = (Number(last) || 0) + 1;
   const now = new Date();
@@ -155,6 +216,7 @@ export async function makeFinal(
     .update(documents)
     .set({
       status: "Final",
+      name,
       version,
       previousVersionId: current?.id ?? null,
       ...files,
@@ -169,7 +231,12 @@ export async function makeFinal(
     .where(and(eq(documents.id, doc.id), eq(documents.status, "To check")))
     .returning({ id: documents.id });
   if (!updated.length) throw new CheckError("the document changed while finalising");
-  await logAudit(tx, actor, "document.finalised", doc.id, { name: doc.name, version, superseded: current?.version ?? null });
+  await logAudit(tx, actor, "document.finalised", doc.id, {
+    name,
+    ...(name !== doc.name ? { renamedFrom: doc.name, replacedOtherDocument: !!current } : {}),
+    version,
+    superseded: current?.version ?? null,
+  });
   await closeNeutraliseJobIfDone(tx, doc.jobId);
   return { version, supersededVersion: current?.version ?? null };
 }
@@ -184,24 +251,20 @@ async function closeNeutraliseJobIfDone(tx: Tx, jobId: string | null) {
   if (open === 0) await tx.update(jobs).set({ state: "done" }).where(and(eq(jobs.id, jobId), eq(jobs.state, "to_check")));
 }
 
-/** A draft the engine left without any yellow: a person still approves it (Willem 17/10). */
-export async function approveDraft(db: Db, actor: Actor, documentId: string, rawMetadata: unknown) {
+/**
+ * A draft the engine left without any yellow: a person still approves it (Willem 17/10). It goes
+ * through the worker too, which checks the details are printed in the document (Willem 19/10).
+ */
+export async function approveDraft(db: Db, actor: Actor, documentId: string, rawMetadata: unknown, confirmReplace = false) {
   const m = metadataInput.safeParse(rawMetadata);
   if (!m.success) throw new CheckError(m.error.issues.map((i) => i.message).join("; "));
-  if (!UUID.test(documentId)) throw new CheckError("document not found");
-  if (await openFinaliseJob(db, documentId)) throw new CheckError("this document is being finalised");
-  return db.transaction(async (tx) => {
-    const doc = await loadDraft(tx, documentId);
-    if ((doc.yellowParts ?? []).length) throw new CheckError("this draft has yellow parts: check them first");
-    if (!doc.pdfKey || !doc.pdfFilename || !doc.docxKey || !doc.docxFilename) throw new CheckError("this draft has no PDF yet");
-    return makeFinal(
-      tx,
-      actor,
-      doc,
-      { pdfKey: doc.pdfKey, pdfFilename: doc.pdfFilename, docxKey: doc.docxKey, docxFilename: doc.docxFilename },
-      m.data,
-    );
-  });
+  const doc = await loadDraft(db, documentId);
+  if (await openFinaliseJob(db, doc.id)) throw new CheckError("this document is being finalised");
+  if ((doc.yellowParts ?? []).length) throw new CheckError("this draft has yellow parts: check them first");
+  if (!doc.pdfKey || !doc.pdfFilename || !doc.docxKey || !doc.docxFilename) throw new CheckError("this draft has no PDF yet");
+  const metadata = lockBatch(doc, m.data);
+  const replaces = await guardReplace(db, doc, finalName(doc, metadata), confirmReplace);
+  await queueFinalise(db, actor, doc, { mode: "approve", metadata, replaces }, []);
 }
 
 export async function rejectDraft(db: Db, actor: Actor, documentId: string, rawReason: unknown) {

@@ -1,5 +1,30 @@
 # Changelog
 
+## 19/10/2026 · COA batches, file-name rule, MSDS pictograms (security gate PASS 92/100)
+- Engine: a COA with batches side by side (one result column per batch) gives one document per batch, each with its own values and dates. The same lot twice: kept once when only the quantity differs (noted in the log), held back for a person when an analysis result differs. Scan values the two readings do not agree on are marked yellow, never chosen. "Page 1 of 3" in a shorter file is refused as incomplete.
+- A typed batch on a COA with several batches is refused (Neutralise screen: leave Batch empty).
+- Check screen: the file name follows the details by the naming rule and is shown live; each value in it must be printed in the document (the worker checks, also on Approve); the batch is locked.
+- Jobs screen: the engine log is also shown for jobs waiting for a check (held-back batches are visible).
+- PyMuPDF added to the engine requirements: the MSDS route needs it to carry hazard pictograms over.
+- Security review fixes (first score 80): a new name that lands on another document's Final needs a "Replace it" tick, checked again when it becomes Final (M1); printed-values check matches whole words only and refuses values it cannot check (M2); Approve re-checks the Word file for yellow in the worker (L1); each batch is checked against its own column readings only (L2); unreadable or missing batch details stop the job instead of dropping the batch lock (L3/R1); the replace confirmation names the exact Final shown to the person (R2); a product name needs 3 characters or more to count as printed (R3). Re-review: 92/100, open by design: supplier name optional (L4).
+- Tests: `engine/tests/test_coa_batches_route.py`, `engine/tests/test_sds_pictograms.py` (pictograms kept with their field at the printed size, supplier logo dropped), printed-values check in `web/worker/test_yellow.py`, approve/rename in the web tests.
+
+
+## 19/10/2026 · Phase 2 final security gate: PASS 92/100
+- Fixes after the gate: engine yellow check also sees runs inside hyperlinks, fields and tracked inserts (N4, test extended); uploaded Word files with tracked changes are refused and text in deleted parts and charts is read for the supplier name (N1); the worker always lists yellow parts, a draft with any yellow keeps no PDF (N5); finalise requests count toward the 40 open jobs per person (N6).
+- Open, decision for Willem: supplier name required on neutralise jobs (N2); what happens when product/dossier/batch change at the check while they are in the file name (N3).
+- Before real data: restricted DB role (S2), engine under its own user and worker without internet (W2), pinned versions (N7).
+
+
+## 19/10/2026 · Drag and drop (BRIEF screen 3)
+- Neutralise and Upload: drop zones (drag files in, or click to choose). Wrong file types are skipped with a note.
+
+
+## 19/10/2026 · Hardening before real data (reviews N1/N2)
+- Word-file check reads the file's real structure, before python-docx or LibreOffice see it: relationships parsed as XML (any outside link refused except normal web links), fields that include outside content (INCLUDEPICTURE, INCLUDETEXT, LINK, DDE, IMPORT) refused, real unpacked bytes counted (max 100 MB).
+- Supplier-name check now also reads footnotes, endnotes, comments, text boxes and document properties (author, title), using the engine's own normalisation (accents and punctuation ignored, also written together).
+
+
 ## 19/10/2026 · Engine: yellow check reads the whole document (Willem: review L2)
 - `engine/scripts/tmc_common.py`: new `iter_highlighted()` finds yellow marks in body text, tables, tables inside tables, text boxes, and the headers and footers of every section (first page, even pages). A text box is stored twice by Word; only the shown version counts. `yellow_runs()` (used by --finalise) and the check screen's helper both use it, so they can never disagree.
 - Test: `engine/tests/test_yellow_coverage.py` (a mark left only in a header still blocks Final).

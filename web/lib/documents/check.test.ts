@@ -5,7 +5,7 @@ import { createPgliteDb, type Db } from "../db";
 import { documents, feedback, jobs } from "../db/schema";
 import { newUploadKey } from "../files";
 import type { Storage } from "../storage";
-import { approveDraft, CheckError, rejectDraft, requestFinalise } from "./check";
+import { approveDraft, CheckError, finalName, makeFinal, rejectDraft, ReplaceConfirmError, requestFinalise, shownValues } from "./check";
 
 const kars: Actor = { email: "kars@transmare.com", name: "Kars", role: "user" };
 const DOCX = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]);
@@ -147,15 +147,71 @@ describe("finalise rules from the security review", () => {
 });
 
 describe("approve and reject", () => {
-  it("approve: a draft without yellow becomes Final and supersedes the previous Final", async () => {
-    const pdf = () => ({ pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf" });
-    const first = await draft({ yellowParts: [], ...pdf() });
-    expect(await approveDraft(db, kars, first.id, meta)).toEqual({ version: 1, supersededVersion: null });
-    const second = await draft({ yellowParts: [], ...pdf() });
-    expect(await approveDraft(db, kars, second.id, meta)).toEqual({ version: 2, supersededVersion: 1 });
+  it("approve: goes through the worker, which checks the details are printed in the document", async () => {
+    const d = await draft({ yellowParts: [], pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf" });
+    await approveDraft(db, kars, d.id, meta);
+    const [job] = await db.select().from(jobs);
+    expect(job).toMatchObject({ kind: "finalise", state: "queued", documentId: d.id, payload: { mode: "approve", metadata: meta } });
+    expect((await db.select().from(documents))[0].status).toBe("To check"); // never Final by itself
+  });
+
+  it("becoming Final supersedes the previous Final of the same name", async () => {
+    const pdf = () => ({ pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf", docxKey: newUploadKey("docx"), docxFilename: "x.docx" });
+    const final = (id: string, f: ReturnType<typeof pdf>) =>
+      db.transaction(async (tx) => makeFinal(tx, kars, (await tx.select().from(documents).where(eq(documents.id, id)))[0], f, meta));
+    const first = await draft({ yellowParts: [] });
+    expect(await final(first.id, pdf())).toEqual({ version: 1, supersededVersion: null });
+    const second = await draft({ yellowParts: [] });
+    expect(await final(second.id, pdf())).toEqual({ version: 2, supersededVersion: 1 });
     const rows = await db.select().from(documents);
     expect(rows.find((r) => r.id === first.id)?.status).toBe("Superseded");
     expect(rows.find((r) => r.id === second.id)).toMatchObject({ status: "Final", approvedBy: kars.email, productName: "Sodium Benzoate" });
+  });
+});
+
+describe("file name follows the details (Willem 19/10)", () => {
+  it("the name is made from the checked details by the naming rule", () => {
+    expect(finalName({ type: "COA", entity: "TMC" }, meta)).toBe("TMC_COA_840.S0999_Sodium_Benzoate_SB-1");
+    expect(finalName({ type: "MSDS", entity: "TMC" }, meta)).toBe("TMC_MSDS_Sodium_Benzoate");
+    expect(() => finalName({ type: "TDS", entity: "TMC" }, { ...meta, productName: "???" })).toThrow(/valid file name/);
+  });
+
+  it("a changed product name renames the document when it becomes Final", async () => {
+    const d = await draft({ yellowParts: [], name: "TMC_COA_840.S0999_Old_Name_SB-1" });
+    const files = { pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf", docxKey: newUploadKey("docx"), docxFilename: "x.docx" };
+    await db.transaction(async (tx) => makeFinal(tx, kars, d, files, meta));
+    expect((await db.select().from(documents))[0].name).toBe("TMC_COA_840.S0999_Sodium_Benzoate_SB-1");
+  });
+
+  it("the values in the name must be printed: COA all three, MSDS/TDS the product", () => {
+    expect(shownValues({ type: "COA", entity: "TMC" }, meta)).toEqual([
+      ["product name", "Sodium Benzoate"],
+      ["dossier", "840.S0999"],
+      ["batch", "SB-1"],
+    ]);
+    expect(shownValues({ type: "MSDS", entity: "TMC" }, { ...meta, fileNr: null })).toEqual([["product name", "Sodium Benzoate"]]);
+  });
+
+  it("a new name that lands on another document's Final needs the person's explicit ok (review M1)", async () => {
+    const other = await draft({ status: "Final", version: 1, productName: "Sodium Benzoate", yellowParts: [], pdfKey: newUploadKey("pdf"), pdfFilename: "a.pdf" });
+    const d = await draft({ yellowParts: [], name: "TMC_COA_840.S0999_Old_Name_SB-1", pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf" });
+    await expect(approveDraft(db, kars, d.id, meta)).rejects.toThrow(ReplaceConfirmError);
+    expect(await db.select().from(jobs)).toHaveLength(0);
+    await approveDraft(db, kars, d.id, meta, true);
+    expect((await db.select().from(jobs))[0].payload).toMatchObject({ mode: "approve", replaces: other.id });
+    // checked again when it becomes Final: without the ok, nothing is replaced
+    const files = { pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf", docxKey: newUploadKey("docx"), docxFilename: "x.docx" };
+    await expect(db.transaction(async (tx) => makeFinal(tx, kars, d, files, meta))).rejects.toThrow(ReplaceConfirmError);
+    expect(await db.transaction(async (tx) => makeFinal(tx, kars, d, files, meta, other.id))).toEqual({ version: 2, supersededVersion: 1 });
+  });
+
+  it("the batch the document was made for cannot be changed", async () => {
+    const d = await draft({ yellowParts: [], batch: "SB-1", pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf" });
+    await expect(approveDraft(db, kars, d.id, { ...meta, batch: "SB-2" })).rejects.toThrow(/cannot be changed/);
+    await expect(
+      requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: { ...meta, batch: "" }, fixes: {} }),
+    ).rejects.toThrow(/cannot be changed/);
+    expect(await db.select().from(jobs)).toHaveLength(0);
   });
 
   it("approve refuses a draft with yellow parts or without PDF", async () => {

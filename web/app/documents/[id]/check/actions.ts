@@ -2,15 +2,16 @@
 
 import { requireUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
-import { approveDraft, CheckError, rejectDraft, requestFinalise } from "@/lib/documents/check";
+import { approveDraft, CheckError, rejectDraft, ReplaceConfirmError, requestFinalise } from "@/lib/documents/check";
 import { getStorage } from "@/lib/storage";
 
-export type CheckResult = { ok: true; message: string } | { ok: false; error: string };
+export type CheckResult = { ok: true; message: string } | { ok: false; error: string; confirmReplace?: boolean };
 
 async function run(fn: () => Promise<string>): Promise<CheckResult> {
   try {
     return { ok: true, message: await fn() };
   } catch (err) {
+    if (err instanceof ReplaceConfirmError) return { ok: false, error: err.message, confirmReplace: true };
     if (err instanceof CheckError) return { ok: false, error: err.message };
     console.error("check action failed", err instanceof Error ? err.message : err);
     return { ok: false, error: "That did not work. Try again or tell the administrator." };
@@ -26,13 +27,11 @@ export async function finaliseDraft(documentId: string, input: unknown): Promise
   });
 }
 
-export async function approve(documentId: string, metadata: unknown): Promise<CheckResult> {
+export async function approve(documentId: string, metadata: unknown, confirmReplace = false): Promise<CheckResult> {
   const user = await requireUser();
   return run(async () => {
-    const r = await approveDraft(await getDb(), user, documentId, metadata);
-    return r.supersededVersion
-      ? `Final as version ${r.version}; version ${r.supersededVersion} is now Superseded.`
-      : `Final as version ${r.version}.`;
+    await approveDraft(await getDb(), user, documentId, metadata, confirmReplace === true);
+    return "Sent for approval. The neutralizer checks the details against the document; this page updates itself.";
   });
 }
 

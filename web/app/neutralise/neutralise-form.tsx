@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
+import { DropZone } from "@/components/drop-zone";
 import { sendFile } from "@/lib/client-upload";
 import { ENTITIES, type Entity, type Route } from "@/lib/constants";
 import { MAX_FILE_BYTES } from "@/lib/files";
@@ -20,7 +21,7 @@ const input =
   "block w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-tmc focus:outline-none focus:ring-1 focus:ring-tmc";
 const noSubscribe = () => () => {};
 
-function pdfsOnly(list: FileList | null): { ok: File[]; error?: string } {
+function pdfsOnly(list: FileList | File[] | null): { ok: File[]; error?: string } {
   const files = Array.from(list ?? []);
   const bad = files.find((f) => !/\.pdf$/i.test(f.name) || f.size > MAX_FILE_BYTES);
   return bad ? { ok: [], error: `${bad.name}: only PDF files up to 25 MB.` } : { ok: files };
@@ -39,7 +40,7 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
   const withCommercial = route === "auto" || route === "coa";
   const showBatch = route === "auto" || route === "coa";
 
-  function addSupplierFiles(list: FileList | null) {
+  function addSupplierFiles(list: FileList | File[] | null) {
     const { ok, error } = pdfsOnly(list);
     if (error) return setError(error);
     setError(null);
@@ -133,19 +134,11 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
             </button>
           )}
         </div>
-        <input
-          type="file"
-          accept=".pdf,application/pdf"
-          multiple
-          onChange={(e) => {
-            addSupplierFiles(e.target.files);
-            e.target.value = "";
-          }}
-          className="mt-3 block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-tmc-light file:px-3 file:py-2 file:text-tmc"
-          aria-label="Add supplier documents"
-        />
+        <div className="mt-3">
+          <DropZone label="Add supplier documents" accept=".pdf,application/pdf" multiple onFiles={addSupplierFiles} />
+        </div>
         <p className="mt-1 text-xs text-gray-500">
-          One type per drop; several COAs at once is fine. Leave a field empty to let the neutralizer read it from the document.
+          One type per drop; several COAs at once is fine. Leave a field empty to let the neutralizer read it from the document. A COA with several batches: leave Batch empty, each batch gets its own document.
         </p>
         {rows.length > 0 && (
           <div className="mt-4 overflow-x-auto">
@@ -196,18 +189,18 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
             PFI, order confirmation, contract or invoice. The neutralizer takes the product name and dossier from them;
             values typed above win.
           </p>
-          <input
-            type="file"
-            accept=".pdf,application/pdf"
-            multiple
-            onChange={(e) => {
-              const { ok, error } = pdfsOnly(e.target.files);
-              if (error) setError(error);
-              else setCommercial(ok.slice(0, 5));
-            }}
-            className="mt-3 block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-tmc-light file:px-3 file:py-2 file:text-tmc"
-            aria-label="Add commercial documents"
-          />
+          <div className="mt-3">
+            <DropZone
+              label="Add commercial documents"
+              accept=".pdf,application/pdf"
+              multiple
+              onFiles={(files) => {
+                const { ok, error } = pdfsOnly(files);
+                if (error) setError(error);
+                else setCommercial(ok.slice(0, 5));
+              }}
+            />
+          </div>
           {commercial.length > 0 && <p className="mt-1 text-xs text-gray-600">{commercial.map((f) => f.name).join(", ")}</p>}
         </section>
       )}
