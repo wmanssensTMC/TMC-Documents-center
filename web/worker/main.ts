@@ -4,9 +4,9 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
 import { getDb } from "../lib/db";
-import { claimNextJob, requeueStaleJobs } from "../lib/jobs/worker-state";
+import { claimNextJob, failJob, requeueStaleJobs } from "../lib/jobs/worker-state";
 import { getStorage } from "../lib/storage";
-import { processFinaliseJob, processNeutraliseJob } from "./process";
+import { processFinaliseJob, processLabelJob, processNeutraliseJob } from "./process";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const SECRET = process.env.WORKER_WAKE_SECRET ?? "";
@@ -33,7 +33,9 @@ async function drain() {
       for (let job = await claimNextJob(db); job; job = await claimNextJob(db)) {
         console.log(`job ${job.id} started (${job.kind}, ${job.route})`);
         if (job.kind === "neutralise") await processNeutraliseJob(db, getStorage(), job);
-        else await processFinaliseJob(db, getStorage(), job);
+        else if (job.kind === "finalise") await processFinaliseJob(db, getStorage(), job);
+        else if (job.kind === "label") await processLabelJob(db, getStorage(), job);
+        else await failJob(db, job, null, `[worker] this worker does not know job kind ${String(job.kind)}; update the worker`);
         console.log(`job ${job.id} finished`);
       }
     } while (again);

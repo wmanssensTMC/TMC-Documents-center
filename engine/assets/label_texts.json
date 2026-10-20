@@ -1,0 +1,100 @@
+{
+ "_about": "Fixed label texts per language (translation file). Copied from Kars' TMC Label Creator (data/phrases.json, checked 14/10/2026). CLP terms come from the official EN and FR editions of Regulation (EC) No 1272/2008 (EUR-Lex); 'TMC' terms are TMC's own wording. Never add a language or a text that is not supplied by TMC: a label in a language without a text here is refused. Arabic follows when its texts are supplied.",
+ "languages": {
+  "en": {
+   "name": "English",
+   "decimal": "."
+  },
+  "fr": {
+   "name": "French",
+   "decimal": ","
+  }
+ },
+ "texts": {
+  "hazardStatements": {
+   "en": "Hazard statements",
+   "fr": "Mentions de danger",
+   "source": "CLP term (Art. 18, 20, 21, 22)"
+  },
+  "precautionaryStatements": {
+   "en": "Precautionary statements",
+   "fr": "Conseils de prudence",
+   "source": "CLP term (Art. 18, 20, 21, 22)"
+  },
+  "signal.Danger": {
+   "en": "Danger",
+   "fr": "Danger",
+   "source": "CLP term (Art. 18, 20, 21, 22)"
+  },
+  "signal.Warning": {
+   "en": "Warning",
+   "fr": "Attention",
+   "source": "CLP term (Art. 18, 20, 21, 22)"
+  },
+  "productIdentifier": {
+   "en": "Product identifier",
+   "fr": "Identificateur de produit",
+   "source": "CLP term (Art. 18, 20, 21, 22)"
+  },
+  "casNo": {
+   "en": "CAS No.",
+   "fr": "N° CAS",
+   "source": "TMC"
+  },
+  "ecNo": {
+   "en": "EC No.",
+   "fr": "N° CE",
+   "source": "TMC"
+  },
+  "ufi": {
+   "en": "UFI",
+   "fr": "UFI",
+   "source": "TMC"
+  },
+  "contains": {
+   "en": "Contains",
+   "fr": "Contient",
+   "source": "TMC"
+  },
+  "batch": {
+   "en": "Batch",
+   "fr": "Lot",
+   "source": "TMC"
+  },
+  "productionDate": {
+   "en": "Production date",
+   "fr": "Date de fabrication",
+   "source": "TMC"
+  },
+  "expiryDate": {
+   "en": "Expiry date",
+   "fr": "Date de péremption",
+   "source": "TMC"
+  },
+  "countryOfOrigin": {
+   "en": "Country of origin",
+   "fr": "Pays d'origine",
+   "source": "TMC"
+  },
+  "netWeight": {
+   "en": "Net weight",
+   "fr": "Poids net",
+   "source": "TMC"
+  },
+  "grossWeight": {
+   "en": "Gross weight",
+   "fr": "Poids brut",
+   "source": "TMC"
+  },
+  "poisonCentre": {
+   "en": "Poison centre",
+   "fr": "Centre antipoison",
+   "source": "TMC"
+  },
+  "sdsNote": {
+   "en": "See Safety Data Sheet for further information",
+   "fr": "Voir la fiche de données de sécurité pour plus d'informations",
+   "source": "TMC"
+  }
+ }
+}

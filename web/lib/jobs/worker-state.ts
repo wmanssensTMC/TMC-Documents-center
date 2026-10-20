@@ -54,13 +54,18 @@ export type Draft = {
   docxFilename: string;
   pdfKey: string | null; // only when the engine left nothing yellow
   pdfFilename: string | null;
-  sourceKey: string;
-  sourceFilename: string;
+  sourceKey: string | null; // labels have no supplier original
+  sourceFilename: string | null;
   yellow: boolean;
   yellowParts: YellowPart[];
   previewKey: string | null;
   /** The batch the engine made this document for (one document per batch). */
   batch?: string | null;
+  language?: string;
+  manufacturingDate?: string | null;
+  expiryOrRetestDate?: string | null;
+  /** What made it, for the audit trail. */
+  by?: "neutralizer" | "label";
 };
 
 /**
@@ -85,6 +90,9 @@ export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: nu
           productName: job.productName,
           fileNr: job.fileNr,
           batch: d.batch ?? job.batch,
+          language: d.language ?? "EN",
+          manufacturingDate: d.manufacturingDate ?? null,
+          expiryOrRetestDate: d.expiryOrRetestDate ?? null,
           supplierName: job.supplierName,
           status: "To check",
           version: null,
@@ -102,7 +110,7 @@ export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: nu
         .returning({ id: documents.id });
       await logAudit(tx, { email: job.createdBy }, "document.drafted", row.id, {
         job: job.id,
-        by: "neutralizer",
+        by: d.by ?? "neutralizer",
         name: d.name,
         yellow: d.yellow,
         yellowParts: d.yellowParts.length,

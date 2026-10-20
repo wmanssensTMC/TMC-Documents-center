@@ -12,6 +12,7 @@ import type { Db } from "../db";
 import { documents, feedback, jobs, type DocMetadata, type Document, type FinalisePayload } from "../db/schema";
 import { detectType, MAX_FILE_BYTES, parseUploadKey, cleanFilename } from "../files";
 import { countOpenJobs, MAX_OPEN_JOBS_PER_USER, wakeWorker } from "../jobs";
+import { assertLabelApprovable } from "../labels";
 import { fileStem, plainName } from "../naming";
 import type { Storage } from "../storage";
 
@@ -47,11 +48,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Name and content agree (Willem 19/10): the file name is made from the checked details by the
 // naming rule, each value in it must be printed in the document (the worker checks), and the
 // batch the document was made for cannot be changed (one document per batch).
-type NameSource = Pick<Document, "type" | "entity">;
+type NameSource = Pick<Document, "type" | "entity"> & { language?: string | null };
 
 /** The name a checked document gets. */
 export function finalName(doc: NameSource, m: DocMetadata): string {
-  const name = fileStem({ type: doc.type, entity: doc.entity, productName: m.productName, fileNr: m.fileNr, batch: m.batch });
+  const name = fileStem({ type: doc.type, entity: doc.entity, productName: m.productName, fileNr: m.fileNr, batch: m.batch, language: doc.language });
   if (!plainName(name)) throw new CheckError("these details do not give a valid file name; check the product name");
   return name;
 }
@@ -59,7 +60,11 @@ export function finalName(doc: NameSource, m: DocMetadata): string {
 /** The values the file name is made of, as [label, value]: each must be printed in the document. */
 export function shownValues(doc: NameSource, m: DocMetadata): [string, string][] {
   const all: [string, string | null][] =
-    doc.type === "COA" ? [["product name", m.productName], ["dossier", m.fileNr], ["batch", m.batch]] : [["product name", m.productName]];
+    doc.type === "COA"
+      ? [["product name", m.productName], ["dossier", m.fileNr], ["batch", m.batch]]
+      : doc.type === "LABEL" // the label prints product and batch; the file nr is not on it (ask Kars)
+        ? [["product name", m.productName], ["batch", m.batch]]
+        : [["product name", m.productName]];
   return all.filter((v): v is [string, string] => !!v[1]);
 }
 
@@ -102,6 +107,7 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
     })
     .safeParse(raw);
   if (!r.success) throw new CheckError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+  await assertLabelApprovable(db, doc, (msg) => new CheckError(msg));
   const input = { ...r.data, metadata: lockBatch(doc, r.data.metadata) };
   const confirmReplace = input.confirmReplace === true;
   const replaces = await guardReplace(db, doc, finalName(doc, input.metadata), confirmReplace);
@@ -192,6 +198,8 @@ export async function makeFinal(
   metadata: DocMetadata,
   replaces: string | null = null,
 ) {
+  // every way to Final passes here: a sample label never gets through (Willem 20/10)
+  await assertLabelApprovable(tx, doc, (msg) => new CheckError(msg));
   const name = finalName(doc, metadata);
   const [current] = await tx
     .select({ id: documents.id, version: documents.version })
@@ -262,6 +270,7 @@ export async function approveDraft(db: Db, actor: Actor, documentId: string, raw
   if (await openFinaliseJob(db, doc.id)) throw new CheckError("this document is being finalised");
   if ((doc.yellowParts ?? []).length) throw new CheckError("this draft has yellow parts: check them first");
   if (!doc.pdfKey || !doc.pdfFilename || !doc.docxKey || !doc.docxFilename) throw new CheckError("this draft has no PDF yet");
+  await assertLabelApprovable(db, doc, (msg) => new CheckError(msg)); // early, clear message
   const metadata = lockBatch(doc, m.data);
   const replaces = await guardReplace(db, doc, finalName(doc, metadata), confirmReplace);
   await queueFinalise(db, actor, doc, { mode: "approve", metadata, replaces }, []);
