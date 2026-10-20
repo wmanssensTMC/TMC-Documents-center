@@ -69,8 +69,8 @@ export function fileStem(p: NameParts): string {
       return [code, "TDS", safePart(p.productName)].filter(Boolean).join("_");
     case "LABEL": {
       const parts = [code, "LABEL"];
-      for (const v of [p.fileNr, p.productName, p.batch]) if (v) parts.push(coaSanitize(v));
-      if (p.language) parts.push(coaSanitize(p.language).toUpperCase());
+      // a part that is empty once cleaned is left out, never an empty "__" (security L1)
+      for (const v of [p.fileNr, p.productName, p.batch, p.language?.toUpperCase()]) if (v && coaSanitize(v)) parts.push(coaSanitize(v));
       return parts.join("_");
     }
     default:

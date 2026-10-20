@@ -20,7 +20,7 @@ type Props = {
   busy: boolean;
   uploadMode: "blob" | "local";
   initial: { productName: string; fileNr: string; batch: string };
-  naming: { type: DocType; entity: Entity; batchLocked: boolean };
+  naming: { type: DocType; entity: Entity; batchLocked: boolean; language: string };
 };
 
 export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial, naming }: Props) {
@@ -63,7 +63,9 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
 
   const metadata = { productName: meta.productName, fileNr: meta.fileNr, batch: meta.batch };
   // The file name follows the details (Willem 19/10); shown so nobody is surprised.
-  const name = fileStem({ type: naming.type, entity: naming.entity, productName: meta.productName.trim(), fileNr: meta.fileNr.trim(), batch: meta.batch.trim() });
+  const name = fileStem({ type: naming.type, entity: naming.entity, productName: meta.productName.trim(), fileNr: meta.fileNr.trim(), batch: meta.batch.trim(), language: naming.language });
+  // a label is approved as the worker made it: no Word round trip, dossier fixed (security M1/L2)
+  const isLabel = naming.type === "LABEL";
 
   return (
     <div className="mt-6 space-y-6">
@@ -75,7 +77,13 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
         </label>
         <label className="block text-sm">
           Dossier
-          <input value={meta.fileNr} onChange={(e) => setMeta({ ...meta, fileNr: e.target.value })} maxLength={50} className={`mt-1 ${input}`} />
+          <input
+            value={meta.fileNr}
+            onChange={(e) => setMeta({ ...meta, fileNr: e.target.value })}
+            readOnly={isLabel}
+            maxLength={50}
+            className={`mt-1 ${input} ${isLabel ? "bg-gray-100 text-gray-600" : ""}`}
+          />
         </label>
         <label className="block text-sm">
           Batch
@@ -179,35 +187,37 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
         </section>
       )}
 
-      <section className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-black/5">
-        <h2 className="font-semibold">Or: check in Word yourself</h2>
-        <p className="mt-1 text-sm text-gray-600">
-          Download the Word draft, correct it, remove every yellow highlight, then upload it here. The neutralizer
-          refuses to finalise while anything is still yellow.
-        </p>
-        <input
-          type="file"
-          accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          onChange={(e) => setWord(e.target.files?.[0] ?? null)}
-          className="mt-3 block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-tmc-light file:px-3 file:py-2 file:text-tmc"
-          aria-label="Checked Word file"
-        />
-        <button
-          type="button"
-          disabled={disabled || !word || !meta.productName.trim()}
-          onClick={() =>
-            act(async () => {
-              if (!word) return { ok: false, error: "Choose the checked Word file." };
-              if (word.size > MAX_FILE_BYTES) return { ok: false, error: "The file is larger than 25 MB." };
-              const key = await sendFile(uploadMode, "docx", word);
-              return finaliseDraft(documentId, { mode: "upload", metadata, confirmReplace: replace, docx: { key, filename: word.name } });
-            })
-          }
-          className="mt-3 rounded-md border border-tmc px-4 py-2 text-sm font-medium text-tmc hover:bg-tmc-light disabled:opacity-50"
-        >
-          Upload checked Word and finalise
-        </button>
-      </section>
+      {!isLabel && (
+        <section className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-black/5">
+          <h2 className="font-semibold">Or: check in Word yourself</h2>
+          <p className="mt-1 text-sm text-gray-600">
+            Download the Word draft, correct it, remove every yellow highlight, then upload it here. The neutralizer
+            refuses to finalise while anything is still yellow.
+          </p>
+          <input
+            type="file"
+            accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            onChange={(e) => setWord(e.target.files?.[0] ?? null)}
+            className="mt-3 block w-full text-sm file:mr-3 file:rounded-md file:border-0 file:bg-tmc-light file:px-3 file:py-2 file:text-tmc"
+            aria-label="Checked Word file"
+          />
+          <button
+            type="button"
+            disabled={disabled || !word || !meta.productName.trim()}
+            onClick={() =>
+              act(async () => {
+                if (!word) return { ok: false, error: "Choose the checked Word file." };
+                if (word.size > MAX_FILE_BYTES) return { ok: false, error: "The file is larger than 25 MB." };
+                const key = await sendFile(uploadMode, "docx", word);
+                return finaliseDraft(documentId, { mode: "upload", metadata, confirmReplace: replace, docx: { key, filename: word.name } });
+              })
+            }
+            className="mt-3 rounded-md border border-tmc px-4 py-2 text-sm font-medium text-tmc hover:bg-tmc-light disabled:opacity-50"
+          >
+            Upload checked Word and finalise
+          </button>
+        </section>
+      )}
 
       <section className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-black/5">
         <h2 className="font-semibold">Reject this draft</h2>

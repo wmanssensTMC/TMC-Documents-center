@@ -61,7 +61,13 @@ export type FinalisePayload = {
 );
 /** label jobs: the template (an id from lib/labels, never a path) and the other form values.
  * Product name, file nr and batch sit in the job's own columns, like a neutralise job. */
-export type LabelPayload = { template: string; language: string; fields: Record<string, string> };
+export type LabelPayload = {
+  template: string;
+  language: string;
+  fields: Record<string, string>;
+  /** Kept from the moment the label was made: a sample label stays a sample (security M3). */
+  sample: boolean;
+};
 
 // One neutralise job = one supplier document (+ commercial documents for a COA), run by the
 // worker. A COA with several batches can give several documents (documents.job_id).

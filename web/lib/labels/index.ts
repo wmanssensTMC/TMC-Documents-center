@@ -72,7 +72,7 @@ export async function createLabelJob(db: Db, actor: Actor, raw: unknown): Promis
         fileNr: input.fileNr || null,
         batch: input.batch,
         supplierName: null,
-        label: { template: input.template, language: input.language, fields },
+        label: { template: input.template, language: input.language, fields, sample: labelTemplate(input.template)!.sample },
         createdBy: actor.email,
       })
       .returning({ id: jobs.id });
@@ -84,17 +84,18 @@ export async function createLabelJob(db: Db, actor: Actor, raw: unknown): Promis
 }
 
 /** The template a label document was made with (null: unknown, treated as not approvable). */
-export async function templateOfLabel(db: Db | Tx, doc: Pick<Document, "jobId">): Promise<LabelTemplate | null> {
+export async function templateOfLabel(db: Db | Tx, doc: Pick<Document, "jobId">): Promise<(LabelTemplate & { madeAsSample: boolean }) | null> {
   if (!doc.jobId) return null;
   const [job] = await db.select({ label: jobs.label }).from(jobs).where(eq(jobs.id, doc.jobId));
-  return job?.label ? labelTemplate(job.label.template) : null;
+  const t = job?.label ? labelTemplate(job.label.template) : null;
+  return t && job.label ? { ...t, madeAsSample: job.label.sample !== false } : null;
 }
 
-/** Labels from a sample (or unknown) template never become Final. */
+/** Labels from a sample (or unknown) template never become Final: a sample when it was made, or now. */
 export async function assertLabelApprovable(db: Db | Tx, doc: Pick<Document, "type" | "jobId">, onRefuse: (msg: string) => Error) {
   if (doc.type !== "LABEL") return;
   const t = await templateOfLabel(db, doc);
-  if (!t || t.sample) {
+  if (!t || t.sample || t.madeAsSample) {
     throw onRefuse("this label was made with the SAMPLE template and can never become Final; Kars' real template replaces it");
   }
 }

@@ -170,7 +170,7 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
 export async function processLabelJob(db: Db, storage: Storage, job: Job) {
   const label = job.label;
   if (!label) return failJob(db, job, null, "[worker] label job without label details");
-  const template = labelTemplate(label.template);
+  const template = labelTemplate(label.template); // never a path from the database
   if (!template) return failJob(db, job, null, "[worker] unknown label template");
   const dir = await mkdtemp(path.join(os.tmpdir(), "tmc-job-"));
   try {

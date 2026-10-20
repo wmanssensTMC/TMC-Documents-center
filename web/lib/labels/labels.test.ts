@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Actor } from "../audit";
 import { createPgliteDb, type Db } from "../db";
 import { auditLog, documents, jobs } from "../db/schema";
-import { approveDraft, CheckError, finalName, makeFinal, shownValues } from "../documents/check";
+import { approveDraft, CheckError, finalName, makeFinal, requestFinalise, shownValues } from "../documents/check";
+import type { Storage } from "../storage";
 import { newUploadKey } from "../files";
 import { createLabelJob, finalCoas, labelInput, LabelError, type LabelInput } from "./index";
 import { LABEL_TEMPLATES } from "./templates";
@@ -19,10 +20,10 @@ beforeEach(async () => {
 });
 
 /** A label draft as the worker stores it, made from the given template. */
-async function labelDraft(template: string) {
+async function labelDraft(template: string, sample = template === "sample") {
   const [job] = await db
     .insert(jobs)
-    .values({ kind: "label", state: "to_check", ...metadata, label: { template, language: "FR", fields: {} }, createdBy: warre.email })
+    .values({ kind: "label", state: "to_check", ...metadata, label: { template, language: "FR", fields: {}, sample }, createdBy: warre.email })
     .returning();
   const name = "TMC_LABEL_840.S0850_Betaine_AI_test_BT-3877_FR";
   const [doc] = await db
@@ -72,7 +73,7 @@ describe("label job", () => {
     const id = await createLabelJob(db, warre, { ...form, netWeight: "25", supplierName: "ACME" } as LabelInput);
     const [job] = await db.select().from(jobs).where(eq(jobs.id, id));
     expect(job).toMatchObject({ kind: "label", state: "queued", productName: "Betaine AI test", batch: "BT-3877", fileNr: "840.S0850", supplierName: null });
-    expect(job.label).toEqual({ template: "sample", language: "FR", fields: { netWeight: "25" } });
+    expect(job.label).toEqual({ template: "sample", language: "FR", fields: { netWeight: "25" }, sample: true });
     const [audit] = await db.select().from(auditLog);
     expect(audit).toMatchObject({ action: "job.created", actor: warre.email });
   });
@@ -103,12 +104,29 @@ describe("label naming and approval", () => {
     expect((await db.select().from(documents))[0].status).toBe("To check");
   });
 
+  it("a label is approved as it is: no edited or uploaded Word file (security M1)", async () => {
+    const doc = await labelDraft("sample");
+    const storage = { mode: "local", put: async () => {}, get: async () => null, head: async () => null } as Storage;
+    await expect(requestFinalise(db, storage, warre, doc.id, { mode: "editor", metadata, fixes: {} })).rejects.toThrow(/approved as it is/);
+    await expect(requestFinalise(db, storage, warre, doc.id, { mode: "upload", metadata, docx: { key: "x", filename: "x.docx" } })).rejects.toThrow(/approved as it is/);
+  });
+
   describe("with a real template", () => {
     beforeEach(() => {
       LABEL_TEMPLATES.push({ id: "test-real", name: "test", file: "TMC_LABEL_TEST.docx", sample: false });
     });
     afterEach(() => {
       LABEL_TEMPLATES.splice(LABEL_TEMPLATES.findIndex((t) => t.id === "test-real"), 1);
+    });
+
+    it("a label made as a sample stays a sample, whatever the list says later (security M3)", async () => {
+      const doc = await labelDraft("test-real", true);
+      await expect(approveDraft(db, warre, doc.id, metadata)).rejects.toThrow(/SAMPLE template/);
+    });
+
+    it("keeps the dossier and batch of the label (security L2)", async () => {
+      const doc = await labelDraft("test-real");
+      await expect(approveDraft(db, warre, doc.id, { ...metadata, fileNr: "840.S9999" })).rejects.toThrow(/dossier of a label/);
     });
 
     it("is approved like any other document and supersedes the previous Final", async () => {

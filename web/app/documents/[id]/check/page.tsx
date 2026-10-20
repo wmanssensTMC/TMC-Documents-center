@@ -39,7 +39,9 @@ export default async function CheckPage({ params }: PageProps<"/documents/[id]/c
       <p className="text-sm text-gray-600">
         {parts.length
           ? `${parts.length} yellow part(s) to confirm. Nothing becomes Final until every one is confirmed by you.`
-          : "The neutralizer marked nothing yellow. Compare with the original and approve, or reject."}
+          : doc.type === "LABEL"
+            ? "Check the label and approve, or reject. A label made with the SAMPLE template can never become Final."
+            : "The neutralizer marked nothing yellow. Compare with the original and approve, or reject."}
       </p>
 
       {busy && (
@@ -64,7 +66,9 @@ export default async function CheckPage({ params }: PageProps<"/documents/[id]/c
           {doc.sourceKey ? (
             <iframe src={file("source")} title="Supplier original" className="h-[70vh] w-full rounded border bg-white" />
           ) : (
-            <p className="rounded border bg-white p-4 text-sm text-gray-600">No original stored.</p>
+            <p className="rounded border bg-white p-4 text-sm text-gray-600">
+              {doc.type === "LABEL" ? "No original: a label is made from the values typed in the form." : "No original stored."}
+            </p>
           )}
         </section>
         <section>
@@ -95,7 +99,7 @@ export default async function CheckPage({ params }: PageProps<"/documents/[id]/c
         busy={!!busy}
         uploadMode={getStorage().mode}
         initial={{ productName: doc.productName ?? "", fileNr: doc.fileNr ?? "", batch: doc.batch ?? "" }}
-        naming={{ type: doc.type, entity: doc.entity, batchLocked: !!doc.batch }}
+        naming={{ type: doc.type, entity: doc.entity, batchLocked: !!doc.batch, language: doc.language }}
       />
     </PageShell>
   );

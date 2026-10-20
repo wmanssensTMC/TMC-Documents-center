@@ -68,9 +68,10 @@ export function shownValues(doc: NameSource, m: DocMetadata): [string, string][]
   return all.filter((v): v is [string, string] => !!v[1]);
 }
 
-/** The batch is fixed once the document has one. */
+/** The batch is fixed once the document has one; a label also keeps its dossier (security L2). */
 function lockBatch(doc: Document, m: DocMetadata): DocMetadata {
   if (doc.batch && m.batch !== doc.batch) throw new CheckError(`the batch of this document is ${doc.batch} and cannot be changed`);
+  if (doc.type === "LABEL" && m.fileNr !== doc.fileNr) throw new CheckError("the dossier of a label cannot be changed; make a new label");
   return m;
 }
 
@@ -107,7 +108,9 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
     })
     .safeParse(raw);
   if (!r.success) throw new CheckError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
-  await assertLabelApprovable(db, doc, (msg) => new CheckError(msg));
+  // A label is the engine's own output and is only approved as it is: an edited or uploaded Word
+  // file would skip the label's provenance gate (security M1).
+  if (doc.type === "LABEL") throw new CheckError("a label is approved as it is; to change it, make a new label");
   const input = { ...r.data, metadata: lockBatch(doc, r.data.metadata) };
   const confirmReplace = input.confirmReplace === true;
   const replaces = await guardReplace(db, doc, finalName(doc, input.metadata), confirmReplace);

@@ -292,7 +292,7 @@ describe.skipIf(!python)("labels with the real engine", () => {
 
   it("a label job with a template that is not in the list fails and stores nothing", async () => {
     await createLabelJob(db, willem, form);
-    await db.update(jobs).set({ label: { template: "../../etc/passwd", language: "FR", fields: {} } });
+    await db.update(jobs).set({ label: { template: "../../etc/passwd", language: "FR", fields: {}, sample: false } });
     await processLabelJob(db, storage, (await claimNextJob(db))!);
     const [job] = await db.select().from(jobs);
     expect(job.state).toBe("failed");
