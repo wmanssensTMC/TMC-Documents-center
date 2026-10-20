@@ -64,6 +64,64 @@ row = N._build_test_row(["Colour", "", "10", "1", "APHA"], {"param": 0, "lim_min
 check("MIN/MAX columns give the limits", row and N.parse_spec(row[1]) == ("", "10"), row)
 check("and are marked as put together (not printed as Quality standard)", row and isinstance(row[1], N.ComposedSpec), row)
 
+# 10. header words only as whole words; a row with numbers is never a header
+check("'Free Amine' is not the 'min' column", N._classify_hdr("Free Amine") is None, N._classify_hdr("Free Amine"))
+check("'Test results (avg)' is still a result header", N._classify_hdr("Test results (avg)") == "result")
+data = {"full_text": "x", "pages": [], "source": "x.pdf", "tables": [{"page": 1, "rows": [
+    ["TEST PARAMETER", "UOM", "SPECIFICATION", "RESULTS"],
+    ["Free Amine", "%", "5.0 Max.", "5.0"],
+    ["Free Fatty Acid", "%", "Nil", "Nil"]]}]}
+rows = N.parse_coa_fields(data).get("results_table") or []
+check("a row with 'Amine' and 'Max.' is kept as a test row", any(r[0] == "Free Amine" for r in rows), rows)
+check("'Nil' is a value, not an empty cell", any(r[0] == "Free Fatty Acid" and r[1] == "Nil" and r[2] == "Nil" for r in rows), rows)
+
+# 11. a header shifted by merged cells; an unnamed result column; a 'Pesticide' first column
+data = {"full_text": "x", "pages": [], "source": "x.pdf", "tables": [
+    {"page": 1, "rows": [["", "TEST PARAMETER", "", "UOM", "SPECIFICATION", "RESULTS"],
+                         ["Moisture Content", None, None, "%", "0.5 Max.", "0.1"]]},
+    {"page": 1, "rows": [["ANALYSIS", "UNIT", "METHOD", "SPECIFICATION", ""],
+                         ["Acid value", "mg KOH/g", "USP", "MAX. 1", "0,4"], ["Water", "%", "USP", "MAX. 0,25", "0,1"],
+                         ["Manufacture date (mm/dd/yy)", "", "", "", "11/24/25"]]},
+    {"page": 2, "rows": [["Pesticide", "Specification", "Detected amount", "Result"], ["Aldrin", "≤ 10 ppm", "<0,05 ppm", "OK"]]}]}
+rows = N.parse_coa_fields(data).get("results_table") or []
+check("shifted header: the test name is found", any(r[0] == "Moisture Content" and r[2] == "0.1" for r in rows), rows)
+check("unnamed result column is used", any(r[0] == "Acid value" and r[2] == "0,4" for r in rows), rows)
+check("a date line is not a test result", not any("date" in r[0].lower() for r in rows), rows)
+check("'Pesticide' table: first column is the test, detected amount the result",
+      any(r[0] == "Aldrin" and r[2] == "<0,05 ppm" for r in rows), rows)
+
+# 12. purchase order: the trade name on the next line belongs to the item; tariff lines do not
+ref = N.parse_ref_fields({"full_text": "PURCHASE ORDER PO019192\nNo. Description Qty\n"
+                          "100413-BAG25 Lactose Monohydrate 600 BAG 25 15.000,00 KG 2,550\nPharmatose 200M\n"
+                          "100417-DRUM50 Lactose Anhydrous 36 DRUM 50 1.800,00 KG 5,650\nSupertab 21AN\n"})
+names = [p["name"] for p in ref.get("_products", [])]
+check("item code removed and trade name kept", names == ["Lactose Monohydrate Pharmatose 200M", "Lactose Anhydrous Supertab 21AN"], names)
+sale = N.parse_ref_fields({"full_text": "ORDER CONFIRMATION 837.S1190\nCocamide DEA 1 IBC 1.000 KG 2,10\nCustoms Tariff: 34024200, Net Weight"})
+check("a 'Customs Tariff:' line is not part of the name", [p["name"] for p in sale.get("_products", [])] == ["Cocamide DEA"],
+      sale.get("_products"))
+
+# 13. never guess the product: two order lines that fit equally well -> empty (yellow)
+prods = [{"name": "Lactose Monohydrate Pharmatose 200M"}, {"name": "Lactose Monohydrate Supertab 11SD"}]
+check("a tie between order lines gives no product name", N.match_pfi_product({"product_name": "lactose monohydrate"}, prods) == "")
+check("a clear match still gives the name",
+      N.match_pfi_product({"product_name": "Supertab 11SD lactose"}, prods) == "Lactose Monohydrate Supertab 11SD")
+
+# 14. the same batch in two files: one document if identical, held back if different
+def job(src, lot, result):
+    return ({"_source": src, "batch_lot": lot, "results_table": [["Assay", "", result, "%", ""]], "expiry_date": "2028"}, {}, "P", 1)
+held = []
+kept = N._one_document_per_batch([job("a.pdf", "L1", "99.5"), job("b.pdf", "L1", "99.5"), job("c.pdf", "L2", "1")], held)
+check("identical certificate twice: one document", [j[0]["_source"] for j in kept] == ["a.pdf", "c.pdf"] and not held, (kept, held))
+held = []
+kept = N._one_document_per_batch([job("a.pdf", "L1", "99.5"), job("b.pdf", "L1", "98.0")], held)
+check("same batch, different data: held back, no document", kept == [] and held, (kept, held))
+
+# 15. "SLED" is the expiry date
+f = N.parse_coa_fields({"full_text": "Batch number: BI30564743 Date of analysis:29.01.2026\nSLED: 28.01.2028",
+                        "pages": [], "tables": [], "source": "x.pdf"})
+check("SLED is read as the expiry date", f.get("expiry_date") == "28.01.2028", f.get("expiry_date"))
+check("an analysis date is not taken as production date", not f.get("manufacture_date"), f.get("manufacture_date"))
+
 # 9. a file that is not recognised is reported, never silently left out (needs reportlab + LibreOffice)
 try:
     from reportlab.pdfgen import canvas

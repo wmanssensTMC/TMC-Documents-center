@@ -257,6 +257,7 @@ _HDR_SETS = {
         "result","results","value","values","found","actual","obtained",
         "measured","test result","test results","found value",
         "measured value","analyse result","analysis result","reported value",
+        "detected amount","detected value","amount detected",
         "resultaat","résultat","ergebnis","waarde","gevonden",
     },
     "spec": {
@@ -281,12 +282,15 @@ def _classify_hdr(text):
     for role, kw_set in _HDR_SETS.items():
         if t in kw_set:
             return role
-    # Pass 2: substring containment
+    # Pass 2: the header word as a whole word ("Test results (avg)"), never inside another
+    # word: "Free Amine" is not "min", "Specific gravity" is not "spec" (20/10/2026, real COA)
+    # The longest matching header word wins: "test results" is a result, not "test".
+    best_role, best_len = None, 0
     for role, kw_set in _HDR_SETS.items():
         for kw in kw_set:
-            if kw in t:
-                return role
-    return None
+            if len(kw) > best_len and re.search(r"(?<![a-z])" + re.escape(kw) + r"(?![a-z])", t):
+                best_role, best_len = role, len(kw)
+    return best_role
 
 def _find_test_header_row(rows):
     for row_idx, row in enumerate(rows[:6]):
@@ -297,9 +301,17 @@ def _find_test_header_row(rows):
             role = _classify_hdr(cell)
             if role and role not in col_map:
                 col_map[role] = col_idx
+        # a first column with its own heading ("Pesticide") next to Specification and Result
+        # is the test name (20/10/2026, a real COA's pesticide annex)
+        if ("param" not in col_map and "spec" in col_map and "result" in col_map
+                and cells and cells[0].strip() and 0 not in col_map.values()):
+            col_map["param"] = 0
         if "param" in col_map and {"result","spec","lim_min","lim_max"} & col_map.keys():
             return (row_idx, col_map)
     return (-1, {})
+
+_PLACEHOLDER = {"-", "—", "–", "--", "---", "/"}
+
 
 class ComposedSpec(str):
     """A specification put together from separate MIN / MAX columns. It fills Limit min and
@@ -312,10 +324,17 @@ def _build_test_row(cells, col_map):
         idx = col_map.get(role)
         if idx is not None and idx < len(cells):
             v = cells[idx].strip()
-            return "" if v.lower() in _CELL_EMPTY else v
+            # "Nil" / "None" / "N/A" are values the supplier printed; only dashes and dots
+            # are empty (20/10/2026, real COA: "Free Fatty Acid  Nil  Nil" was lost)
+            empty = _CELL_EMPTY if role in ("unit", "method") else _PLACEHOLDER
+            return "" if v.lower() in empty or re.fullmatch(r"[.\s]{3,}", v) else v
         return ""
 
     param  = get("param")
+    if not param and col_map.get("param"):
+        # merged cells: the header is shifted one column right of its rows (20/10/2026,
+        # a real COA's "Additional" table) -- the name is the first cell to the left
+        param = next((c.strip() for c in reversed(cells[:col_map["param"]]) if c.strip()), "")
     result = get("result")
     uom    = get("unit")
     method = get("method")
@@ -339,6 +358,9 @@ def _build_test_row(cells, col_map):
     param = param.strip()
     if not param: return None
     if not any(v.strip() for v in [spec, result, uom]): return None
+    # a date line is part of the analysis details above the table, not a test result
+    if not spec and (_DATE_MADE.search(param) or _DATE_EXP.search(param) or re.search(r"retest", param, re.I)):
+        return None
 
     p_lower = param.lower()
     skip_starts = ("note:","this product","these results","guaranteed","remarks:","remark:",
@@ -516,13 +538,24 @@ def parse_coa_fields(data):
         if not rows: continue
 
         hdr_row_idx, col_map = _find_test_header_row(rows)
+        if hdr_row_idx >= 0 and "result" not in col_map:
+            # some suppliers leave the result column's header empty (20/10/2026, real COA):
+            # an unnamed column with values under it is the result
+            hdr = [_cell_str(c) for c in rows[hdr_row_idx]]
+            body = [[_cell_str(c) for c in r] for r in rows[hdr_row_idx + 1:] if r]
+            for i in reversed(range(len(hdr))):
+                filled = sum(1 for r in body if i < len(r) and r[i].strip())
+                if not hdr[i].strip() and i not in col_map.values() and body and filled * 2 >= len(body):
+                    col_map["result"] = i
+                    break
 
         if hdr_row_idx >= 0:
             for row in rows[hdr_row_idx+1:]:
                 if not row: continue
                 cells   = [_cell_str(c) for c in row]
                 matched = sum(1 for c in cells if c.strip() and _classify_hdr(c) is not None)
-                if matched >= 2:
+                # a row with numbers in it is a test row, not a new header
+                if matched >= 2 and not any(re.search(r"\d", c) for c in cells):
                     _, new_map = _find_test_header_row([row])
                     if new_map: col_map.update(new_map)
                     continue
@@ -595,7 +628,9 @@ def parse_coa_fields(data):
     if "expiry_date" not in fields:
         fields["expiry_date"] = _rex(
             r"(?:expiry\s+date|retest\s+date|best\s+before|use\s+before"
-            r"|exp\.?\s*date|expiration\s+date)\s*[:\-]?\s*(.+?)(?:\n|$)")
+            r"|exp\.?\s*date|expiration\s+date"
+            # "SLED" = shelf life expiry date (20/10/2026, real COA)
+            r"|\bSLED\b|shelf\s*life\s*expiry(?:\s+date)?)\s*[:\-]?\s*(.+?)(?:\n|$)")
     for key in ("manufacture_date", "expiry_date"):
         fields[key] = _clean_date(fields.get(key))
     # No guessing: an absent product name stays absent. It comes from the
@@ -641,14 +676,23 @@ def parse_ref_fields(data):
     fields["_doc_type"] = labels.get(dtype, "Reference Document")
 
     products = []
-    for line in text.split("\n"):
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
         m = re.search(r"\b(\d[\d,\.]+)\s*(KG|MT|LT)\b", line, re.IGNORECASE)
         if not m: continue
         qty_val   = f"{m.group(1)} {m.group(2).upper()}"
         prod_line = re.sub(r"^\d+\s+\S+-\S+\s+", "", line).strip()
+        prod_line = re.sub(r"^\d+-\S+\s+", "", prod_line)        # item code "100413-BAG25" (real PO)
         prod_m    = re.match(r"([A-Za-z][^\d]+?)(?:\s+\d)", prod_line)
         if prod_m:
             name = prod_m.group(1).strip()
+            # the trade name printed on the line under the description ("Pharmatose 200M"),
+            # kept in the printed order (20/10/2026, real purchase order)
+            nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            if (nxt and len(nxt) <= 40 and re.match(r"[A-Za-z]", nxt) and ":" not in nxt
+                    and not re.search(r"\b\d[\d,\.]*\s*(KG|MT|LT)\b|total|page|markings|remarks|customs|tariff"
+                                      r"|weight|\badr\b|\bimo\b|\bun\s?\d|origin|batch|\blot\b|hs\s*code", nxt, re.I)):
+                name = f"{name} {nxt}"
             if len(name) > 3:
                 products.append({"name": name, "quantity": qty_val})
     fields["_products"] = products
@@ -663,19 +707,22 @@ def match_pfi_product(coa_fields, ref_products):
         return ""
     coa_candidates = [(coa_fields.get("product_name") or "").lower(),
                       (coa_fields.get("grade") or "").lower()]
-    best_name, best_score = ref_products[0]["name"], 0
+    scores = {}
     for prod in ref_products:
         ref_words = set(re.findall(r"[a-z0-9]+", prod["name"].lower()))
         for cand in coa_candidates:
             cand_words = set(re.findall(r"[a-z0-9]+", cand))
             ref_sig    = {w for w in ref_words  if len(w) > 2 and not w.isdigit()}
             cand_sig   = {w for w in cand_words if len(w) > 2 and not w.isdigit()}
-            score = len(ref_sig & cand_sig)
-            if score > best_score:
-                best_score, best_name = score, prod["name"]
-    if best_score == 0:
+            scores[prod["name"]] = max(scores.get(prod["name"], 0), len(ref_sig & cand_sig))
+    best_score = max(scores.values(), default=0)
+    best = [name for name, s in scores.items() if s == best_score]
+    # Never guess: when two different order lines fit the COA equally well (e.g. three
+    # lactose grades and a COA that only says "lactose monohydrate"), the product name stays
+    # empty and yellow for a person (20/10/2026, real purchase order).
+    if best_score == 0 or len(best) > 1:
         return ""
-    return best_name
+    return best[0]
 
 def match_best_ref_doc(coa_fields, ref_docs):
     if not ref_docs: return {}
@@ -816,6 +863,38 @@ def _column_reading(path):
     if not agreed and not any(label is None for _p, _l, label, _u, _r in doubts):
         return None
     return agreed, doubts, issues
+
+
+def _one_document_per_batch(jobs, held_back):
+    """The same batch in two supplier files (20/10/2026: a real dossier held the same
+    certificate twice). Same data: one document, noted. Different data: no document for
+    that batch, held back for a person -- choosing one would be guessing."""
+    def table(fields):
+        return [list(r) for r in (fields.get("results_table") or [])]
+
+    first, conflict = {}, set()
+    for job in jobs:
+        lot = (job[0].get("batch_lot") or "").strip()
+        if not lot:
+            continue
+        key = (lot.lower(), (job[2] or "").lower())
+        if key not in first:
+            first[key] = job
+            continue
+        a = Path(first[key][0].get("_source", "")).name
+        b = Path(job[0].get("_source", "")).name
+        if table(first[key][0]) == table(job[0]) and first[key][0].get("expiry_date") == job[0].get("expiry_date"):
+            print(f"  i  {b}: the same certificate as {a} (batch {lot}); one document made")
+        else:
+            conflict.add(key)
+            held_back.append((f"batch {lot}", f"{a} and {b} give different data for the same batch"))
+    kept = []
+    for job in jobs:
+        lot = (job[0].get("batch_lot") or "").strip()
+        key = (lot.lower(), (job[2] or "").lower())
+        if not lot or (key not in conflict and first.get(key) is job):
+            kept.append(job)
+    return kept
 
 
 def column_batches(data, path):
@@ -1187,6 +1266,9 @@ def main():
                 coa_fields = dict(coa_fields); coa_fields["batch_lot"] = args.batch.strip()
             test_count   = len(coa_fields.get("results_table") or [])
             jobs.append((coa_fields, best_ref, product_name, test_count))
+
+    if not args.batch:
+        jobs = _one_document_per_batch(jobs, held_back)
 
     if refused:
         print("\nREFUSED - nothing was written:")

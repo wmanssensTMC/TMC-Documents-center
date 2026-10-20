@@ -7,6 +7,8 @@
 - Reading: decimal commas (1,018 / 98,0), ">/=", "</=", "÷"; columns are cut between words, never through one; disclaimer text under the table ends it; "Lot/ Batchnumber"; date format labels and run-on fields removed from dates; separate MIN/MAX columns fill Limit min/max without a made-up Quality standard text.
 - Result on the dossiers: no document stopped by the gate any more (was 3); purchase dossiers get their PO number and lots.
 - Test: `engine/tests/test_real_corpus_rules.py` (synthetic copies of each case).
+- Second round: header words only as whole words, longest wins ("Free Amine" is no "min" column, "Test results" is a result); a row with numbers is never a header; a header shifted by merged cells; an unnamed result column; a "Pesticide" first column; "Nil"/"None" kept as values; date lines kept out of the results; purchase-order items with item code and trade name line ("Lactose Monohydrate Pharmatose 200M"), tariff/ADR lines never part of a name; two order lines that fit a COA equally well give no product name (yellow, never a guess); the same batch in two files gives one document (identical) or is held back (different); "SLED" = expiry date; the analysis date is not taken as production date. The dispatcher uses the same list of COA titles as the COA route ("Quality certificate", "Product analysis report") and knows purchase orders.
+- Measured on the dossiers: Cocamide DEA 55% -> 95% of the values, Lanolin 51% -> 87%; no document stopped by the gate. Open: scans need Tesseract (IT); the MSDS route fails on most real MSDS (section 1.3 not found), next step.
 
 
 ## 19/10/2026 · COA batches, file-name rule, MSDS pictograms (security gate PASS 92/100)
