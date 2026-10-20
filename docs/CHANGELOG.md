@@ -1,6 +1,6 @@
 # Changelog
 
-## 20/10/2026 · MSDS round 1 on the real MSDS (branch `phase-2g-msds`, laptop only)
+## 20/10/2026 · MSDS round 1 on the real MSDS (branch `phase-2g-msds`, laptop only; security gate PASS 90/100)
 - Reading: letters printed twice to fake bold are read once (also TDS: "OORRGGAALL" -> "ORGAL"); a letter in another font or a point lower stays in its word ("l'écart"); page-number lines ("2 / 21") are not glued into paragraphs; a box drawn around a whole section is a frame, not a table; "SECTION n:" lines are section headings also when not bold.
 - Section 1.3 / 1.4: found however written; the supplier's emergency number on the 1.4 heading line itself is replaced by TMC's.
 - "Technical sheet" goes to the TDS route.
