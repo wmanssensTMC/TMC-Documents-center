@@ -6,6 +6,7 @@ import { auditLog, documents, jobs } from "../db/schema";
 import { approveDraft, CheckError, finalName, makeFinal, requestFinalise, shownValues } from "../documents/check";
 import type { Storage } from "../storage";
 import { newUploadKey } from "../files";
+import { MAX_OPEN_JOBS_PER_USER } from "../jobs";
 import { createLabelJob, finalCoas, labelInput, LabelError, type LabelInput } from "./index";
 import { LABEL_TEMPLATES } from "./templates";
 
@@ -80,6 +81,20 @@ describe("label job", () => {
 
   it("refuses an entity without details (an address is never invented)", async () => {
     await expect(createLabelJob(db, warre, { ...form, entity: "TMCGULF" })).rejects.toThrow(LabelError);
+  });
+
+  it("refuses a label job when the person already has the maximum of open jobs (abuse limit)", async () => {
+    const open = Array.from({ length: MAX_OPEN_JOBS_PER_USER }, () => ({ kind: "neutralise" as const, createdBy: warre.email }));
+    await db.insert(jobs).values(open);
+    await expect(createLabelJob(db, warre, form)).rejects.toThrow(/many documents waiting/);
+    expect(await db.select().from(jobs).where(eq(jobs.kind, "label"))).toHaveLength(0);
+  });
+
+  it("refuses an unknown template and text with control characters before anything is filed", async () => {
+    for (const bad of [{ template: "TMC_LABEL_SAMPLE.docx" }, { productName: "Betaine\u202Etset" }, { batch: "BT\n3877" }, { productName: "x".repeat(201) }]) {
+      await expect(createLabelJob(db, warre, { ...form, ...bad }), JSON.stringify(bad)).rejects.toThrow(LabelError);
+    }
+    expect(await db.select().from(jobs)).toHaveLength(0);
   });
 
   it("a label job always carries its label details (database check)", async () => {

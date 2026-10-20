@@ -290,6 +290,20 @@ describe.skipIf(!python)("labels with the real engine", () => {
     expect((await db.select().from(documents))[0]).toMatchObject({ name, status: "Final", version: 1, approvedBy: willem.email });
   }, 300_000);
 
+  it("a SAMPLE label sent straight to the finalise worker (approval check skipped) still never becomes Final", async () => {
+    await createLabelJob(db, willem, form);
+    await processLabelJob(db, storage, (await claimNextJob(db))!);
+    const [doc] = await db.select().from(documents);
+    const metadata = { productName: form.productName, fileNr: form.fileNr, batch: form.batch };
+    await db.insert(jobs).values({ kind: "finalise", documentId: doc.id, entity: doc.entity, payload: { mode: "approve", metadata }, createdBy: willem.email });
+    const fin = (await claimNextJob(db))!;
+    await processFinaliseJob(db, storage, fin);
+    const [fj] = await db.select().from(jobs).where(eq(jobs.id, fin.id));
+    expect(fj.state).toBe("failed");
+    expect(fj.log).toMatch(/SAMPLE template/);
+    expect(await db.select().from(documents)).toEqual([expect.objectContaining({ id: doc.id, status: "To check", version: null })]);
+  }, 300_000);
+
   it("a label job with a template that is not in the list fails and stores nothing", async () => {
     await createLabelJob(db, willem, form);
     await db.update(jobs).set({ label: { template: "../../etc/passwd", language: "FR", fields: {}, sample: false } });

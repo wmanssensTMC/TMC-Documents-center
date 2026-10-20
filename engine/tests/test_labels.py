@@ -123,6 +123,49 @@ def test_command_line_refuses_outside_template_and_cleans_up():
         assert sorted(p.name for p in out.iterdir()) == ["TMC_LABEL_x_EN.docx", "TMC_LABEL_x_EN.pdf"]
 
 
+def custom_template(*paragraphs):
+    """A copy of the SAMPLE template with extra paragraphs; each paragraph is a list of runs."""
+    from docx import Document
+    d = Document(str(TEMPLATE))
+    for runs in paragraphs:
+        p = d.add_paragraph()
+        for r in runs:
+            p.add_run(r)
+    path = Path(tempfile.mkdtemp()) / "TMC_LABEL_TEST.docx"
+    d.save(str(path))
+    return path
+
+
+def test_placeholder_split_over_runs_is_filled():
+    # Word often splits {{batch}} over several runs after an edit
+    template = custom_template(["Lot no. {{ba", "tch}} / {{product", "Name}}"])
+    out = Path(tempfile.mkdtemp())
+    docx, _ = make(template, dict(FIELDS), ENTITY, "EN", "TMC_LABEL_split_EN", out)
+    t = texts_of(docx)
+    assert "Lot no. BT-3877 / Betaine AI test" in t, t
+    assert not any("{{" in x or "}}" in x for x in t)
+
+
+def test_unknown_template_placeholder_stops_the_run():
+    template = custom_template(["Supplier: {{supplierName}}"])
+    out = Path(tempfile.mkdtemp())
+    refused(lambda: make(template, dict(FIELDS), ENTITY, "EN", "TMC_LABEL_x_EN", out), "unknown value: supplierName")
+    assert not list(out.iterdir()), "output kept after an unknown placeholder"
+
+
+def test_typed_placeholder_is_not_expanded():
+    # defence in depth: the web form refuses {{ }}, the engine must not fill it in either
+    out = Path(tempfile.mkdtemp())
+    refused(lambda: make(TEMPLATE, dict(FIELDS, batch="{{entity.naam}}"), ENTITY, "EN", "TMC_LABEL_x_EN", out),
+            "placeholder left")
+    assert not list(out.iterdir()), "output kept after a typed placeholder"
+
+
+def test_unicode_and_special_characters_in_values_print_as_typed():
+    docx, _, _ = run(dict(FIELDS, productName="Bétaïne <AI> & \"test\" 25%"))
+    assert "Bétaïne <AI> & \"test\" 25%" in texts_of(docx)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
