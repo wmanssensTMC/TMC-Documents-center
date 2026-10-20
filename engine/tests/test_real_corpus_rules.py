@@ -93,7 +93,7 @@ check("'Pesticide' table: first column is the test, detected amount the result",
 # 12. purchase order: the trade name on the next line belongs to the item; tariff lines do not
 ref = N.parse_ref_fields({"full_text": "PURCHASE ORDER PO019192\nNo. Description Qty\n"
                           "100413-BAG25 Lactose Monohydrate 600 BAG 25 15.000,00 KG 2,550\nPharmatose 200M\n"
-                          "100417-DRUM50 Lactose Anhydrous 36 DRUM 50 1.800,00 KG 5,650\nSupertab 21AN\n"})
+                          "100417-DRUM50 Lactose Anhydrous 36 DRUM 50 1.800,00 KG 5,650\nSupertab 21AN\nTotal Net Qty.: 16.800,00\n"})
 names = [p["name"] for p in ref.get("_products", [])]
 check("item code removed and trade name kept", names == ["Lactose Monohydrate Pharmatose 200M", "Lactose Anhydrous Supertab 21AN"], names)
 sale = N.parse_ref_fields({"full_text": "ORDER CONFIRMATION 837.S1190\nCocamide DEA 1 IBC 1.000 KG 2,10\nCustoms Tariff: 34024200, Net Weight"})
@@ -131,6 +131,24 @@ els = [{"kind": "para", "text": "1.2 Uses"}, {"kind": "para", "text": "1.3 Fourn
        {"kind": "para", "text": "Rue de Renory 28"}, {"kind": "sub", "text": "SCC Number : CU-1"}, {"kind": "para", "text": "1.4 Urgence"},
        {"kind": "para", "text": "+32 4 000 00 00"}]
 check("the supplier block runs from 1.3 to 1.4, certificate number included", find_supplier_block(els) == (2, 5), find_supplier_block(els))
+els = [{"kind": "para", "text": "1.3 Supplier"}, {"kind": "para", "text": "Example SA"}, {"kind": "para", "text": "5 Rue de la Paix"},
+       {"kind": "para", "text": "75002 Paris"}, {"kind": "para", "text": "1.4 Emergency"}]
+check("an address line '5 Rue de la Paix' does not end the supplier block (review R1)", find_supplier_block(els) == (1, 4),
+      find_supplier_block(els))
+try:
+    find_supplier_block([{"kind": "para", "text": "1.3 Supplier"}, {"kind": "para", "text": "Example SA"}])
+    check("a 1.3 block without an end is refused (review R2)", False)
+except ValueError:
+    check("a 1.3 block without an end is refused (review R2)", True)
+
+# 17. the trade-name line only where the order's layout proves it (review R3); date clean-up stays fast (R4)
+ref = N.parse_ref_fields({"full_text": "PURCHASE ORDER PO019192\nNo. Description Qty\n"
+                          "100413-BAG25 Lactose Monohydrate 600 BAG 25 15.000,00 KG 2,550\nBulk\nDelivery terms CIP"})
+check("a line not followed by another item or the total is not part of the name",
+      [p["name"] for p in ref.get("_products", [])] == ["Lactose Monohydrate"], ref.get("_products"))
+import time  # noqa: E402
+t0 = time.time(); N._clean_date("11/24/25" + " " * 20000 + "x"); N._clean_date(" " * 20000)
+check("date clean-up is fast on long space runs", time.time() - t0 < 0.5, time.time() - t0)
 
 # 9. a file that is not recognised is reported, never silently left out (needs reportlab + LibreOffice)
 try:

@@ -21,14 +21,27 @@ def _sec_no(text):
     return m.group(1) if m else None
 
 
+_LATER_SECTIONS = {str(n) for n in range(2, 17)}
+_SECTION_WORD = re.compile(r"\s*(?:section|rubrique|abschnitt|rubriek)\b", re.I)
+
+
 def _heading(e):
-    """The section number of a heading line, whatever the supplier made it look like."""
-    return _sec_no(e.get("text")) if e["kind"] in ("sub", "section", "para") else None
+    """The section number of a heading line, whatever the supplier made it look like. A plain
+    line only counts with a dotted number ("1.4") or the word section: "5 Rue de la Paix" is an
+    address, not section 5 (security review R1)."""
+    if e["kind"] in ("sub", "section"):
+        return _sec_no(e.get("text"))
+    if e["kind"] == "para":
+        no = _sec_no(e.get("text"))
+        if no and ("." in no or _SECTION_WORD.match(e.get("text") or "")):
+            return no
+    return None
 
 
 def find_supplier_block(els):
     """Index range of the body of '1.3 Details of the supplier ...'. The block runs to the next
-    heading (1.4, section 2): every line in it is the supplier's identity and is replaced."""
+    real heading (1.4, section 2): every line in it is the supplier's identity and is replaced.
+    No heading after it: refused, never cut off at a guess (security review R2)."""
     start = end = None
     for i, e in enumerate(els):
         no = _heading(e)
@@ -36,15 +49,15 @@ def find_supplier_block(els):
             if no == "1.3":
                 start = i + 1
             continue
-        if e["kind"] == "section" or no == "1.4" or (no or "").split(".")[0] in {str(n) for n in range(2, 17)}:
-            end = i
-            break
-        if i - start >= 20:              # never swallow more than a supplier block can hold
+        if e["kind"] == "section" or no == "1.4" or (no or "").split(".")[0] in _LATER_SECTIONS:
             end = i
             break
     if start is None:
         return None, None
-    return start, (end if end is not None else len(els))
+    if end is None:
+        raise ValueError("Section 1.3 (supplier details) has no end (no 1.4 or section 2 after it) - "
+                         "cannot neutralise safely.")
+    return start, end
 
 
 def harvest_identity(els, lo, hi):
@@ -156,7 +169,8 @@ def neutralise(els, meta, entity, product_name=None, file_nr=None):
     for i, e in enumerate(els):
         if _heading(e) == "1.4":
             for j in range(i + 1, len(els)):
-                if els[j]["kind"] == "section" or _heading(els[j]):
+                # only a real next heading ends 1.4: "24 h/24 +32 ..." is the number itself (R1)
+                if els[j]["kind"] == "section" or (_heading(els[j]) or "").split(".")[0] in _LATER_SECTIONS:
                     break
                 if els[j]["kind"] == "kv":
                     report["old_emergency"] = els[j]["value"]

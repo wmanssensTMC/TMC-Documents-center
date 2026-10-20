@@ -415,7 +415,10 @@ _NEXT_DATE_FIELD = re.compile(r"\s+(?:expiry|expiration|exp\.?\s*date|best\s+bef
 def _clean_date(value):
     if not value:
         return value
-    v = _DATE_FORMAT_LABEL.sub("", value.strip())
+    # one space between words and a sane length first: long space runs made the patterns
+    # below slow on a crafted PDF (security review R4)
+    value = re.sub(r"\s+", " ", value).strip()[:200]
+    v = _DATE_FORMAT_LABEL.sub("", value)
     v = _NEXT_DATE_FIELD.sub("", v).strip()
     return v or value
 
@@ -689,9 +692,15 @@ def parse_ref_fields(data):
             # the trade name printed on the line under the description ("Pharmatose 200M"),
             # kept in the printed order (20/10/2026, real purchase order)
             nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
-            if (nxt and len(nxt) <= 40 and re.match(r"[A-Za-z]", nxt) and ":" not in nxt
+            after = lines[i + 2].strip() if i + 2 < len(lines) else ""
+            # Only where the layout proves it (security review R3): the line sits between two
+            # item lines, or between the last item and the total.
+            between_items = bool(re.search(r"\b\d[\d,\.]*\s*(KG|MT|LT)\b", after, re.I)
+                                 or re.match(r"total\b", after, re.I))
+            if (between_items and nxt and len(nxt) <= 40 and re.match(r"[A-Za-z]", nxt) and ":" not in nxt
                     and not re.search(r"\b\d[\d,\.]*\s*(KG|MT|LT)\b|total|page|markings|remarks|customs|tariff"
-                                      r"|weight|\badr\b|\bimo\b|\bun\s?\d|origin|batch|\blot\b|hs\s*code", nxt, re.I)):
+                                      r"|weight|\badr\b|\bimo\b|\bun\s?\d|origin|batch|\blot\b|hs\s*code|bulk"
+                                      r"|terms|incoterm|delivery|payment|pallet|packing|shipment", nxt, re.I)):
                 name = f"{name} {nxt}"
             if len(name) > 3:
                 products.append({"name": name, "quantity": qty_val})
