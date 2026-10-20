@@ -1141,7 +1141,9 @@ def main():
         allowed = [product_name or "", best_ref.get("doc_ref") or "", coa_fields.get("batch_lot") or "",
                    "Production date", "[not on the source - check]", NO_PRODUCT, DOUBT]
         allowed += list(entity.values())
-        allowed += [r.get("doc_ref", "") for r in ref_docs] + [p for r in ref_docs for p in r.get("_products", [])]
+        # product names from the commercial documents (each entry is {name, quantity}: 20/10/2026,
+        # a real order confirmation crashed the gate with the whole entry)
+        allowed += [r.get("doc_ref", "") for r in ref_docs] + [p.get("name", "") for r in ref_docs for p in r.get("_products", [])]
         try:
             provenance.assert_clean(docx_path, src_texts, allowed, template_path=str(TEMPLATE_DOC),
                                     on_fail=lambda: Path(docx_path).unlink(missing_ok=True))
