@@ -101,12 +101,19 @@ COA_KEYWORDS = [
 COMMERCIAL_KEYWORDS = {
     "ORDER_CONFIRMATION": ["order confirmation","orderbevestiging","confirmation de commande","sales order"],
     "PFI":               ["pro forma invoice","proforma invoice","facture proforma","pro-forma"],
-    "SALES_CONTRACT":    ["contract de vente","sales contract","verkoopcontract","sale and purchase"],
+    "SALES_CONTRACT":    ["contract de vente","contrat de vente","sales contract","verkoopcontract","sale and purchase"],
     "INVOICE":           ["commercial invoice","invoice no","invoice number","facture commerciale"],
+    "PURCHASE_ORDER":    ["purchase order","bestelbon","inkooporder","bon de commande"],
 }
 
 def classify_file(text):
     t = text.lower()
+    # An order or contract can ask for "a certificate of analysis" in its own text: what the
+    # document calls itself at the top decides (20/10/2026, a real purchase order became a COA).
+    head = "\n".join([ln for ln in t.split("\n") if ln.strip()][:3])   # the title lines
+    titled = [d for d, kws in COMMERCIAL_KEYWORDS.items() if any(kw in head for kw in kws)]
+    if titled and not any(kw in head for kw in COA_KEYWORDS):
+        return titled[0]
     if any(kw in t for kw in COA_KEYWORDS):
         return "COA"
     best, best_score = "UNKNOWN", 0
@@ -250,6 +257,7 @@ _HDR_SETS = {
         "result","results","value","values","found","actual","obtained",
         "measured","test result","test results","found value",
         "measured value","analyse result","analysis result","reported value",
+        "detected amount","detected value","amount detected",
         "resultaat","résultat","ergebnis","waarde","gevonden",
     },
     "spec": {
@@ -274,12 +282,15 @@ def _classify_hdr(text):
     for role, kw_set in _HDR_SETS.items():
         if t in kw_set:
             return role
-    # Pass 2: substring containment
+    # Pass 2: the header word as a whole word ("Test results (avg)"), never inside another
+    # word: "Free Amine" is not "min", "Specific gravity" is not "spec" (20/10/2026, real COA)
+    # The longest matching header word wins: "test results" is a result, not "test".
+    best_role, best_len = None, 0
     for role, kw_set in _HDR_SETS.items():
         for kw in kw_set:
-            if kw in t:
-                return role
-    return None
+            if len(kw) > best_len and re.search(r"(?<![a-z])" + re.escape(kw) + r"(?![a-z])", t):
+                best_role, best_len = role, len(kw)
+    return best_role
 
 def _find_test_header_row(rows):
     for row_idx, row in enumerate(rows[:6]):
@@ -290,19 +301,40 @@ def _find_test_header_row(rows):
             role = _classify_hdr(cell)
             if role and role not in col_map:
                 col_map[role] = col_idx
+        # a first column with its own heading ("Pesticide") next to Specification and Result
+        # is the test name (20/10/2026, a real COA's pesticide annex)
+        if ("param" not in col_map and "spec" in col_map and "result" in col_map
+                and cells and cells[0].strip() and 0 not in col_map.values()):
+            col_map["param"] = 0
         if "param" in col_map and {"result","spec","lim_min","lim_max"} & col_map.keys():
             return (row_idx, col_map)
     return (-1, {})
+
+_PLACEHOLDER = {"-", "—", "–", "--", "---", "/"}
+
+
+class ComposedSpec(str):
+    """A specification put together from separate MIN / MAX columns. It fills Limit min and
+    Limit max, but is never printed as "Quality standard": that text is not on the source
+    (20/10/2026, real COA; colleagues leave Quality standard empty there too)."""
+
 
 def _build_test_row(cells, col_map):
     def get(role):
         idx = col_map.get(role)
         if idx is not None and idx < len(cells):
             v = cells[idx].strip()
-            return "" if v.lower() in _CELL_EMPTY else v
+            # "Nil" / "None" / "N/A" are values the supplier printed; only dashes and dots
+            # are empty (20/10/2026, real COA: "Free Fatty Acid  Nil  Nil" was lost)
+            empty = _CELL_EMPTY if role in ("unit", "method") else _PLACEHOLDER
+            return "" if v.lower() in empty or re.fullmatch(r"[.\s]{3,}", v) else v
         return ""
 
     param  = get("param")
+    if not param and col_map.get("param"):
+        # merged cells: the header is shifted one column right of its rows (20/10/2026,
+        # a real COA's "Additional" table) -- the name is the first cell to the left
+        param = next((c.strip() for c in reversed(cells[:col_map["param"]]) if c.strip()), "")
     result = get("result")
     uom    = get("unit")
     method = get("method")
@@ -311,9 +343,9 @@ def _build_test_row(cells, col_map):
         spec = get("spec")
     elif "lim_min" in col_map or "lim_max" in col_map:
         lmin, lmax = get("lim_min"), get("lim_max")
-        if lmin and lmax:   spec = f"{lmin} - {lmax}"
-        elif lmin:          spec = f"{lmin} Min."
-        elif lmax:          spec = f"{lmax} Max."
+        if lmin and lmax:   spec = ComposedSpec(f"{lmin} - {lmax}")
+        elif lmin:          spec = ComposedSpec(f"{lmin} Min.")
+        elif lmax:          spec = ComposedSpec(f"{lmax} Max.")
         else:               spec = ""
     else:
         p_idx = col_map.get("param", 0)
@@ -326,6 +358,9 @@ def _build_test_row(cells, col_map):
     param = param.strip()
     if not param: return None
     if not any(v.strip() for v in [spec, result, uom]): return None
+    # a date line is part of the analysis details above the table, not a test result
+    if not spec and (_DATE_MADE.search(param) or _DATE_EXP.search(param) or re.search(r"retest", param, re.I)):
+        return None
 
     p_lower = param.lower()
     skip_starts = ("note:","this product","these results","guaranteed","remarks:","remark:",
@@ -369,6 +404,65 @@ def _extract_kv_row(cells, fields):
             fields[fkey] = val
             return
 
+# 20/10/2026, real COAs: "(mm/dd/yy) 11/24/25" kept its format label, and
+# "12/2025 EXPIRY DATE 12/2028" ran on into the next field. Only text is removed, the date
+# itself stays exactly as printed.
+_DATE_FORMAT_LABEL = re.compile(r"^\(?\s*[dmyj]{1,4}\s*[./ -]\s*[dmyj]{1,4}(?:\s*[./ -]\s*[dmyj]{1,4})?\s*\)?\s*[:\-]?\s*", re.I)
+_NEXT_DATE_FIELD = re.compile(r"\s+(?:expiry|expiration|exp\.?\s*date|best\s+before|use\s+before|retest"
+                              r"|production\s+date|manufactur\w*\s+date|mfg\.?\s*date)\b.*$", re.I)
+
+
+def _clean_date(value):
+    if not value:
+        return value
+    # one space between words and a sane length first: long space runs made the patterns
+    # below slow on a crafted PDF (security review R4)
+    value = re.sub(r"\s+", " ", value).strip()[:200]
+    v = _DATE_FORMAT_LABEL.sub("", value)
+    v = _NEXT_DATE_FIELD.sub("", v).strip()
+    return v or value
+
+
+def _cells_by_columns(line, col_starts):
+    """Split one layout line into the header's columns without cutting a word in two
+    (20/10/2026: "Acidity as Acetic A" + "cid" on a real COA). Text runs separated by two or
+    more spaces are kept whole and go to the column they overlap most; a run that still
+    crosses a column start is cut at the space nearest to it."""
+    ends = col_starts[1:] + [10 ** 6]
+    pieces = []
+    for m in re.finditer(r"\S+(?: \S+)*", line):
+        s0, txt = m.start(), m.group()
+        for start in col_starts[1:]:
+            off = start - s0
+            if 0 < off < len(txt) and " " in txt:
+                spaces = [i for i, ch in enumerate(txt) if ch == " "]
+                cut = min(spaces, key=lambda i: abs(i - off))
+                if abs(cut - off) <= 6:
+                    pieces.append((s0, txt[:cut]))
+                    s0, txt = s0 + cut + 1, txt[cut + 1:]
+                    continue
+        pieces.append((s0, txt))
+    cells = [""] * len(col_starts)
+    for s0, txt in pieces:
+        e0 = s0 + len(txt)
+        overlap = [max(0, min(e0, ends[k]) - max(s0, col_starts[k])) for k in range(len(col_starts))]
+        k = max(range(len(col_starts)), key=lambda i: (overlap[i], -i))
+        if overlap[k] == 0:                       # left of the first column: the label
+            k = max([i for i, c in enumerate(col_starts) if c <= s0] or [0])
+        cells[k] = f"{cells[k]} {txt}".strip()
+    return cells
+
+
+def _is_prose(line):
+    """A sentence, not a table row: many words, mostly lower-case, few numbers."""
+    words = line.split()
+    if len(words) < 9:
+        return False
+    lower = sum(1 for w in words if w[:1].islower() and w.strip(",.;:").isalpha())
+    digits = sum(1 for w in words if any(ch.isdigit() for ch in w))
+    return lower / len(words) >= 0.6 and digits <= 1
+
+
 def _extract_tests_from_text(full_text):
     lines   = full_text.split("\n")
     results = []
@@ -405,11 +499,11 @@ def _extract_tests_from_text(full_text):
 
         for line in data_lines:
             if not line.strip() or re.match(r'^\s*[-=_*]{3,}', line): continue
-            row_cells = []
-            for k, start in enumerate(col_starts):
-                end  = col_starts[k+1] if k+1 < len(col_starts) else len(line)+1
-                cell = line[start:end].strip() if start <= len(line) else ""
-                row_cells.append(cell)
+            # running text under the table (disclaimer, sales conditions) ends it (20/10/2026:
+            # a real COA's disclaimer came out as test rows)
+            if _is_prose(line):
+                break
+            row_cells = _cells_by_columns(line, col_starts)
             row_data = _build_test_row(row_cells, col_map_idx)
             if row_data: results.append(row_data)
 
@@ -447,13 +541,24 @@ def parse_coa_fields(data):
         if not rows: continue
 
         hdr_row_idx, col_map = _find_test_header_row(rows)
+        if hdr_row_idx >= 0 and "result" not in col_map:
+            # some suppliers leave the result column's header empty (20/10/2026, real COA):
+            # an unnamed column with values under it is the result
+            hdr = [_cell_str(c) for c in rows[hdr_row_idx]]
+            body = [[_cell_str(c) for c in r] for r in rows[hdr_row_idx + 1:] if r]
+            for i in reversed(range(len(hdr))):
+                filled = sum(1 for r in body if i < len(r) and r[i].strip())
+                if not hdr[i].strip() and i not in col_map.values() and body and filled * 2 >= len(body):
+                    col_map["result"] = i
+                    break
 
         if hdr_row_idx >= 0:
             for row in rows[hdr_row_idx+1:]:
                 if not row: continue
                 cells   = [_cell_str(c) for c in row]
                 matched = sum(1 for c in cells if c.strip() and _classify_hdr(c) is not None)
-                if matched >= 2:
+                # a row with numbers in it is a test row, not a new header
+                if matched >= 2 and not any(re.search(r"\d", c) for c in cells):
                     _, new_map = _find_test_header_row([row])
                     if new_map: col_map.update(new_map)
                     continue
@@ -510,11 +615,13 @@ def parse_coa_fields(data):
         return m.group(1).strip() if m else None
 
     if "product_name" not in fields:
-        fields["product_name"] = _rex(r"(?:product(?:\s+name)?|chemical\s+name)\s*[:\-]?\s*(.+)")
+        # \b: "Date of production" is not a product name (20/10/2026, real COA)
+        fields["product_name"] = _rex(r"\b(?:product(?:\s+name)?|chemical\s+name)\b\s*[:\-]?\s*(.+)")
     if "batch_lot" not in fields:
         fields["batch_lot"] = (
             _rex(r"(?:batch|lot)\s+(?:no\.?|number|#|nr\.?)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-\/\.]+)")
-            or _rex(r"(?:batch|lot)\s*[:\-#]\s*([A-Z0-9][A-Z0-9\-\/\.]+)"))
+            # "Lot/ Batchnumber : 101143" (20/10/2026, real COA)
+            or _rex(r"(?:batch|lot)\s*(?:number|no\.?|nr\.?)?\s*[:\-#]\s*([A-Z0-9][A-Z0-9\-\/\.]+)"))
     fields["batch_lot"] = clean_identifier(fields.get("batch_lot"))
     if "manufacture_date" not in fields:
         fields["manufacture_date"] = _rex(
@@ -524,7 +631,11 @@ def parse_coa_fields(data):
     if "expiry_date" not in fields:
         fields["expiry_date"] = _rex(
             r"(?:expiry\s+date|retest\s+date|best\s+before|use\s+before"
-            r"|exp\.?\s*date|expiration\s+date)\s*[:\-]?\s*(.+?)(?:\n|$)")
+            r"|exp\.?\s*date|expiration\s+date"
+            # "SLED" = shelf life expiry date (20/10/2026, real COA)
+            r"|\bSLED\b|shelf\s*life\s*expiry(?:\s+date)?)\s*[:\-]?\s*(.+?)(?:\n|$)")
+    for key in ("manufacture_date", "expiry_date"):
+        fields[key] = _clean_date(fields.get(key))
     # No guessing: an absent product name stays absent. It comes from the
     # platform (product_naam) or from the commercial document, never from a
     # stray line of the supplier's certificate.
@@ -537,35 +648,60 @@ def parse_coa_fields(data):
 # ═══════════════════════════════════════════════════════════════════════════
 # REFERENCE DOCUMENT PARSER
 # ═══════════════════════════════════════════════════════════════════════════
+# TMC's own numbers (Willem 20/10/2026): the sales file number (840.S0938) always wins; on a
+# purchase order without one, TMC's PO number (PO019423) is the TMC file nr.
+TMC_FILE_NR = re.compile(r"\b(\d{3}\.[A-Z]\d{4})\b")
+TMC_PO_NR   = re.compile(r"\b(PO\d{6})\b")
+
+
 def parse_ref_fields(data):
     text   = data["full_text"]
     fields = {}
+    dtype  = classify_file(text)
 
-    for pat in [
+    own = TMC_FILE_NR.search(text) or (TMC_PO_NR.search(text) if dtype == "PURCHASE_ORDER" else None)
+    if own:
+        fields["doc_ref"] = own.group(1)
+    for pat in ([] if own else [
         r"(?:pro\s*forma\s+invoice|proforma\s+invoice|invoice\s*(?:no\.?|#))\s*[:\-]?\s*([A-Z0-9\-\.\/]+)",
         r"(?:order\s*(?:no\.?|number|#))\s*[:\-]?\s*([A-Z0-9\-\.\/]+)",
         r"(?:contract\s*(?:no\.?|number|#))\s*[:\-]?\s*([A-Z0-9\-\.\/]+)",
         r"\b(\d{3,}\.[A-Z0-9]{3,})\b",
-    ]:
+    ]):
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             fields["doc_ref"] = m.group(1).strip()
             break
 
-    dtype  = classify_file(text)
     labels = {"ORDER_CONFIRMATION":"Order Confirmation","PFI":"Pro Forma Invoice",
-              "SALES_CONTRACT":"Contract de Vente","INVOICE":"Commercial Invoice"}
+              "SALES_CONTRACT":"Contract de Vente","INVOICE":"Commercial Invoice",
+              "PURCHASE_ORDER":"Purchase Order"}
     fields["_doc_type"] = labels.get(dtype, "Reference Document")
 
     products = []
-    for line in text.split("\n"):
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
         m = re.search(r"\b(\d[\d,\.]+)\s*(KG|MT|LT)\b", line, re.IGNORECASE)
         if not m: continue
         qty_val   = f"{m.group(1)} {m.group(2).upper()}"
         prod_line = re.sub(r"^\d+\s+\S+-\S+\s+", "", line).strip()
+        prod_line = re.sub(r"^\d+-\S+\s+", "", prod_line)        # item code "100413-BAG25" (real PO)
         prod_m    = re.match(r"([A-Za-z][^\d]+?)(?:\s+\d)", prod_line)
         if prod_m:
             name = prod_m.group(1).strip()
+            # the trade name printed on the line under the description ("Pharmatose 200M"),
+            # kept in the printed order (20/10/2026, real purchase order)
+            nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            after = lines[i + 2].strip() if i + 2 < len(lines) else ""
+            # Only where the layout proves it (security review R3): the line sits between two
+            # item lines, or between the last item and the total.
+            between_items = bool(re.search(r"\b\d[\d,\.]*\s*(KG|MT|LT)\b", after, re.I)
+                                 or re.match(r"total\b", after, re.I))
+            if (between_items and nxt and len(nxt) <= 40 and re.match(r"[A-Za-z]", nxt) and ":" not in nxt
+                    and not re.search(r"\b\d[\d,\.]*\s*(KG|MT|LT)\b|total|page|markings|remarks|customs|tariff"
+                                      r"|weight|\badr\b|\bimo\b|\bun\s?\d|origin|batch|\blot\b|hs\s*code|bulk"
+                                      r"|terms|incoterm|delivery|payment|pallet|packing|shipment", nxt, re.I)):
+                name = f"{name} {nxt}"
             if len(name) > 3:
                 products.append({"name": name, "quantity": qty_val})
     fields["_products"] = products
@@ -580,19 +716,22 @@ def match_pfi_product(coa_fields, ref_products):
         return ""
     coa_candidates = [(coa_fields.get("product_name") or "").lower(),
                       (coa_fields.get("grade") or "").lower()]
-    best_name, best_score = ref_products[0]["name"], 0
+    scores = {}
     for prod in ref_products:
         ref_words = set(re.findall(r"[a-z0-9]+", prod["name"].lower()))
         for cand in coa_candidates:
             cand_words = set(re.findall(r"[a-z0-9]+", cand))
             ref_sig    = {w for w in ref_words  if len(w) > 2 and not w.isdigit()}
             cand_sig   = {w for w in cand_words if len(w) > 2 and not w.isdigit()}
-            score = len(ref_sig & cand_sig)
-            if score > best_score:
-                best_score, best_name = score, prod["name"]
-    if best_score == 0:
+            scores[prod["name"]] = max(scores.get(prod["name"], 0), len(ref_sig & cand_sig))
+    best_score = max(scores.values(), default=0)
+    best = [name for name, s in scores.items() if s == best_score]
+    # Never guess: when two different order lines fit the COA equally well (e.g. three
+    # lactose grades and a COA that only says "lactose monohydrate"), the product name stays
+    # empty and yellow for a person (20/10/2026, real purchase order).
+    if best_score == 0 or len(best) > 1:
         return ""
-    return best_name
+    return best[0]
 
 def match_best_ref_doc(coa_fields, ref_docs):
     if not ref_docs: return {}
@@ -615,26 +754,31 @@ def match_best_ref_doc(coa_fields, ref_docs):
 # ═══════════════════════════════════════════════════════════════════════════
 # SPECIFICATION PARSER  (extended)
 # ═══════════════════════════════════════════════════════════════════════════
+# A number as printed: "99.5", and also a decimal comma "98,0" / "1,018" (20/10/2026: European
+# suppliers). The value is kept exactly as printed; nothing is converted.
+_NUM = r"(\d[\d.,]*)"
+
+
 def _try_parse_spec_str(s):
-    m = re.match(r"^([\d\.]+)\s*(?:[-\u2013\u2014~]|to)\s*([\d\.]+)", s)
-    if m: return (m.group(1), m.group(2))
-    m = re.match(r"^([\d\.]+)\s*[Mm]in\.?\s*$", s)
+    m = re.match(r"^" + _NUM + r"\s*(?:[-\u2013\u2014~\u00f7]|to)\s*" + _NUM, s)
+    if m: return (m.group(1).rstrip(".,"), m.group(2).rstrip(".,"))
+    m = re.match(r"^" + _NUM + r"\s*[Mm]in\.?\s*$", s)
     if m: return (m.group(1), "")
-    m = re.match(r"^[Mm]in\.?\s*([\d\.]+)\s*$", s)
+    m = re.match(r"^[Mm]in\.?\s*" + _NUM + r"\s*$", s)
     if m: return (m.group(1), "")
-    m = re.match(r"^([\d\.]+)\s*[Mm]ax\.?\s*$", s)
+    m = re.match(r"^" + _NUM + r"\s*[Mm]ax\.?\s*$", s)
     if m: return ("", m.group(1))
-    m = re.match(r"^[Mm]ax\.?\s*([\d\.]+)\s*$", s)
+    m = re.match(r"^[Mm]ax\.?\s*" + _NUM + r"\s*$", s)
     if m: return ("", m.group(1))
-    m = re.match(r"^(?:NLT|not\s+less\s+than)\s*([\d\.]+)", s, re.IGNORECASE)
+    m = re.match(r"^(?:NLT|not\s+less\s+than)\s*" + _NUM, s, re.IGNORECASE)
     if m: return (m.group(1), "")
-    m = re.match(r"^(?:NMT|not\s+more\s+than)\s*([\d\.]+)", s, re.IGNORECASE)
+    m = re.match(r"^(?:NMT|not\s+more\s+than)\s*" + _NUM, s, re.IGNORECASE)
     if m: return ("", m.group(1))
-    m = re.match(r"^[\u2265>]=?\s*([\d\.]+)\s*$", s)
+    m = re.match(r"^(?:\u2265|>\s*/?\s*=?)\s*" + _NUM + r"\s*$", s)   # \u2265 98   >/= 98,0   > 98
     if m: return (m.group(1), "")
-    m = re.match(r"^[\u2264<]=?\s*([\d\.]+)\s*$", s)
+    m = re.match(r"^(?:\u2264|<\s*/?\s*=?)\s*" + _NUM + r"\s*$", s)   # \u2264 5    </= 0,1    < 5
     if m: return ("", m.group(1))
-    m = re.match(r"^([\d\.]+)\s*$", s)
+    m = re.match(r"^" + _NUM + r"\s*$", s)
     if m: return (m.group(1), m.group(1))
     return ("", "")
 
@@ -655,7 +799,7 @@ def parse_spec(spec_str):
         if result != ("", ""):
             return result
     # Strip unit BETWEEN number and Min/Max qualifier: "99.5 % Min." -> "99.5 Min."
-    s_mid = re.sub(r'([\d\.]+)\s*' + _UNIT_RE + r'\s*', r'\1 ', s).strip()
+    s_mid = re.sub(r'(\d[\d.,]*)\s*' + _UNIT_RE + r'\s*', r'\1 ', s).strip()
     if s_mid and s_mid != s:
         result = _try_parse_spec_str(s_mid)
         if result != ("", ""):
@@ -728,6 +872,38 @@ def _column_reading(path):
     if not agreed and not any(label is None for _p, _l, label, _u, _r in doubts):
         return None
     return agreed, doubts, issues
+
+
+def _one_document_per_batch(jobs, held_back):
+    """The same batch in two supplier files (20/10/2026: a real dossier held the same
+    certificate twice). Same data: one document, noted. Different data: no document for
+    that batch, held back for a person -- choosing one would be guessing."""
+    def table(fields):
+        return [list(r) for r in (fields.get("results_table") or [])]
+
+    first, conflict = {}, set()
+    for job in jobs:
+        lot = (job[0].get("batch_lot") or "").strip()
+        if not lot:
+            continue
+        key = (lot.lower(), (job[2] or "").lower())
+        if key not in first:
+            first[key] = job
+            continue
+        a = Path(first[key][0].get("_source", "")).name
+        b = Path(job[0].get("_source", "")).name
+        if table(first[key][0]) == table(job[0]) and first[key][0].get("expiry_date") == job[0].get("expiry_date"):
+            print(f"  i  {b}: the same certificate as {a} (batch {lot}); one document made")
+        else:
+            conflict.add(key)
+            held_back.append((f"batch {lot}", f"{a} and {b} give different data for the same batch"))
+    kept = []
+    for job in jobs:
+        lot = (job[0].get("batch_lot") or "").strip()
+        key = (lot.lower(), (job[2] or "").lower())
+        if not lot or (key not in conflict and first.get(key) is job):
+            kept.append(job)
+    return kept
 
 
 def column_batches(data, path):
@@ -932,8 +1108,9 @@ def build_docx(coa_fields, ref_fields, product_name, output_path, entity=None, r
         unit              = uom if uom.lower() not in _CELL_EMPTY else ""
         # Quality standard = the specification exactly as printed (rule of 16/09).
         # House rule 2: a spaced hyphen inside a number range is written closed up.
+        quality           = "" if isinstance(spec, ComposedSpec) else close_hyphens(spec)
         values            = [param, close_hyphens(lim_min), close_hyphens(lim_max), result,
-                             unit, method, close_hyphens(spec)]
+                             unit, method, quality]
         new_row           = clone_row(tbl1, template_row)
         for i, val in enumerate(values):
             if i < len(new_row.cells):
@@ -1014,7 +1191,9 @@ def main():
             print(f"  {Path(fpath).name}  ->  {dtype}")
 
     coa_paths = [f for f in valid_files if classify_results[f][1] == "COA"]
-    ref_paths = [f for f in valid_files if classify_results[f][1] != "COA"]
+    ref_paths = [f for f in valid_files if classify_results[f][1] not in ("COA", "UNKNOWN")]
+    # Never silently left out (20/10/2026: scans without OCR disappeared from a real dossier).
+    unrecognised = [Path(f).name for f in valid_files if classify_results[f][1] == "UNKNOWN"]
 
     if not coa_paths:
         print("\nFAIL  No certificate of analysis detected in the input.")
@@ -1097,6 +1276,9 @@ def main():
             test_count   = len(coa_fields.get("results_table") or [])
             jobs.append((coa_fields, best_ref, product_name, test_count))
 
+    if not args.batch:
+        jobs = _one_document_per_batch(jobs, held_back)
+
     if refused:
         print("\nREFUSED - nothing was written:")
         for name, why in refused:
@@ -1134,6 +1316,8 @@ def main():
         src = coa_data_map.get(coa_fields.get("_source")) or {}
         rows = [row for t in (src.get("tables") or []) for row in (t.get("rows") or []) if row]
         src_texts = [src.get("full_text", "")] + [p.get("text", "") for p in src.get("pages", [])]
+        # the layout reading of the same file: test rows are read from it (20/10/2026)
+        src_texts += [line for line in (src.get("layout_text") or "").split("\n") if line.strip()]
         src_texts += [" ".join(c for c in row if c) for row in rows]
         src_texts += [c.replace("\n", " ") for row in rows for c in row if c]
         src_texts += readings.get((coa_fields.get("_source"), coa_fields.get("_lot")), [])
@@ -1187,6 +1371,12 @@ def main():
             pdf_failures.append((Path(docx_path).name, "PDF missing or empty after conversion"))
             print("  x  FAIL  PDF missing or empty after conversion")
 
+    # always reported, also when the run fails further down
+    if unrecognised:
+        print(f"\nNOT PROCESSED - {len(unrecognised)} file(s) not recognised; nothing was made from them:")
+        for name in unrecognised:
+            print(f"  x  {name}: not a certificate of analysis or a commercial document the neutralizer "
+                  "knows (a scan needs OCR: Tesseract)")
     if pdf_failures:
         print("\nINCOMPLETE - every COA/SDS must be delivered as .docx AND .pdf.")
         for name, why in pdf_failures:
@@ -1203,7 +1393,7 @@ def main():
         print(f"\nHELD BACK - {len(held_back)} batch(es) got no document; check the original:")
         for what, why in held_back:
             print(f"  x  {what}: {why}")
-    if drafts or held_back:
+    if drafts or held_back or unrecognised:
         sys.exit(EXIT_REVIEW)
     print("\nDone. Every output delivered as .docx + .pdf pair.\n")
 
