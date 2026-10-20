@@ -68,10 +68,9 @@ export function fileStem(p: NameParts): string {
     case "SPEC": // spec sheets go the TDS way (ENGINE.md, Willem 15/10)
       return [code, "TDS", safePart(p.productName)].filter(Boolean).join("_");
     case "LABEL": {
-      const parts = [code, "LABEL"];
       // a part that is empty once cleaned is left out, never an empty "__" (security L1)
-      for (const v of [p.fileNr, p.productName, p.batch, p.language?.toUpperCase()]) if (v && coaSanitize(v)) parts.push(coaSanitize(v));
-      return parts.join("_");
+      const parts = [p.fileNr, p.productName, p.batch, p.language?.toUpperCase()].map(coaSanitize).filter(Boolean);
+      return [code, "LABEL", ...parts].join("_");
     }
     default:
       throw new Error(`No file name rule for type ${p.type}`);

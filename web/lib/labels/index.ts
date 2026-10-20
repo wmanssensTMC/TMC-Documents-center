@@ -87,8 +87,9 @@ export async function createLabelJob(db: Db, actor: Actor, raw: unknown): Promis
 export async function templateOfLabel(db: Db | Tx, doc: Pick<Document, "jobId">): Promise<(LabelTemplate & { madeAsSample: boolean }) | null> {
   if (!doc.jobId) return null;
   const [job] = await db.select({ label: jobs.label }).from(jobs).where(eq(jobs.id, doc.jobId));
-  const t = job?.label ? labelTemplate(job.label.template) : null;
-  return t && job.label ? { ...t, madeAsSample: job.label.sample !== false } : null;
+  if (!job?.label) return null;
+  const t = labelTemplate(job.label.template);
+  return t ? { ...t, madeAsSample: job.label.sample !== false } : null;
 }
 
 /** Labels from a sample (or unknown) template never become Final: a sample when it was made, or now. */
@@ -118,5 +119,3 @@ export async function finalCoas(db: Db, limit = 300) {
     .orderBy(desc(documents.createdAt))
     .limit(limit);
 }
-
-export { LABEL_FIELDS, LABEL_LANGUAGES, labelTemplate };

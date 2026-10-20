@@ -86,6 +86,10 @@ def resolve(fields, entity, lang, texts):
     return values
 
 
+def _text(p):
+    return "".join(r.text for r in p.runs)
+
+
 def _paragraphs(doc):
     def walk(container):
         for p in container.paragraphs:
@@ -109,7 +113,7 @@ def fill(template, values, out_docx):
     doc = Document(str(template))
     drop_rows, drop_pars = [], []
     for p, row in list(_paragraphs(doc)):
-        text = "".join(r.text for r in p.runs)
+        text = _text(p)
         keys = PLACEHOLDER.findall(text)
         if not keys:
             continue
@@ -119,7 +123,10 @@ def fill(template, values, out_docx):
                     raise LabelError(f"no translation for '{k[2:]}' in this language")
                 raise LabelError(f"the template asks for an unknown value: {k}")
         if any(not values[k] for k in keys):
-            (drop_rows if row is not None else drop_pars).append(row if row is not None else p)
+            if row is not None:
+                drop_rows.append(row)
+            else:
+                drop_pars.append(p)
             continue
         new = PLACEHOLDER.sub(lambda m: values[m.group(1)], text)
         # the paragraph keeps the format of its first run
@@ -146,7 +153,7 @@ def make_label(template, fields, entity, lang, name, out_dir, texts=None):
     fill(template, values, docx_path)
     from docx import Document
 
-    left = [t for t in ("".join(r.text for r in p.runs) for p, _ in _paragraphs(Document(str(docx_path)))) if "{{" in t]
+    left = [t for t in (_text(p) for p, _ in _paragraphs(Document(str(docx_path)))) if "{{" in t]
     if left:
         docx_path.unlink()
         raise LabelError(f"placeholder left on the label: {left[0][:80]}")
