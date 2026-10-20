@@ -141,6 +141,17 @@ try:
 except ValueError:
     check("a 1.3 block without an end is refused (review R2)", True)
 
+import json  # noqa: E402
+from neutralise_sds import neutralise  # noqa: E402
+ent = json.loads((HERE.parent / "entity.example.json").read_text(encoding="utf-8"))
+els = [{"kind": "sub", "text": "1 IDENTIFICATION"}, {"kind": "para", "text": "1.3 Supplier"}, {"kind": "para", "text": "Example Chemicals SA"},
+       {"kind": "para", "text": "info@example-chem.com"}, {"kind": "para", "text": "1.4 Emergency telephone"},
+       {"kind": "para", "text": "24 h/24 +32 4 000 00 00"}, {"kind": "sub", "text": "2 HAZARDS IDENTIFICATION"}]
+out, _meta, _rep = neutralise(els, {}, ent, None, None)
+texts = [e.get("text", "") for e in out]
+check("a 1.4 emergency number starting with a digit is replaced by TMC's (review)",
+      "24 h/24 +32 4 000 00 00" not in texts and any("58 45 45" in t for t in texts), texts)
+
 # 17. the trade-name line only where the order's layout proves it (review R3); date clean-up stays fast (R4)
 ref = N.parse_ref_fields({"full_text": "PURCHASE ORDER PO019192\nNo. Description Qty\n"
                           "100413-BAG25 Lactose Monohydrate 600 BAG 25 15.000,00 KG 2,550\nBulk\nDelivery terms CIP"})

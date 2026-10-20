@@ -1,6 +1,6 @@
 # Changelog
 
-## 20/10/2026 · Engine: first run on the real dossiers (branch `phase-2f-corpus`, laptop only)
+## 20/10/2026 · Engine: first run on the real dossiers (branch `phase-2f-corpus`, laptop only; security gate PASS 90/100)
 - 8 real dossiers run on the laptop and compared with the TMC versions colleagues made (no real document in git, GitHub or Vercel). New tool: `engine/tests/compare_real_corpus.py`.
 - Fixed: the provenance gate crashed on product lists of real order confirmations; a purchase order that mentions "certificate of analysis" became a COA; unrecognised files (scans without OCR) were left out silently (now "NOT PROCESSED", the run asks for a person).
 - TMC file nr: the sales file number (840.S0938) always wins; on a purchase order the PO number (PO019423) (Willem 20/10).
