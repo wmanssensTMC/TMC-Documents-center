@@ -122,6 +122,16 @@ f = N.parse_coa_fields({"full_text": "Batch number: BI30564743 Date of analysis:
 check("SLED is read as the expiry date", f.get("expiry_date") == "28.01.2028", f.get("expiry_date"))
 check("an analysis date is not taken as production date", not f.get("manufacture_date"), f.get("manufacture_date"))
 
+# 16. MSDS: section 1.3 found however it is written (real MSDS: "1.3 Fournisseur" as a plain line)
+from neutralise_sds import _sec_no, find_supplier_block  # noqa: E402
+check("section numbers in their usual forms", [_sec_no(t) for t in ("1.3 Fournisseur", "1.3.", "SECTION 1.3: Details", "28 Rue de Renory",
+                                                                  "100 %", "1 IDENTIFICATION")]
+      == ["1.3", "1.3", "1.3", "28", None, "1"], [_sec_no(t) for t in ("1.3 Fournisseur", "1.3.", "SECTION 1.3: Details", "28 Rue de Renory", "100 %", "1 IDENTIFICATION")])
+els = [{"kind": "para", "text": "1.2 Uses"}, {"kind": "para", "text": "1.3 Fournisseur"}, {"kind": "para", "text": "Example SA"},
+       {"kind": "para", "text": "Rue de Renory 28"}, {"kind": "sub", "text": "SCC Number : CU-1"}, {"kind": "para", "text": "1.4 Urgence"},
+       {"kind": "para", "text": "+32 4 000 00 00"}]
+check("the supplier block runs from 1.3 to 1.4, certificate number included", find_supplier_block(els) == (2, 5), find_supplier_block(els))
+
 # 9. a file that is not recognised is reported, never silently left out (needs reportlab + LibreOffice)
 try:
     from reportlab.pdfgen import canvas

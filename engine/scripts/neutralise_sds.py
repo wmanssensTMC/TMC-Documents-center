@@ -15,17 +15,31 @@ def _is_trade_name(label):
 
 
 def _sec_no(text):
-    m = re.match(r"\s*(\d+(?:\.\d+)*)\.", text or "")
+    """'1.3', also written '1.3.', '1.3 Fournisseur', 'SECTION 1.3:' (20/10/2026: real MSDS)."""
+    m = re.match(r"\s*(?:section|rubrique|abschnitt|rubriek)?\s*(\d{1,2}(?:\.\d{1,2})*)\.?(?=\s|:|$)",
+                 text or "", re.I)
     return m.group(1) if m else None
 
 
+def _heading(e):
+    """The section number of a heading line, whatever the supplier made it look like."""
+    return _sec_no(e.get("text")) if e["kind"] in ("sub", "section", "para") else None
+
+
 def find_supplier_block(els):
-    """Index range of the body of '1.3 Details of the supplier ...'."""
+    """Index range of the body of '1.3 Details of the supplier ...'. The block runs to the next
+    heading (1.4, section 2): every line in it is the supplier's identity and is replaced."""
     start = end = None
     for i, e in enumerate(els):
-        if e["kind"] == "sub" and _sec_no(e["text"]) == "1.3":
-            start = i + 1
-        elif start is not None and e["kind"] in ("sub", "section"):
+        no = _heading(e)
+        if start is None:
+            if no == "1.3":
+                start = i + 1
+            continue
+        if e["kind"] == "section" or no == "1.4" or (no or "").split(".")[0] in {str(n) for n in range(2, 17)}:
+            end = i
+            break
+        if i - start >= 20:              # never swallow more than a supplier block can hold
             end = i
             break
     if start is None:
@@ -140,9 +154,9 @@ def neutralise(els, meta, entity, product_name=None, file_nr=None):
 
     # 1.4 -> TMC emergency number
     for i, e in enumerate(els):
-        if e["kind"] == "sub" and _sec_no(e["text"]) == "1.4":
+        if _heading(e) == "1.4":
             for j in range(i + 1, len(els)):
-                if els[j]["kind"] in ("sub", "section"):
+                if els[j]["kind"] == "section" or _heading(els[j]):
                     break
                 if els[j]["kind"] == "kv":
                     report["old_emergency"] = els[j]["value"]
