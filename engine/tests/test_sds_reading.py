@@ -48,13 +48,13 @@ with tempfile.TemporaryDirectory() as d:
     c.setFont("Times-Roman", 10); c.drawString(x, H - 201, "’é")         # other font, 1 pt lower
     x += c.stringWidth("’é", "Times-Roman", 10)
     c.setFont("Helvetica", 10); c.drawString(x, H - 200, "cart de la chaleur.")
-    c.drawString(40, H - 260, "2 / 21")
+    c.drawString(40, H - 260, "1 / 1")                       # its own page count
     c.save()
     with pdfplumber.open(str(p)) as pdf:
         texts = [ln["text"] for ln in _lines(pdf.pages[0])]
     check("fake bold is read once", "ORGAWHITE 2000" in texts, texts)
     check("a letter in another font stays in its word", any("l’écart de la chaleur." in t for t in texts), texts)
-    check("a page number line is not read as content", "2 / 21" not in texts, texts)
+    check("a page number line is not read as content", "1 / 1" not in texts, texts)
 
     # 4-6: every section in a drawn box, 1.4 number on the heading line, plain SECTION lines
     p = d / "boxed.pdf"
@@ -90,6 +90,38 @@ with tempfile.TemporaryDirectory() as d:
     check("the 1.4 heading and TMC's number are two lines (each traceable)",
           any(e.get("text") == "1.4 Emergency telephone number:" for e in out), body)
     check("no supplier identity left", "example-fragrance" not in body.lower() and "EXAMPLE FRAGRANCE" not in body, body)
+
+# review F2: the overprint rule follows the letter size; real repeated letters are never merged
+with tempfile.TemporaryDirectory() as d:
+    p = Path(d) / "sizes.pdf"
+    c = canvas.Canvas(str(p), pagesize=A4)
+    for size, y in ((22, 700), (6, 650)):
+        c.setFont("Helvetica-Bold", size)
+        for dx in (0, size * 0.044):                      # fake bold, as measured on a real PDF
+            c.drawString(40 + dx, y - dx, "ORGAL")
+    c.setFont("Helvetica", 4); c.drawString(40, 600, "Assay 1100 ll 00")   # real repeats, tiny font
+    c.save()
+    with pdfplumber.open(str(p)) as pdf:
+        texts = [ln["text"] for ln in _lines(pdf.pages[0])]
+    check("fake bold read once at size 22 and at size 6", texts.count("ORGAL") == 2, texts)
+    check("real repeated letters in a 4 pt font stay ('1100', 'll', '00')", "Assay 1100 ll 00" in texts, texts)
+
+# review fixes: real content is never dropped or cut short
+from extract_sds import _is_page_number  # noqa: E402
+check("'2 / 21' on a 21-page MSDS is a page number", _is_page_number("2 / 21", 21))
+check("'1 / 10' on a 21-page MSDS is content (review F1)", not _is_page_number("1 / 10", 21))
+check("'Page 3 of 8' is a page number", _is_page_number("Page 3 of 8", 21))
+els = [{"kind": "para", "text": "1.3 Supplier"}, {"kind": "table", "rows": [["Company", "Example SA"]]}, {"kind": "para", "text": "1.4 Emergency"}]
+try:
+    neutralise(els, {}, json.loads((ROOT / "entity.example.json").read_text(encoding="utf-8")), None, None)
+    check("a table inside 1.3 is refused for a person (review F4)", False)
+except ValueError:
+    check("a table inside 1.3 is refused for a person (review F4)", True)
+els = [{"kind": "para", "text": "1.3 Supplier"}, {"kind": "para", "text": "Example SA"},
+       {"kind": "para", "text": "1.4 Emergency telephone number: (see section 16)"}, {"kind": "section", "text": "SECTION 2: X"}]
+out, _m, _r = neutralise(els, {}, json.loads((ROOT / "entity.example.json").read_text(encoding="utf-8")), None, None)
+check("'(see section 16)' after 1.4 is not taken for a phone number (review F5)",
+      any(e.get("text") == "1.4 Emergency telephone number: (see section 16)" for e in out), [e.get("text") for e in out])
 
 print(f"\n{ok} passed, {bad} failed")
 sys.exit(1 if bad else 0)

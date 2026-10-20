@@ -137,13 +137,14 @@ def _ocr_words(pdf_path, page_no):
 
 def read_pdf(pdf_path):
     import pdfplumber
+    from extract_sds import dedupe          # one overprint rule for every route
     pages, notes, corpus = [], [], []
     with pdfplumber.open(pdf_path) as pdf:
         for i, page in enumerate(pdf.pages, 1):
             # letters a PDF prints twice to fake bold are read once (20/10/2026: a real TDS
             # came out as "OORRGGAALL")
             if hasattr(page, "dedupe_chars"):
-                page = page.dedupe_chars(tolerance=1)
+                page = dedupe(page)   # only true overprints (review F2)
             txt = page.extract_text() or ""
             scanned = len(txt.strip()) < 80
             words = _ocr_words(pdf_path, i) if scanned else None

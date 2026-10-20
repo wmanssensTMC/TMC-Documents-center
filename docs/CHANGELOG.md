@@ -1,5 +1,12 @@
 # Changelog
 
+## 20/10/2026 · MSDS round 1 on the real MSDS (branch `phase-2g-msds`, laptop only)
+- Reading: letters printed twice to fake bold are read once (also TDS: "OORRGGAALL" -> "ORGAL"); a letter in another font or a point lower stays in its word ("l'écart"); page-number lines ("2 / 21") are not glued into paragraphs; a box drawn around a whole section is a frame, not a table; "SECTION n:" lines are section headings also when not bold.
+- Section 1.3 / 1.4: found however written; the supplier's emergency number on the 1.4 heading line itself is replaced by TMC's.
+- "Technical sheet" goes to the TDS route.
+- Measured on the real MSDS: one supplier's 7 MSDS went from 0 to 7 made, each 98% the same text as the TMC version colleagues made, supplier fully removed. Still open: section 1 inside a table (2 suppliers), two-column French layout (gate refuses, safe), a 426-page extended MSDS (too slow), one MSDS refused for leftover supplier identity (correct).
+- Tests: `engine/tests/test_sds_reading.py` (synthetic copies of each case).
+
 ## 20/10/2026 · Engine: first run on the real dossiers (branch `phase-2f-corpus`, laptop only; security gate PASS 90/100)
 - 8 real dossiers run on the laptop and compared with the TMC versions colleagues made (no real document in git, GitHub or Vercel). New tool: `engine/tests/compare_real_corpus.py`.
 - Fixed: the provenance gate crashed on product lists of real order confirmations; a purchase order that mentions "certificate of analysis" became a COA; unrecognised files (scans without OCR) were left out silently (now "NOT PROCESSED", the run asks for a person).

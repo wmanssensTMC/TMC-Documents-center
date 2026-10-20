@@ -139,6 +139,10 @@ def neutralise(els, meta, entity, product_name=None, file_nr=None):
         raise ValueError("Section 1.3 (supplier details) not found - cannot neutralise. When the supplier "
                          "details are inside a table (seen on real MSDS), a person neutralises this MSDS.")
 
+    # A table inside 1.3: its supplier name, phone and e-mail could not be harvested for the
+    # scrub of the rest of the document, so refused for a person (security review F4).
+    if any(e["kind"] == "table" for e in els[lo:hi]):
+        raise ValueError("Section 1.3 (supplier details) is a table - a person neutralises this MSDS.")
     ident, weak = harvest_identity(els, lo, hi)
     report["supplier_tokens"] = sorted(ident)
     report["block_only"] = sorted(weak)
@@ -170,8 +174,9 @@ def neutralise(els, meta, entity, product_name=None, file_nr=None):
     for i, e in enumerate(els):
         if _heading(e) == "1.4":
             # the number on the heading line itself: "1.4 Emergency telephone number: +34 ..."
-            m = re.match(r"(.*?:)\s*(?=[+(\d])(.+)$", e.get("text") or "")
-            if m:
+            m = re.match(r"(.*?:)\s*(?=[+(\d])(.+)$", (e.get("text") or "")[:300])
+            # only a telephone number (6+ digits), never "(see section 16)" (review F5)
+            if m and len(re.findall(r"\d", m.group(2))) >= 6:
                 # heading and TMC number as two lines: each one traceable (the gate checks lines)
                 report["old_emergency"] = m.group(2)
                 e["text"] = m.group(1)

@@ -21,18 +21,48 @@ def _real_table(table):
     return sum(1 for r in rows if sum(1 for c in r if (c or "").strip()) >= 2) >= 2
 
 
-PAGE_NO = re.compile(r"(?:page|pagina|seite|blz\.?)?\s*\d{1,3}\s*(?:/|of|van|de|sur|von)\s*\d{1,3}", re.I)
+PAGE_NO = re.compile(r"(page|pagina|seite|blz\.?)?\s*\d{1,3}\s*(?:/|of|van|de|sur|von)\s*(\d{1,3})", re.I)
 LINE_TOL = 2.0     # points: words this close in height are on one line
 TOUCH = 0.6        # points: letters this close belong to one word
+# Fake bold prints a letter twice almost on top of itself; two real letters ("11" in a
+# small font) are always further apart than this (security review F2).
+# Measured on a real fake-bold PDF: the second print sits about 4% of the letter size away
+# (1 pt at size 22, 0.6 pt at size 14), while the same letter repeated for real is at least
+# about 22% of the size away. 10% catches every overprint and never merges real letters such
+# as "11" or "ll" (security review F2).
+OVERPRINT = 0.10
 
 
-def _lines(page):
+def _is_page_number(text, n_pages):
+    """'2 / 21' or 'Page 2 of 21' as a whole line, and only when it is this document's page
+    count or says 'page': a real line such as '1 / 10' stays (security review F1)."""
+    m = PAGE_NO.fullmatch(text.strip())
+    return bool(m) and (bool(m.group(1)) or (n_pages is not None and int(m.group(2)) == n_pages))
+
+
+def dedupe(page):
+    """The page without overprinted letters: same letter, same font and size, within
+    OVERPRINT x the letter size of a letter already kept."""
+    kept, drop = {}, set()
+    for c in page.chars:
+        key = (c.get("text"), c.get("fontname"), round(c.get("size") or 0, 1))
+        tol = OVERPRINT * (c.get("size") or 0)
+        near = kept.setdefault(key, [])
+        if any(abs(k["x0"] - c["x0"]) <= tol and abs(k["top"] - c["top"]) <= tol for k in near):
+            drop.add(id(c))
+        else:
+            near.append(c)
+    return page.filter(lambda obj: id(obj) not in drop) if drop else page
+
+
+def _lines(page, n_pages=None):
     """Text lines of a page, as the reader sees them (20/10/2026, real MSDS):
     - letters a PDF prints twice to fake bold ("OORRGGAALL") are read once;
     - a letter in another font or a point lower ("l'écart" with "'é" in another font)
       stays on its line and in its word."""
-    if hasattr(page, "dedupe_chars"):
-        page = page.dedupe_chars(tolerance=1)
+    page = dedupe(page)
+    if n_pages is None and getattr(page, "pdf", None) is not None:
+        n_pages = len(page.pdf.pages)
     words = sorted(page.extract_words(extra_attrs=["size", "fontname"]), key=lambda w: (w["top"], w["x0"]))
     rows = []
     for w in words:
@@ -44,7 +74,7 @@ def _lines(page):
     for _top, row in rows:
         # a page number line ("2 / 21", "Page 2 of 21") is page furniture, not content: it
         # must not end up inside a paragraph that runs over a page break (real MSDS)
-        if PAGE_NO.fullmatch(" ".join(w["text"] for w in row).strip()):
+        if _is_page_number(" ".join(w["text"] for w in row), n_pages):
             continue
         ws = []
         for w in sorted(row, key=lambda w: w["x0"]):
@@ -156,7 +186,7 @@ def extract(path, image_dir=None):
         meta["pages"] = len(pdf.pages)
         for pi, page in enumerate(pdf.pages):
             if hasattr(page, "dedupe_chars"):
-                page = page.dedupe_chars(tolerance=1)     # fake bold: letters printed twice
+                page = dedupe(page)     # fake bold: letters printed twice, read once
             # A box drawn around a whole section is a frame, not a table: its rows hold one
             # filled cell each. Its text is read as ordinary lines, so headings such as 1.3 and
             # 1.4 are found (20/10/2026: many real MSDS box every section).
@@ -202,7 +232,7 @@ def extract(path, image_dir=None):
                             el["in_value_col"] = False
                     els.append(el)
 
-            for ln in _lines(page):
+            for ln in _lines(page, meta["pages"]):
                 top = ln["top"]
                 _flush_images(top)
                 if top < HDR_BOTTOM:
@@ -239,7 +269,12 @@ def extract(path, image_dir=None):
 
                 # "SECTION 2: HAZARDS IDENTIFICATION" is a section heading also when the supplier
                 # did not set it bold or large (20/10/2026, real MSDS)
-                if re.match(r"\s*(?:section|rubrique|abschnitt|rubriek)\s+\d{1,2}\s*[:.]", ln["text"], re.I):
+                # Only in heading form: the word in capitals, or a short line at the left margin,
+                # and a real section number 1-16. A body sentence "Section 8: see ..." stays text,
+                # so it can never end the supplier block early (security review F3).
+                sm = re.match(r"\s*(section|rubrique|abschnitt|rubriek)\s+(\d{1,2})\s*[:.]", ln["text"], re.I)
+                if (sm and 1 <= int(sm.group(2)) <= 16
+                        and (sm.group(1).isupper() or (len(ln["text"]) <= 90 and ln["x0"] < LABEL_X))):
                     els.append({"kind": "section", "text": ln["text"], "page": pi + 1, "level": 0})
                     continue
                 if ln["bold"] and ln["size"] >= SZ_SECTION:
