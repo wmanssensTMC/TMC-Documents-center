@@ -1,5 +1,14 @@
 # Changelog
 
+## 20/10/2026 · Engine: first run on the real dossiers (branch `phase-2f-corpus`, laptop only)
+- 8 real dossiers run on the laptop and compared with the TMC versions colleagues made (no real document in git, GitHub or Vercel). New tool: `engine/tests/compare_real_corpus.py`.
+- Fixed: the provenance gate crashed on product lists of real order confirmations; a purchase order that mentions "certificate of analysis" became a COA; unrecognised files (scans without OCR) were left out silently (now "NOT PROCESSED", the run asks for a person).
+- TMC file nr: the sales file number (840.S0938) always wins; on a purchase order the PO number (PO019423) (Willem 20/10).
+- Reading: decimal commas (1,018 / 98,0), ">/=", "</=", "÷"; columns are cut between words, never through one; disclaimer text under the table ends it; "Lot/ Batchnumber"; date format labels and run-on fields removed from dates; separate MIN/MAX columns fill Limit min/max without a made-up Quality standard text.
+- Result on the dossiers: no document stopped by the gate any more (was 3); purchase dossiers get their PO number and lots.
+- Test: `engine/tests/test_real_corpus_rules.py` (synthetic copies of each case).
+
+
 ## 19/10/2026 · COA batches, file-name rule, MSDS pictograms (security gate PASS 92/100)
 - Engine: a COA with batches side by side (one result column per batch) gives one document per batch, each with its own values and dates. The same lot twice: kept once when only the quantity differs (noted in the log), held back for a person when an analysis result differs. Scan values the two readings do not agree on are marked yellow, never chosen. "Page 1 of 3" in a shorter file is refused as incomplete.
 - A typed batch on a COA with several batches is refused (Neutralise screen: leave Batch empty).
