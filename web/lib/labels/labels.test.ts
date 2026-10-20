@@ -11,6 +11,8 @@ import { LABEL_TEMPLATES } from "./templates";
 const warre: Actor = { email: "warre@transmare.com", name: "Warre", role: "user" };
 const form: LabelInput = { template: "sample", language: "FR", entity: "TMC", productName: "Betaine AI test", batch: "BT-3877", fileNr: "840.S0850" };
 
+const metadata = { productName: "Betaine AI test", fileNr: "840.S0850", batch: "BT-3877" };
+
 let db: Db;
 beforeEach(async () => {
   db = await createPgliteDb();
@@ -20,7 +22,7 @@ beforeEach(async () => {
 async function labelDraft(template: string) {
   const [job] = await db
     .insert(jobs)
-    .values({ kind: "label", state: "to_check", productName: form.productName, fileNr: form.fileNr, batch: form.batch, label: { template, language: "FR", fields: {} }, createdBy: warre.email })
+    .values({ kind: "label", state: "to_check", ...metadata, label: { template, language: "FR", fields: {} }, createdBy: warre.email })
     .returning();
   const name = "TMC_LABEL_840.S0850_Betaine_AI_test_BT-3877_FR";
   const [doc] = await db
@@ -30,9 +32,7 @@ async function labelDraft(template: string) {
       type: "LABEL",
       language: "FR",
       status: "To check",
-      productName: form.productName,
-      fileNr: form.fileNr,
-      batch: form.batch,
+      ...metadata,
       docxKey: newUploadKey("docx"),
       docxFilename: `${name}.docx`,
       pdfKey: newUploadKey("pdf"),
@@ -45,7 +45,6 @@ async function labelDraft(template: string) {
   return doc;
 }
 
-const metadata = { productName: "Betaine AI test", fileNr: "840.S0850", batch: "BT-3877" };
 
 describe("label form", () => {
   it("accepts the values and turns a decimal comma into a point", () => {
