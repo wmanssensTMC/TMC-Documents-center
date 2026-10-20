@@ -22,6 +22,7 @@ describe("fileStem (BRIEF 7.5, same as engine)", () => {
     expect(fileStem({ ...base, fileNr: "840.S0850", language: "FR" })).toBe("TMC_LABEL_840.S0850_Betaine_AI_test_BT-3877_FR");
     expect(fileStem({ ...base, entity: "TMCGULF", language: "en" })).toBe("TMCGULF_LABEL_Betaine_AI_test_BT-3877_EN");
     expect(fileStem({ ...base, productName: "Sodium/Benzoate: 99%" })).toBe("TMC_LABEL_SodiumBenzoate_99_BT-3877");
+    expect(fileStem({ ...base, fileNr: "840.S0850", packSize: "25.5kg", language: "FR" })).toBe("TMC_LABEL_840.S0850_Betaine_AI_test_BT-3877_25.5kg_FR");
     expect(fileStem({ ...base, fileNr: "###", language: "EN" })).toBe("TMC_LABEL_Betaine_AI_test_BT-3877_EN"); // no empty part
   });
 });

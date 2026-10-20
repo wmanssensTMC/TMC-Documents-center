@@ -99,7 +99,7 @@ export default async function CheckPage({ params }: PageProps<"/documents/[id]/c
         busy={!!busy}
         uploadMode={getStorage().mode}
         initial={{ productName: doc.productName ?? "", fileNr: doc.fileNr ?? "", batch: doc.batch ?? "" }}
-        naming={{ type: doc.type, entity: doc.entity, batchLocked: !!doc.batch, language: doc.language }}
+        naming={{ type: doc.type, entity: doc.entity, batchLocked: !!doc.batch, language: doc.language, currentName: doc.name }}
       />
     </PageShell>
   );

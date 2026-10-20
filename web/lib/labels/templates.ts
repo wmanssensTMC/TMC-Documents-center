@@ -15,7 +15,7 @@ export const labelTemplate = (id: string) => LABEL_TEMPLATES.find((t) => t.id ==
 export const LABEL_FIELDS = [
   { key: "productionDate", label: "Production date", kind: "date" },
   { key: "expiryDate", label: "Expiry date", kind: "date" },
-  { key: "netWeight", label: "Net weight (kg)", kind: "number" },
+  { key: "netWeight", label: "Net weight (kg), also in the file name", kind: "number" },
   { key: "grossWeight", label: "Gross weight (kg)", kind: "number" },
 ] as const;
 

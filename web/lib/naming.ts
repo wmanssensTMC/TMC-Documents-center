@@ -4,7 +4,8 @@
 //   MSDS     engine/scripts/neutralize_sds_docx.py  _safe()             (cut at 60)
 //   TDS/SPEC engine/scripts/tmc_common.py           safe_part()         (cut at 80)
 // LABEL is named here only (the worker passes the name to engine/scripts/make_label.py):
-//   <CODE>_LABEL_<file nr>_<product>_<batch>_<LANG>, parts cleaned like a COA (Willem 20/10).
+//   <CODE>_LABEL_<file nr>_<product>_<batch>_<pack size>_<LANG>, parts cleaned like a COA; the
+//   pack size is the net weight printed on the label, e.g. 25kg (Willem 20/10).
 // A part that is not known is left out, never invented.
 import type { DocType, Entity } from "./constants";
 
@@ -16,6 +17,8 @@ export type NameParts = {
   batch?: string | null;
   /** LABEL only: the label language (EN, FR). */
   language?: string | null;
+  /** LABEL only: the pack size, e.g. "25kg" (two packs of one batch get their own label). */
+  packSize?: string | null;
   /** Used only for a COA without file nr, product and batch (engine: source file stem). */
   fallbackStem?: string | null;
 };
@@ -69,7 +72,7 @@ export function fileStem(p: NameParts): string {
       return [code, "TDS", safePart(p.productName)].filter(Boolean).join("_");
     case "LABEL": {
       // a part that is empty once cleaned is left out, never an empty "__" (security L1)
-      const parts = [p.fileNr, p.productName, p.batch, p.language?.toUpperCase()].map(coaSanitize).filter(Boolean);
+      const parts = [p.fileNr, p.productName, p.batch, p.packSize, p.language?.toUpperCase()].map(coaSanitize).filter(Boolean);
       return [code, "LABEL", ...parts].join("_");
     }
     default:

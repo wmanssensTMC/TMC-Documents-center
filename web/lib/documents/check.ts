@@ -48,10 +48,12 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Name and content agree (Willem 19/10): the file name is made from the checked details by the
 // naming rule, each value in it must be printed in the document (the worker checks), and the
 // batch the document was made for cannot be changed (one document per batch).
-type NameSource = Pick<Document, "type" | "entity"> & { language?: string | null };
+type NameSource = Pick<Document, "type" | "entity"> & { language?: string | null; name?: string };
 
 /** The name a checked document gets. */
 export function finalName(doc: NameSource, m: DocMetadata): string {
+  // a label keeps the name it was made with: it is approved as it is, every part is fixed
+  if (doc.type === "LABEL" && doc.name) return doc.name;
   const name = fileStem({ type: doc.type, entity: doc.entity, productName: m.productName, fileNr: m.fileNr, batch: m.batch, language: doc.language });
   if (!plainName(name)) throw new CheckError("these details do not give a valid file name; check the product name");
   return name;
@@ -68,10 +70,12 @@ export function shownValues(doc: NameSource, m: DocMetadata): [string, string][]
   return all.filter((v): v is [string, string] => !!v[1]);
 }
 
-/** The batch is fixed once the document has one; a label also keeps its dossier (security L2). */
+/** The batch is fixed once the document has one; a label also keeps its product and dossier (security L2). */
 function lockBatch(doc: Document, m: DocMetadata): DocMetadata {
   if (doc.batch && m.batch !== doc.batch) throw new CheckError(`the batch of this document is ${doc.batch} and cannot be changed`);
-  if (doc.type === "LABEL" && m.fileNr !== doc.fileNr) throw new CheckError("the dossier of a label cannot be changed; make a new label");
+  if (doc.type === "LABEL" && (m.fileNr !== doc.fileNr || m.productName !== doc.productName)) {
+    throw new CheckError("the details of a label cannot be changed; make a new label");
+  }
   return m;
 }
 

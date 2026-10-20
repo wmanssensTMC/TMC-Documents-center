@@ -20,7 +20,7 @@ type Props = {
   busy: boolean;
   uploadMode: "blob" | "local";
   initial: { productName: string; fileNr: string; batch: string };
-  naming: { type: DocType; entity: Entity; batchLocked: boolean; language: string };
+  naming: { type: DocType; entity: Entity; batchLocked: boolean; language: string; currentName: string };
 };
 
 export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial, naming }: Props) {
@@ -63,9 +63,11 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
 
   const metadata = { productName: meta.productName, fileNr: meta.fileNr, batch: meta.batch };
   // The file name follows the details (Willem 19/10); shown so nobody is surprised.
-  const name = fileStem({ type: naming.type, entity: naming.entity, productName: meta.productName.trim(), fileNr: meta.fileNr.trim(), batch: meta.batch.trim(), language: naming.language });
-  // a label is approved as the worker made it: no Word round trip, dossier fixed (security M1/L2)
+  // a label is approved as the worker made it: no Word round trip, details and name fixed (security M1/L2)
   const isLabel = naming.type === "LABEL";
+  const name = isLabel
+    ? naming.currentName
+    : fileStem({ type: naming.type, entity: naming.entity, productName: meta.productName.trim(), fileNr: meta.fileNr.trim(), batch: meta.batch.trim() });
 
   return (
     <div className="mt-6 space-y-6">
@@ -73,7 +75,13 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
         <h2 className="font-semibold sm:col-span-3">Library details (as printed on the document)</h2>
         <label className="block text-sm">
           Product name (TMC) *
-          <input value={meta.productName} onChange={(e) => setMeta({ ...meta, productName: e.target.value })} maxLength={200} className={`mt-1 ${input}`} />
+          <input
+            value={meta.productName}
+            onChange={(e) => setMeta({ ...meta, productName: e.target.value })}
+            readOnly={isLabel}
+            maxLength={200}
+            className={`mt-1 ${input} ${isLabel ? "bg-gray-100 text-gray-600" : ""}`}
+          />
         </label>
         <label className="block text-sm">
           Dossier

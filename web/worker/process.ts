@@ -176,7 +176,8 @@ export async function processLabelJob(db: Db, storage: Storage, job: Job) {
   try {
     const entity = await getEntity(db, job.entity);
     if (!entity) return failJob(db, job, null, `[worker] no details for entity ${job.entity}; an admin adds them under Settings > Entities`);
-    const name = fileStem({ type: "LABEL", entity: job.entity, productName: job.productName, fileNr: job.fileNr, batch: job.batch, language: label.language });
+    const packSize = label.fields.netWeight ? `${label.fields.netWeight}kg` : null;
+    const name = fileStem({ type: "LABEL", entity: job.entity, productName: job.productName, fileNr: job.fileNr, batch: job.batch, packSize, language: label.language });
     if (!plainName(name)) return failJob(db, job, null, "[worker] these details do not give a valid file name");
 
     const outDir = path.join(dir, "out");

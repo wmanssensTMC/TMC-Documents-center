@@ -258,7 +258,7 @@ c.save()`;
 
 describe.skipIf(!python)("labels with the real engine", () => {
   const form = { template: "sample", language: "FR" as const, entity: "TMC" as const, productName: "Betaine AI test", batch: "BT-3877", fileNr: "840.S0850", productionDate: "2026-03-01", netWeight: "25,5" };
-  const name = "TMC_LABEL_840.S0850_Betaine_AI_test_BT-3877_FR";
+  const name = "TMC_LABEL_840.S0850_Betaine_AI_test_BT-3877_25.5kg_FR"; // pack size = net weight
 
   afterEach(() => {
     const i = LABEL_TEMPLATES.findIndex((t) => t.id === "test-real");

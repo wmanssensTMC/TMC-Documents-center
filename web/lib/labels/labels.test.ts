@@ -105,6 +105,10 @@ describe("label job", () => {
 describe("label naming and approval", () => {
   it("names the label with its language and checks product and batch are printed", () => {
     expect(finalName({ type: "LABEL", entity: "TMC", language: "FR" }, metadata)).toBe("TMC_LABEL_840.S0850_Betaine_AI_test_BT-3877_FR");
+    // an existing label keeps the name it was made with (pack size included)
+    expect(finalName({ type: "LABEL", entity: "TMC", language: "FR", name: "TMC_LABEL_840.S0850_Betaine_AI_test_BT-3877_25kg_FR" }, metadata)).toBe(
+      "TMC_LABEL_840.S0850_Betaine_AI_test_BT-3877_25kg_FR",
+    );
     expect(shownValues({ type: "LABEL", entity: "TMC" }, metadata)).toEqual([
       ["product name", "Betaine AI test"],
       ["batch", "BT-3877"],
@@ -141,7 +145,8 @@ describe("label naming and approval", () => {
 
     it("keeps the dossier and batch of the label (security L2)", async () => {
       const doc = await labelDraft("test-real");
-      await expect(approveDraft(db, warre, doc.id, { ...metadata, fileNr: "840.S9999" })).rejects.toThrow(/dossier of a label/);
+      await expect(approveDraft(db, warre, doc.id, { ...metadata, fileNr: "840.S9999" })).rejects.toThrow(/details of a label/);
+      await expect(approveDraft(db, warre, doc.id, { ...metadata, productName: "Other name" })).rejects.toThrow(/details of a label/);
     });
 
     it("is approved like any other document and supersedes the previous Final", async () => {
