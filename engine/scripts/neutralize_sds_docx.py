@@ -114,11 +114,16 @@ def _source_corpus(pdf_path, scrub_tokens=()):
     """
     import pdfplumber
     from neutralise_sds import scrub_text
-    from extract_sds import LABEL_X
+    from extract_sds import LABEL_X, _lines
     texts = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
             texts.append(page.extract_text() or "")
+            # 4. the same source as the reader sees it: letters printed twice for bold read
+            # once, a letter in another font kept in its word (20/10/2026, real MSDS)
+            if hasattr(page, "dedupe_chars"):
+                texts.append(page.dedupe_chars(tolerance=1).extract_text() or "")
+            texts += [ln["text"] for ln in _lines(page)]
             for table in (page.extract_tables() or []):
                 for row in table:
                     for cell in row:

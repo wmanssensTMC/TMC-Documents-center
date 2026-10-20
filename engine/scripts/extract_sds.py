@@ -12,13 +12,48 @@ SZ_SECTION = 9.6        # >= this and bold  -> SECTION heading
 SZ_SUB     = 8.6        # >= this and bold  -> sub-heading
 
 
+def _real_table(table):
+    """True for a data table: at least two rows with two or more filled cells."""
+    try:
+        rows = table.extract() or []
+    except Exception:
+        return False
+    return sum(1 for r in rows if sum(1 for c in r if (c or "").strip()) >= 2) >= 2
+
+
+PAGE_NO = re.compile(r"(?:page|pagina|seite|blz\.?)?\s*\d{1,3}\s*(?:/|of|van|de|sur|von)\s*\d{1,3}", re.I)
+LINE_TOL = 2.0     # points: words this close in height are on one line
+TOUCH = 0.6        # points: letters this close belong to one word
+
+
 def _lines(page):
-    rows = {}
-    for w in page.extract_words(extra_attrs=["size", "fontname"]):
-        rows.setdefault(round(w["top"] / 2.0), []).append(w)
+    """Text lines of a page, as the reader sees them (20/10/2026, real MSDS):
+    - letters a PDF prints twice to fake bold ("OORRGGAALL") are read once;
+    - a letter in another font or a point lower ("l'écart" with "'é" in another font)
+      stays on its line and in its word."""
+    if hasattr(page, "dedupe_chars"):
+        page = page.dedupe_chars(tolerance=1)
+    words = sorted(page.extract_words(extra_attrs=["size", "fontname"]), key=lambda w: (w["top"], w["x0"]))
+    rows = []
+    for w in words:
+        if rows and abs(w["top"] - rows[-1][0]) <= LINE_TOL:
+            rows[-1][1].append(w)
+        else:
+            rows.append([w["top"], [w]])
     out = []
-    for k in sorted(rows):
-        ws = sorted(rows[k], key=lambda w: w["x0"])
+    for _top, row in rows:
+        # a page number line ("2 / 21", "Page 2 of 21") is page furniture, not content: it
+        # must not end up inside a paragraph that runs over a page break (real MSDS)
+        if PAGE_NO.fullmatch(" ".join(w["text"] for w in row).strip()):
+            continue
+        ws = []
+        for w in sorted(row, key=lambda w: w["x0"]):
+            if ws and 0 <= w["x0"] - ws[-1]["x1"] < TOUCH:
+                prev = ws[-1]
+                ws[-1] = dict(prev, text=prev["text"] + w["text"], x1=w["x1"], bottom=max(prev["bottom"], w["bottom"]),
+                              size=max(prev["size"], w["size"]))
+            else:
+                ws.append(dict(w))
         out.append({
             "top":  min(w["top"] for w in ws),
             "bottom": max(w["bottom"] for w in ws),
@@ -120,7 +155,12 @@ def extract(path, image_dir=None):
     with pdfplumber.open(path) as pdf:
         meta["pages"] = len(pdf.pages)
         for pi, page in enumerate(pdf.pages):
-            tables = page.find_tables()
+            if hasattr(page, "dedupe_chars"):
+                page = page.dedupe_chars(tolerance=1)     # fake bold: letters printed twice
+            # A box drawn around a whole section is a frame, not a table: its rows hold one
+            # filled cell each. Its text is read as ordinary lines, so headings such as 1.3 and
+            # 1.4 are found (20/10/2026: many real MSDS box every section).
+            tables = [t for t in page.find_tables() if _real_table(t)]
             tboxes = [t.bbox for t in tables]
             emitted = set()
 
@@ -197,6 +237,11 @@ def extract(path, image_dir=None):
                             els.append({"kind": "table", "rows": rows, "page": pi + 1})
                     continue
 
+                # "SECTION 2: HAZARDS IDENTIFICATION" is a section heading also when the supplier
+                # did not set it bold or large (20/10/2026, real MSDS)
+                if re.match(r"\s*(?:section|rubrique|abschnitt|rubriek)\s+\d{1,2}\s*[:.]", ln["text"], re.I):
+                    els.append({"kind": "section", "text": ln["text"], "page": pi + 1, "level": 0})
+                    continue
                 if ln["bold"] and ln["size"] >= SZ_SECTION:
                     els.append({"kind": "section", "text": ln["text"],
                                 "page": pi + 1, "level": 0})

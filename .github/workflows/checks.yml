@@ -64,6 +64,15 @@ jobs:
             echo "::error title=Yellow helper::$msg"
           fi
           exit $status
+      - name: MSDS reading of real-world layouts (synthetic examples only)
+        shell: bash
+        run: |
+          set +e
+          python tests/test_sds_reading.py > sdsread.log 2>&1
+          status=$?
+          cat sdsread.log
+          [ $status -eq 0 ] || echo "::error title=MSDS reading::$(grep -E 'XX|Traceback|Error' sdsread.log | head -5 | tr '\n' ' ')"
+          exit $status
       - name: Rules learned from the real dossiers (synthetic examples only)
         shell: bash
         run: |

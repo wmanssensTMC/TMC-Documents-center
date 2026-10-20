@@ -136,7 +136,8 @@ def neutralise(els, meta, entity, product_name=None, file_nr=None):
               "old_emergency": "", "tmc_block": [],
               "product_name_from": "", "product_name_to": "", "trade_name_was": ""}
     if lo is None:
-        raise ValueError("Section 1.3 (supplier details) not found - cannot neutralise.")
+        raise ValueError("Section 1.3 (supplier details) not found - cannot neutralise. When the supplier "
+                         "details are inside a table (seen on real MSDS), a person neutralises this MSDS.")
 
     ident, weak = harvest_identity(els, lo, hi)
     report["supplier_tokens"] = sorted(ident)
@@ -168,6 +169,14 @@ def neutralise(els, meta, entity, product_name=None, file_nr=None):
     # 1.4 -> TMC emergency number
     for i, e in enumerate(els):
         if _heading(e) == "1.4":
+            # the number on the heading line itself: "1.4 Emergency telephone number: +34 ..."
+            m = re.match(r"(.*?:)\s*(?=[+(\d])(.+)$", e.get("text") or "")
+            if m:
+                # heading and TMC number as two lines: each one traceable (the gate checks lines)
+                report["old_emergency"] = m.group(2)
+                e["text"] = m.group(1)
+                els.insert(i + 1, {"kind": "para", "text": entity.get("nood") or TMC_EMERGENCY, "page": e.get("page")})
+                break
             for j in range(i + 1, len(els)):
                 # only a real next heading ends 1.4: "24 h/24 +32 ..." is the number itself (R1)
                 if els[j]["kind"] == "section" or (_heading(els[j]) or "").split(".")[0] in _LATER_SECTIONS:
