@@ -36,7 +36,7 @@ COA_RE = re.compile(r"certificate\s+of\s+analysis|certificat\s+d.analyse|certifi
 SDS_RE = re.compile(r"safety\s+data\s+sheet|fiche\s+de\s+donn[ée]es\s+de\s+s[ée]curit[ée]|"
                     r"veiligheidsinformatieblad|sicherheitsdatenblatt|ficha\s+de\s+datos\s+de\s+seguridad|"
                     r"\bM?SDS\b", re.I)
-TDS_RE = re.compile(r"technical\s+data\s+sheet|product\s+data\s+sheet|technical\s+information|"
+TDS_RE = re.compile(r"technical\s+data\s+sheet|product\s+data\s+sheet|technical\s+information|technical\s+sheet|"
                     r"\bspecifications?\b|fiche\s+technique|technische\s+fiche|technisches\s+datenblatt|"
                     r"ficha\s+t[ée]cnica|\bTDS\b", re.I)
 REF_RE = re.compile(r"pro\s*-?forma|\bPFI\b|order\s+confirmation|contrat\s+de\s+vente|"
