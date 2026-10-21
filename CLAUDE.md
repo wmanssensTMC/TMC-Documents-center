@@ -17,7 +17,7 @@ Willem Manssens, AI lead at Transmare Chemie NV (TMC). He is not a developer: ex
 ## Hard rules (from the brief, never break)
 1. The provenance gate in `engine/scripts/provenance.py` must run on every engine output and can never be bypassed.
 2. Yellow-marked drafts can never become Final automatically.
-3. No supplier identity on any output; supplier name is internal metadata only.
+3. No supplier identity on any output; supplier name is internal metadata only. Labels only: a supplier name a person types in themselves may appear (Willem 20/10, BRIEF 7.3).
 4. Never overwrite a document: new version, old one `Superseded`.
 5. File names exactly as in BRIEF section 7.5.
 6. Tests in `engine/tests/` must keep passing. Add tests for new logic.

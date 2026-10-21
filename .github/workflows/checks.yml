@@ -102,6 +102,15 @@ jobs:
           { echo "### MSDS pictograms (exit $status)"; echo '```'; tail -60 picto.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           [ $status -eq 0 ] || echo "::error title=MSDS pictograms::$(grep -E 'XX|Traceback|Error' picto.log | head -5 | tr '\n' ' ')"
           exit $status
+      - name: Labels from the SAMPLE template, EN/FR, provenance gate (phase 3 frame)
+        shell: bash
+        run: |
+          set +e
+          python tests/test_labels.py > labels.log 2>&1
+          status=$?
+          cat labels.log
+          [ $status -eq 0 ] || echo "::error title=Labels::$(grep -E 'XX|Traceback|Error' labels.log | head -5 | tr '\n' ' ')"
+          exit $status
       - name: Provenance gate blocks invented SDS values (skips without sample)
         run: python tests/test_sds_rejects_invented_values.py
       - name: Scan and batch tests (skips without samples)

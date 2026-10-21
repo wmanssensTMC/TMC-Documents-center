@@ -1,5 +1,17 @@
 # Changelog
 
+## 20/10/2026 · Phase 3 started early: label frame with a SAMPLE template (branch `phase-3-labels`, merged 21/10; security 83/100, fixes applied)
+- New label screen: choose a template, language (EN/FR) and entity, fill in the form (or start from a Final COA: product, dossier, batch and the dates it holds), send. The worker makes Word + PDF with the engine (`engine/scripts/make_label.py`); nothing heavy runs on Vercel.
+- Labels are LABEL documents in the library: To check, approved like other documents, versions and Superseded, audit trail. A label is approved as it was made (no Word round trip); dossier and batch are locked at approval.
+- File name (BRIEF 7.5, Willem 20/10): `<CODE>_LABEL_<file nr>_<product>_<batch>_<pack size>_<LANG>`, pack size = the printed net weight (e.g. `_25kg_`). A label keeps the name it was made with; product, dossier and batch are locked at approval.
+- Fixed label texts from `engine/assets/label_texts.json`, copied from Kars' TMC Label Creator (official CLP EN/FR wording). A language or text that is not in it stops the run: Arabic follows when its texts are supplied.
+- `engine/assets/TMC_LABEL_SAMPLE.docx` (A4 landscape, one label per sheet) is marked SAMPLE on the label itself; a label made with it can never become Final (checked where every document becomes Final; the flag is kept on the job).
+- Provenance gate runs on every label; an empty value leaves its row out; dates dd/mm/yyyy; French decimal comma.
+- Worker: job kind `label`, explicit dispatch per job kind (deploy the worker before the web app). Migration 0009: job kind `label`, column `jobs.label`.
+- BRIEF 7.3: labels may show a supplier name only when the person types it in (the sample has no such field).
+- Tests: `engine/tests/test_labels.py` (+ GitHub step), `web/lib/labels/labels.test.ts`, LABEL naming, worker end to end with the real engine.
+- Open: questions for Kars (fields and sources, printer and label stock, Arabic texts: Kars' Label Creator has none, so they must come from his real example labels; the worker image then also needs an Arabic font).
+
 ## 20/10/2026 · MSDS round 1 on the real MSDS (branch `phase-2g-msds`, laptop only; security gate PASS 90/100)
 - Reading: letters printed twice to fake bold are read once (also TDS: "OORRGGAALL" -> "ORGAL"); a letter in another font or a point lower stays in its word ("l'écart"); page-number lines ("2 / 21") are not glued into paragraphs; a box drawn around a whole section is a frame, not a table; "SECTION n:" lines are section headings also when not bold.
 - Section 1.3 / 1.4: found however written; the supplier's emergency number on the 1.4 heading line itself is replaced by TMC's.
