@@ -30,7 +30,8 @@ entity.json (empty fields are simply left off the document):
     {"naam": "...", "adres": "...", "telefoon": "...",
      "email": "...", "web": "...", "btw": "...", "nood": "+32 (0)14 58 45 45"}
 """
-import argparse, json, re, subprocess, sys, shutil
+import argparse, contextlib, json, re, subprocess, sys, shutil
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -98,7 +99,7 @@ def non_clobbering(path):
         n += 1
 
 
-def _source_corpus(pdf_path, scrub_tokens=()):
+def _source_corpus(pdf_path, scrub_tokens=(), pdf=None):
     """Everything the source actually says, read three ways:
 
       1. linear page text, as printed;
@@ -116,12 +117,31 @@ def _source_corpus(pdf_path, scrub_tokens=()):
     from neutralise_sds import scrub_text
     from extract_sds import LABEL_X, _furn_key, _furniture, _lines, dedupe
     texts = []
-    with pdfplumber.open(pdf_path) as pdf:
+    with (contextlib.nullcontext(pdf) if pdf is not None else pdfplumber.open(pdf_path)) as pdf:
         # 5. the whole text with repeated page headers/footers left out, as the reader joins a
         # paragraph over a page break (22/10/2026, real MSDS): still only the source's own text
         pages_lines = [_lines(dedupe(p), len(pdf.pages)) for p in pdf.pages]
         furniture = _furniture(pages_lines, [p.height for p in pdf.pages])
         texts.append(" ".join(ln["text"] for lines in pages_lines for ln in lines if _furn_key(ln["text"]) not in furniture))
+        # 6. each column read through the whole document at the ":" columns the document itself
+        # uses (at least twice, the 5 most used): a label wider than LABEL_X and a value that runs
+        # over a page break are found in one piece (22/10/2026, real French MSDS). A line that does
+        # not split cleanly at that column (a full-width sentence) ends the run, so no word order is
+        # made that the source does not show (security review M1, M2).
+        body = [ln for lines in pages_lines for ln in lines if _furn_key(ln["text"]) not in furniture]
+        colons = Counter(round(w["x0"]) for ln in body for w in ln["words"] if w["text"] == ":" and w["x0"] > LABEL_X)
+        for cx in [x for x, n in colons.most_common(5) if n >= 2]:
+            for keep in (lambda w: w["x1"] <= cx - 8, lambda w: w["x0"] >= cx + 8):
+                run = []
+                for ln in body:
+                    if any(w["x1"] > cx - 8 and w["x0"] < cx + 8 and w["text"] != ":" for w in ln["words"]):
+                        if run:
+                            texts.append(" ".join(run))
+                        run = []
+                        continue
+                    run += [w["text"] for w in ln["words"] if keep(w)]
+                if run:
+                    texts.append(" ".join(run))
         for page in pdf.pages:
             texts.append(page.extract_text() or "")
             # 4. the same source as the reader sees it: letters printed twice for bold read
@@ -166,7 +186,9 @@ def main():
     entity = json.loads(Path(a.entity).read_text(encoding="utf-8"))
 
     img_dir = Path(a.output).parent / ("_img_" + Path(a.pdf).stem)
-    els, meta = extract(a.pdf, str(img_dir))
+    import pdfplumber
+    source = pdfplumber.open(a.pdf)          # parsed once, read by the reader and the gate
+    els, meta = extract(a.pdf, str(img_dir), pdf=source)
     n_img = sum(len(e["images"]) for e in els if e["kind"] == "image")
     print(f"  i  source      : {meta.get('pages')} page(s), "
           f"product '{meta.get('product_name')}'")
@@ -212,7 +234,8 @@ def main():
     build(els, meta, a.template, a.output)
 
     # ---- HARD RULE: nothing in the output may be invented -------------------
-    src_texts = _source_corpus(a.pdf, rep.get("supplier_tokens", []))
+    src_texts = _source_corpus(a.pdf, rep.get("supplier_tokens", []), pdf=source)
+    source.close()
     allowed = [v for v in entity.values() if isinstance(v, str)]
     allowed += [a.product_name or "", a.file_nr or "", TMC_EMERGENCY]
     allowed += rep.get("tmc_block", [])

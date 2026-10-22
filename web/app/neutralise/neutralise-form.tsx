@@ -5,7 +5,7 @@ import { useState, useSyncExternalStore } from "react";
 import { DropZone } from "@/components/drop-zone";
 import { sendFile } from "@/lib/client-upload";
 import { ENTITIES, type Entity, type Route } from "@/lib/constants";
-import { MAX_FILE_BYTES } from "@/lib/files";
+import { MAX_FILE_MB, maxFileBytes } from "@/lib/files";
 import { submitJobs } from "./actions";
 
 const ROUTE_LABEL: Record<Route, string> = {
@@ -23,8 +23,8 @@ const noSubscribe = () => () => {};
 
 function pdfsOnly(list: FileList | File[] | null): { ok: File[]; error?: string } {
   const files = Array.from(list ?? []);
-  const bad = files.find((f) => !/\.pdf$/i.test(f.name) || f.size > MAX_FILE_BYTES);
-  return bad ? { ok: [], error: `${bad.name}: only PDF files up to 25 MB.` } : { ok: files };
+  const bad = files.find((f) => !/\.pdf$/i.test(f.name) || f.size > maxFileBytes("input"));
+  return bad ? { ok: [], error: `${bad.name}: only PDF files up to ${MAX_FILE_MB.input} MB.` } : { ok: files };
 }
 
 export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode: "blob" | "local"; entitiesWithDetails: string[] }) {

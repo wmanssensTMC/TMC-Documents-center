@@ -5,7 +5,7 @@ import { useState, useSyncExternalStore } from "react";
 import { ENTITIES } from "@/lib/constants";
 import { DropZone } from "@/components/drop-zone";
 import { sendFile } from "@/lib/client-upload";
-import { MAX_FILE_BYTES, type FileKind } from "@/lib/files";
+import { MAX_FILE_MB, maxFileBytes, type FileKind } from "@/lib/files";
 import { fileStem, NAMED_TYPES } from "@/lib/naming";
 import { saveDocument } from "./actions";
 
@@ -62,7 +62,7 @@ export function UploadForm({ uploadMode }: { uploadMode: "blob" | "local" }) {
     for (const slot of SLOTS) {
       const f = form.get(slot.kind);
       if (f instanceof File && f.size > 0) {
-        if (f.size > MAX_FILE_BYTES) return setError(`${slot.label}: file is larger than 25 MB.`);
+        if (f.size > maxFileBytes(slot.kind)) return setError(`${slot.label}: file is larger than ${MAX_FILE_MB[slot.kind]} MB.`);
         files[slot.kind] = f;
       }
     }
@@ -197,7 +197,7 @@ export function UploadForm({ uploadMode }: { uploadMode: "blob" | "local" }) {
             accept={s.accept}
             required={s.required}
             label={s.label}
-            help={`${s.help} Max 25 MB.`}
+            help={`${s.help} Max ${MAX_FILE_MB[s.kind]} MB.`}
           />
         ))}
         {error && (

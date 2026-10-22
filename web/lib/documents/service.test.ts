@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Actor } from "../audit";
 import { createPgliteDb, type Db } from "../db";
 import { auditLog } from "../db/schema";
-import { newUploadKey } from "../files";
+import { MAX_FILE_MB, maxFileBytes, newUploadKey } from "../files";
 import type { Storage } from "../storage";
 import { createDocument, DocumentError, getVersions, listDocuments } from "./service";
 import type { DocumentInput } from "./input";
@@ -93,9 +93,9 @@ describe("createDocument", () => {
     );
   });
 
-  it("refuses a file over 25 MB", async () => {
-    const big = upload("pdf", PDF, 26 * 1024 * 1024);
-    await expect(createDocument(db, storage, willem, coa({ files: { pdf: big } }))).rejects.toThrow(/25 MB/);
+  it("refuses a file over the size limit", async () => {
+    const big = upload("pdf", PDF, maxFileBytes("pdf") + 1);
+    await expect(createDocument(db, storage, willem, coa({ files: { pdf: big } }))).rejects.toThrow(`${MAX_FILE_MB.pdf} MB`);
   });
 
   it("refuses a storage key that is not an upload key (path tricks)", async () => {

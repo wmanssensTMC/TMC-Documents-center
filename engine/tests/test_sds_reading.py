@@ -203,5 +203,86 @@ out, _m, _r = neutralise(els, {}, json.loads((ROOT / "entity.example.json").read
 check("'(see section 16)' after 1.4 is not taken for a phone number (review F5)",
       any(e.get("text") == "1.4 Emergency telephone number: (see section 16)" for e in out), [e.get("text") for e in out])
 
+# round 3 (22/10/2026, a real French MSDS): title below the header band, body text that starts
+# high on a page, a value that runs over a page break, a row that wraps in both columns at once
+from neutralize_sds_docx import _source_corpus  # noqa: E402
+from provenance import build_corpus, norm  # noqa: E402
+with tempfile.TemporaryDirectory() as d:
+    p = Path(d) / "french.pdf"
+    c = canvas.Canvas(str(p), pagesize=A4)
+    for page in (1, 2, 3):
+        c.setFont("Helvetica", 9)
+        c.drawString(71, H - 50, "PRODUIT X")                          # running header, every page
+        c.drawString(67, H - 78, "Version 2 Date de révision 09.10.2018")
+        if page == 1:
+            c.setFont("Helvetica-Bold", 18); c.drawString(71, H - 125, "FICHE DE DONNÉES DE SÉCURITÉ")
+            c.setFont("Helvetica", 9); c.drawString(71, H - 160, "1.1 Identificateur de produit")
+        if page == 2:
+            c.drawString(92, H - 700, "Indications pour la protection"); c.drawString(234, H - 700, ":")
+            c.drawString(248, H - 700, "Utilisez un équipement protégé.")
+            c.drawString(92, H - 712, "contre l'incendie")     # the label wraps under its own value
+            c.drawString(248, H - 712, "Utiliser des outils anti-étincelles.")
+        if page == 3:
+            c.drawString(248, H - 103, "Tenez éloigné des agents réducteurs.")   # starts above 100 pt
+            c.drawString(92, H - 300, "Sensibilisation respiratoire"); c.drawString(211, H - 300, "ou")
+            c.drawString(234, H - 300, ":")                          # label column wider than 200 pt
+            c.drawString(248, H - 300, "Non classé sur la base des")
+            c.drawString(92, H - 312, "cutanée"); c.drawString(248, H - 312, "informations disponibles.")
+        c.showPage()
+    c.save()
+    els, meta = extract(str(p))
+    texts = [e.get("text") or (e.get("label", "") + " : " + e.get("value", "")) for e in els]
+    check("the title printed below the header band is the document's own title",
+          meta.get("doc_kind") == "FICHE DE DONNÉES DE SÉCURITÉ", meta.get("doc_kind"))
+    check("body text that starts above the usual header band is not dropped",
+          any("Tenez éloigné des agents réducteurs." in t for t in texts), texts)
+    kv = next((e for e in els if e["kind"] == "kv" and e["label"].startswith("Sensibilisation")), {})
+    check("a row that wraps in both columns: each part goes to its own column",
+          kv.get("label") == "Sensibilisation respiratoire ou cutanée"
+          and kv.get("value") == "Non classé sur la base des informations disponibles.", kv)
+    corpus = build_corpus(_source_corpus(str(p)))     # as the gate builds it (review L1)
+    check("the gate finds a label wider than the usual label column",
+          any(norm("Sensibilisation respiratoire ou cutanée") in t for t in corpus))
+    check("the gate finds a value that runs over a page break, without the running header",
+          any(norm("Utilisez un équipement protégé. Utiliser des outils anti-étincelles. Tenez éloigné des agents "
+                   "réducteurs.") in t for t in corpus))
+    check("the gate does not find words joined across the two columns",
+          not any(norm("Sensibilisation respiratoire ou cutanée informations disponibles") in t for t in corpus))
+
+from extract_sds import _split_kv  # noqa: E402
+words = [{"text": t, "x0": x, "x1": x + 10} for t, x in
+         (("Precautionary", 78), ("statements", 136), ("(full", 182), ("text", 199), (":", 216), ("see", 221),
+          ("section", 238), ("16)", 269))]
+check("a colon inside an open bracket is not a label : value row", _split_kv({"words": words}) is None)
+words = [{"text": t, "x0": x, "x1": x + 10} for t, x in (("Flash", 92), ("point", 120), ("(closed", 150), ("cup)", 180),
+                                                         (":", 234), ("85", 248), ("°C", 262))]
+check("a closed bracket before the colon still makes a label : value row", (_split_kv({"words": words}) or [""])[0] == "Flash point (closed cup)")
+
+# security review of round 3
+ent = json.loads((ROOT / "entity.example.json").read_text(encoding="utf-8"))
+with tempfile.TemporaryDirectory() as d:
+    p = Path(d) / "h1.pdf"
+    c = canvas.Canvas(str(p), pagesize=A4)
+    c.setFont("Helvetica", 9)
+    for y, x, t in ((130, 46, "SECTION 1: IDENTIFICATION"), (150, 46, "1.3 Details of the supplier of the safety data sheet"),
+                    (165, 92, "Société"), (165, 234, ":"), (165, 248, "ACME SAS"),
+                    (177, 92, "Adresse"), (177, 248, "12 rue X"),            # no colon: not part of the name
+                    (195, 46, "1.4 Emergency telephone number: +33 1 23 45 67 89"),
+                    (215, 46, "SECTION 2: HAZARDS IDENTIFICATION"), (235, 46, "SECTION 16: OTHER INFORMATION"),
+                    (250, 46, "Prepared by ACME SAS regulatory affairs.")):
+        c.drawString(x, H - y, t)
+    c.save()
+    els, meta = extract(str(p))
+    out, _m, rep = neutralise(els, meta, ent, None, None)
+    body = " ".join(str(e.get(k, "")) for e in out for k in ("text", "label", "value"))
+    check("a left-margin line after the company row does not widen the name; the bare name goes everywhere (H1)",
+          "ACME" not in body and "ACME SAS" in rep["supplier_tokens"], (body, rep["supplier_tokens"]))
+els = [{"kind": "para", "text": "1.3 Supplier"}, {"kind": "para", "text": "Example SA"},
+       {"kind": "para", "text": "1.4 Emergency telephone number: +32 3 000 00 00"}, {"kind": "section", "text": "SECTION 2: X"},
+       {"kind": "para", "text": "Tenez éloigné des agents réducteurs."}]
+out, _m, rep = neutralise(els, {"header_band": ["Tenez éloigné des agents réducteurs."]}, ent, None, None)
+check("body text from the top band of a page is marked yellow for a person (M3)",
+      any(e.get("yellow") and "Tenez" in e.get("text", "") for e in out), out)
+
 print(f"\n{ok} passed, {bad} failed")
 sys.exit(1 if bad else 0)

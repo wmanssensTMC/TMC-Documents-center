@@ -1,4 +1,5 @@
 """SDS extraction: turn a supplier SDS PDF into a structured element list."""
+import contextlib
 import hashlib
 import io
 import os
@@ -52,16 +53,28 @@ def _tidy_number(text):
 def dedupe(page):
     """The page without overprinted letters: same letter, same font and size, within
     OVERPRINT x the letter size of a letter already kept."""
+    # done once per page: a cleaned page, or a page cleaned before, is returned as it is
+    if getattr(page, "_tmc_clean", False):
+        return page
+    if getattr(page, "_tmc_deduped", None) is not None:
+        return page._tmc_deduped
+    # letters are kept in a grid of cells at least `tol` wide, so each letter is compared with
+    # its neighbours only, not with every same letter on the page (a 426-page MSDS took minutes)
     kept, drop = {}, set()
     for c in page.chars:
         key = (c.get("text"), c.get("fontname"), round(c.get("size") or 0, 1))
         tol = OVERPRINT * (c.get("size") or 0)
-        near = kept.setdefault(key, [])
-        if any(abs(k["x0"] - c["x0"]) <= tol and abs(k["top"] - c["top"]) <= tol for k in near):
+        cell = OVERPRINT * key[2] + 0.1
+        gx, gy = int(c["x0"] // cell), int(c["top"] // cell)
+        if any(abs(k["x0"] - c["x0"]) <= tol and abs(k["top"] - c["top"]) <= tol
+               for dx in (-1, 0, 1) for dy in (-1, 0, 1) for k in kept.get((key, gx + dx, gy + dy), ())):
             drop.add(id(c))
         else:
-            near.append(c)
-    return page.filter(lambda obj: id(obj) not in drop) if drop else page
+            kept.setdefault((key, gx, gy), []).append(c)
+    clean = page.filter(lambda obj: id(obj) not in drop) if drop else page
+    clean._tmc_clean = True
+    page._tmc_deduped = clean
+    return clean
 
 
 def _lines(page, n_pages=None):
@@ -183,6 +196,11 @@ def _heading_level(text):
     return len(m.group(1).split(".")) - 1
 
 
+_SDS_TITLE = re.compile(
+    r"(?:material\s+)?safety\s+data\s+sheet|fiche\s+de\s+donn[ée]es\s+de\s+s[ée]curit[ée]|sicherheitsdatenblatt"
+    r"|veiligheidsinformatieblad|ficha\s+de\s+datos\s+de\s+seguridad|scheda\s+(?:di\s+)?dati\s+di\s+sicurezza", re.I)
+
+
 def _split_kv(ln):
     """Return (label, value, label_right, colon_x) for the two-column layout."""
     colon = [w for w in ln["words"] if w["text"] == ":" and w["x0"] > LABEL_X]
@@ -191,6 +209,10 @@ def _split_kv(ln):
     cx = colon[0]["x0"]
     left = [w for w in ln["words"] if w["x0"] < cx]
     label = " ".join(w["text"] for w in left)
+    # a colon inside an open bracket is part of a sentence, not the column separator:
+    # "Precautionary statements (full text : see section 16)" (22/10/2026, real MSDS)
+    if label.count("(") > label.count(")"):
+        return None
     value = " ".join(w["text"] for w in ln["words"] if w["x0"] > cx)
     label_right = max((w["x1"] for w in left), default=0.0)
     return label.strip(), value.strip(), label_right, cx
@@ -224,12 +246,13 @@ def _furniture(pages_lines, heights):
     return out
 
 
-def extract(path, image_dir=None):
+def extract(path, image_dir=None, pdf=None):
     """-> (elements, meta). Kinds: section, sub, kv, para, table, image."""
     els, meta = [], {}
     images = _page_images(path, image_dir) if image_dir else {}
     meta["image_shas"] = sorted({i["sha"] for v in images.values() for i in v})
-    with pdfplumber.open(path) as pdf:
+    # an already-open PDF is shared with the gate, so a long MSDS is parsed once (22/10/2026)
+    with (contextlib.nullcontext(pdf) if pdf is not None else pdfplumber.open(path)) as pdf:
         meta["pages"] = len(pdf.pages)
         # every page's lines are read once; lines that repeat at the top or bottom of most pages
         # ("Theophyllin wfr. Powder SDS UK") are page furniture (22/10/2026, real MSDS)
@@ -245,6 +268,15 @@ def extract(path, image_dir=None):
             tables = [t for t in page.find_tables() if _real_table(t)]
             tboxes = [t.bbox for t in tables]
             emitted = set()
+
+            # after page 1 the header band ends below the page's own repeated header lines: body
+            # text may start above HDR_BOTTOM and is never dropped (22/10/2026, real French MSDS)
+            hdr_bottom = HDR_BOTTOM
+            if pi > 0 and furniture:
+                rep = [ln["bottom"] for ln in pages_lines[pi]
+                       if ln["top"] < HDR_BOTTOM and _furn_key(ln["text"]) in furniture]
+                if rep:
+                    hdr_bottom = max(rep)
 
             page_imgs = list(images.get(pi, []))
 
@@ -287,7 +319,7 @@ def extract(path, image_dir=None):
             for ln in pages_lines[pi]:
                 top = ln["top"]
                 _flush_images(top)
-                if top < HDR_BOTTOM:
+                if top < hdr_bottom:
                     if pi == 0:
                         if ln["size"] >= 15:
                             meta["product_name"] = ln["text"]
@@ -298,6 +330,10 @@ def extract(path, image_dir=None):
                         else:
                             meta["version_line"] = ln["text"]
                     continue
+                # a line in the usual header band that is not a repeated header is body text now; it
+                # could still be supplier text the scrub does not know, so a person checks it (M3)
+                if top < HDR_BOTTOM:
+                    meta.setdefault("header_band", []).append(ln["text"])
                 if top > FTR_TOP:
                     if pi == 0:
                         meta["control_line"] = re.sub(r"\s*\d+/\d+\s*$", "", ln["text"])
@@ -330,6 +366,14 @@ def extract(path, image_dir=None):
                         continue
                     furniture_seen.add(fk)
 
+                # the document's own title printed below the header band on page 1 ("FICHE DE
+                # DONNÉES DE SÉCURITÉ") is its title, so no default title in another language is
+                # needed (22/10/2026, real French MSDS)
+                if pi == 0 and "doc_kind" not in meta and _SDS_TITLE.fullmatch(ln["text"].strip()) \
+                        and not any(e["kind"] == "section" for e in els):
+                    meta["doc_kind"] = ln["text"].strip()
+                    continue
+
                 # "SECTION 2: HAZARDS IDENTIFICATION" is a section heading also when the supplier
                 # did not set it bold or large (20/10/2026, real MSDS)
                 # Only in heading form: the word in capitals, or a short line at the left margin,
@@ -360,10 +404,29 @@ def extract(path, image_dir=None):
 
                 kv = _split_kv(ln)
                 if kv:
-                    els.append({"kind": "kv", "label": kv[0], "value": kv[1],
+                    els.append({"kind": "kv", "label": kv[0], "value": kv[1], "value_first": kv[1],
                                 "page": pi + 1, "top": top,
                                 "label_right": kv[2], "colon_x": kv[3]})
                     continue
+
+                # a line that wraps both columns of a label : value row at once ("cutanée" under the
+                # label, "informations disponibles." under the value): each part goes to its own
+                # column, never the whole line onto the label (22/10/2026, real French MSDS)
+                # Same conditions as a wrapped label below, plus a clear gap at the colon, so an
+                # ordinary line after a kv row is never pulled into it (security review H1).
+                prev = els[-1] if els else {}
+                if prev.get("kind") == "kv" and ln["x0"] < LABEL_X and _heading_level(ln["text"]) == 99 \
+                        and prev.get("label_right", 0) >= prev.get("colon_x", 1e9) - 22 \
+                        and prev.get("label_cont", 0) < 2:
+                    cx = prev["colon_x"]
+                    left = [w for w in ln["words"] if w["x1"] <= cx - 8]
+                    right = [w for w in ln["words"] if w["x0"] >= cx + 8]
+                    if left and right and len(left) + len(right) == len(ln["words"]) \
+                            and sum(len(w["text"]) + 1 for w in left) <= 45:
+                        prev["label"] += " " + " ".join(w["text"] for w in left)
+                        prev["value"] += " " + " ".join(w["text"] for w in right)
+                        prev["label_cont"] = prev.get("label_cont", 0) + 1
+                        continue
 
                 # continuation of the value column?
                 if ln["x0"] > LABEL_X and els and els[-1]["kind"] == "kv":

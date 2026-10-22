@@ -1,6 +1,14 @@
 # Changelog
 
-## 22/10/2026 · Editor: tables, letter size, alignment; layout check at Final (branch `phase-2j-editor-layout`, not merged; security gate PASS 90/100)
+## 22/10/2026 · MSDS round 3 (branch `phase-2k-msds3`)
+- No page limit on an MSDS (Willem 22/10: we cannot choose what suppliers send). Much faster: overprinted letters are compared with their neighbours only, each page is cleaned once, and the PDF is parsed once for the reader and the gate. The real 426-page MSDS: from about 17 minutes to 3.5 minutes on the laptop (without the PDF step), supplier removed, gate passed. The worker's 10-minute limit stays.
+- French MSDS (Butanox) now goes through: a row that wraps in both columns puts each part in its own column; body text that starts high on a page is no longer dropped (two lines were silently lost before; the gate caught it) and is marked yellow for a person; the title printed below the header band is the document's own title, no English default; a colon inside an open bracket is no label separator.
+- The gate also reads the label and value columns through the whole document at the document's own ":" columns, in clean runs only (values that run over a page break). Still only the source's own words, in its own order.
+- Uploads: supplier files up to 100 MB (was 25 MB; largest real file so far 4 MB), TMC Word/PDF files stay at 25 MB. One setting per slot: `MAX_FILE_MB` in `web/lib/files.ts`. The worker streams downloads to disk.
+- Security review (90/100) fixes: the company name is taken from the first line of its row only (H1); gate column reading limited and in clean runs (M1, M2); top-of-page body text yellow (M3); size per slot and streamed download (M4, M5); tests through the gate's own corpus (L1).
+- Stays with a person: TCCA (section 1 has no numbered parts, so no supplier block to replace without guessing), Unipex (supplier name in a disclaimer, refused by the residual check), Sweet Almond Oil FR (an address piece outside 1.3; same on main).
+
+## 22/10/2026 · Editor: tables, letter size, alignment; layout check at Final (branch `phase-2j-editor-layout`, merged 22/10; security gate PASS 90/100)
 - Tables in the on-screen editor (Willem 22/10): add a row above or below, delete a row, add a column left or right, delete a column, undo. A new row or column copies the look of its neighbour (no text, no yellow) and the table keeps its width on the page. Tables with cells merged down over several rows: change them in Word.
 - A deleted row or column always comes back as a warning with its text, so nothing from the supplier original is left out unnoticed.
 - Bigger and smaller letters (A+ and A-) for the selected text; a paragraph can be aligned left, centre or right. The TMC header and footer keep their layout (their text may still change).

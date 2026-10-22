@@ -11,7 +11,10 @@ export type FileKind = (typeof FILE_KINDS)[number];
 /** What a person may upload; preview and view are made by the worker only. */
 export const USER_UPLOAD_KINDS: readonly FileKind[] = ["pdf", "docx", "source", "input"];
 
-export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+/** Upload limit per slot, in MB. Supplier documents come as they are (Willem 22/10: we cannot
+ * choose their size), so they may be large; TMC's own Word and PDF files stay small. */
+export const MAX_FILE_MB: Record<FileKind, number> = { input: 100, source: 100, pdf: 25, docx: 25, preview: 25, view: 25 };
+export const maxFileBytes = (kind: FileKind) => MAX_FILE_MB[kind] * 1024 * 1024;
 
 const PDF = "application/pdf";
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";

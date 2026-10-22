@@ -10,7 +10,7 @@ import { z } from "zod";
 import { logAudit, type Actor } from "../audit";
 import type { Db } from "../db";
 import { documents, feedback, jobs, type DocMetadata, type Document, type FinalisePayload } from "../db/schema";
-import { detectType, MAX_FILE_BYTES, parseUploadKey, cleanFilename } from "../files";
+import { detectType, maxFileBytes, parseUploadKey, cleanFilename } from "../files";
 import { countOpenJobs, MAX_OPEN_JOBS_PER_USER, wakeWorker } from "../jobs";
 import { assertLabelApprovable } from "../labels";
 import { fileStem, plainName } from "../naming";
@@ -162,7 +162,7 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
     const parsed = ref && parseUploadKey(ref.key);
     if (!ref || !parsed || parsed.kind !== "docx") throw new CheckError("upload the checked Word file");
     const head = await storage.head(ref.key, 8);
-    if (!head || head.size > MAX_FILE_BYTES || !detectType("docx", head.bytes)) throw new CheckError("the file is not a Word document");
+    if (!head || head.size > maxFileBytes("docx") || !detectType("docx", head.bytes)) throw new CheckError("the file is not a Word document");
     const filename = cleanFilename(ref.filename);
     notes.push({ actor: actor.email, documentId: doc.id, kind: "word_upload", after: filename });
     payload = { mode: "upload", docx: { key: ref.key, filename }, metadata: input.metadata };

@@ -76,6 +76,15 @@ def harvest_identity(els, lo, hi):
         # a "Company name : X" row is a kv; a plain line may start with its label: only the
         # value is the identity, so "X" is also found in the disclaimer (22/10/2026, real MSDS)
         raw = ((e.get("value") if e["kind"] == "kv" else e.get("text")) or "").strip()
+        # the company name is the first line of its row only: wrapped lines joined to it later can
+        # never widen the name, so a bare name elsewhere is still scrubbed (security review H1)
+        if e["kind"] == "kv" and not name_taken and e.get("value_first"):
+            first = e["value_first"].strip()
+            if first and not re.search(r"@|\+?\d[\d ()/.-]{6,}\d", first):
+                rest_lines = raw[len(first):].strip() if raw.startswith(first) else ""
+                if rest_lines:
+                    weak.add(rest_lines)
+                raw = first
         line = _ID_LABEL.sub("", raw).strip()
         # a line that is only a label ("Company name:") is no name (review L1)
         if not line or line.lower() in ("supplier", "manufacturer", "distributor") or _ONLY_LABEL.fullmatch(raw):
@@ -325,6 +334,17 @@ def neutralise(els, meta, entity, product_name=None, file_nr=None):
             if s.lower() in blob.lower():
                 report["review"] = report.get("review", [])
                 report["review"].append((s, blob[:90]))
+
+    # body text from the usual page-header band (security review M3): marked yellow for a person
+    for t in meta.get("header_band", []):
+        for e in els:
+            blob = (" ".join(c for r in e["rows"] for c in r) if e["kind"] == "table"
+                    else " ".join(str(e.get(k, "")) for k in ("text", "label", "value")))
+            if t and t in blob:
+                if e["kind"] in ("para", "kv"):
+                    e["yellow"] = True
+                report.setdefault("review", []).append(("top of page", t[:90]))
+                break
 
     if file_nr:
         meta["file_nr"] = file_nr
