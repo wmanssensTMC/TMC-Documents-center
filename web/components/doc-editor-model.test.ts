@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allGroups, collectEdits, readGroup, safeImage, segments, startPieces, type DomLike, type Para, type RunItem, type View } from "./doc-editor-model";
+import { addColPlan, allGroups, applyOp, baseGrid, collectEdits, pointsOf, readGroup, safeImage, segments, startPieces, type DomLike, type Para, type RunItem, type Table, type View } from "./doc-editor-model";
 
 // A tiny stand-in for the browser's DOM: only what the reader looks at.
 type N = DomLike & { childNodes: N[] };
@@ -94,14 +94,14 @@ describe("own on-screen editor: the changes sent to the worker", () => {
 
   it("nothing changed, nothing sent", () => {
     const read = new Map([[key, [{ owner: "r0", piece: { text: "Sodium Benzoate", ...f } }, { owner: "r1", piece: { text: "99.6", ...f, hl: true } }]]]);
-    expect(collectEdits(groups, read)).toEqual({ runs: [], paras: [] });
+    expect(collectEdits(groups, read)).toMatchObject({ runs: [], paras: [] });
   });
 
   it("only the changed piece is sent, with its old text; same formatting is joined", () => {
     const read = new Map([
       [key, [{ owner: "r0", piece: { text: "Sodium ", ...f } }, { owner: "r0", piece: { text: "Benzoate", ...f } }, { owner: "r1", piece: { text: "99.6", ...f } }]],
     ]);
-    expect(collectEdits(groups, read)).toEqual({ runs: [{ id: "r1", was: "99.6", parts: [{ text: "99.6", ...f }] }], paras: [] });
+    expect(collectEdits(groups, read)).toMatchObject({ runs: [{ id: "r1", was: "99.6", parts: [{ text: "99.6", ...f }] }], paras: [] });
   });
 
   it("the browser's extra line break after Enter at the end is not sent", () => {
@@ -119,11 +119,11 @@ describe("own on-screen editor: the changes sent to the worker", () => {
   it("text typed into an empty line is sent for that paragraph", () => {
     const empty = allGroups({ v: 1, page: { width: 210, left: 0, right: 0, top: 0, bottom: 0 }, media: {}, parts: [{ kind: "body", blocks: [{ t: "p", id: "p4", items: [] }] }] });
     const k = [...empty.keys()][0];
-    expect(collectEdits(empty, new Map([[k, [{ owner: null, piece: { text: "new", ...f } }]]]))).toEqual({ runs: [], paras: [{ id: "p4", parts: [{ text: "new", ...f }] }] });
+    expect(collectEdits(empty, new Map([[k, [{ owner: null, piece: { text: "new", ...f } }]]]))).toMatchObject({ runs: [], paras: [{ id: "p4", parts: [{ text: "new", ...f }] }] });
   });
 
   it("the last edit is shown again only for a piece that still reads the same", () => {
-    const pending = { runs: [{ id: "r0", was: "Sodium Benzoate", parts: [{ text: "Potassium", ...f }] }], paras: [] };
+    const pending = { runs: [{ id: "r0", was: "Sodium Benzoate", parts: [{ text: "Potassium", ...f }] }], paras: [], layout: [], tables: [], cells: [] };
     expect(startPieces(run("r0", "Sodium Benzoate"), pending)[0].text).toBe("Potassium");
     expect(startPieces(run("r0", "Other"), pending)[0].text).toBe("Other");
   });
@@ -135,5 +135,38 @@ describe("own on-screen editor: pictures", () => {
     expect(safeImage("data:image/svg+xml;base64,PHN2Zz4=")).toBeNull();
     expect(safeImage("javascript:alert(1)")).toBeNull();
     expect(safeImage("https://example.com/logo.png")).toBeNull();
+  });
+});
+
+describe("own on-screen editor: rows and columns, as the worker makes them (Willem 22/10)", () => {
+  const cell = (text: string, span?: number) => ({ blocks: [{ t: "p" as const, id: "p" + text, items: [run("r" + text, text)] }], ...(span ? { span } : {}) });
+  const table: Table = { t: "table", id: "t0", plain: true, cols: [40, 40], lines: true, rows: [[cell("A"), cell("B")], [cell("M", 2)]] };
+  const texts = (g: ReturnType<typeof baseGrid>) => g.rows.map((r) => r.cells.map((c) => (c.orig ? c.orig.blocks[0].t === "p" && (c.orig.blocks[0].items[0] as RunItem).text : c.newId) + ":" + c.span));
+
+  it("a new column: a new cell where a row ends at that place, the merged row grows", () => {
+    const g = baseGrid(table);
+    expect(addColPlan(g, 1)).toEqual(["cell", "widen"]);
+    const after = applyOp(g, { op: "addCol", at: 1, ids: ["n0", null] })!;
+    expect(texts(after)).toEqual([["A:1", "n0:1", "B:1"], ["M:3"]]);
+    expect(after.cols.reduce((a, b) => a + b, 0)).toBe(80); // the table keeps its width
+    expect(applyOp(g, { op: "addCol", at: 1, ids: ["n0", "n1"] })).toBeNull(); // must match the worker's plan
+  });
+
+  it("rows added and deleted, columns deleted; never the last row or column", () => {
+    const g = applyOp(baseGrid(table), { op: "addRow", at: 1, from: 0, ids: ["n1", "n2"] })!;
+    expect(texts(g)).toEqual([["A:1", "B:1"], ["n1:1", "n2:1"], ["M:2"]]);
+    expect(texts(applyOp(g, { op: "delRow", at: 0 })!)).toEqual([["n1:1", "n2:1"], ["M:2"]]);
+    const one = applyOp(baseGrid(table), { op: "delCol", at: 0 })!;
+    expect(texts(one)).toEqual([["B:1"], ["M:1"]]);
+    expect(applyOp(one, { op: "delCol", at: 0 })).toBeNull();
+    expect(applyOp({ ...one, rows: one.rows.slice(0, 1) }, { op: "delRow", at: 0 })).toBeNull();
+  });
+
+  it("reads letter sizes as points, also when the browser wrote pixels", () => {
+    expect(pointsOf("10pt")).toBe(10);
+    expect(pointsOf("16px")).toBe(12);
+    expect(pointsOf("x-large")).toBeUndefined();
+    const root = el("SPAN", {}, {}, span("r0", { ...plain, fontSize: "10pt" }, "a", el("SPAN", {}, { fontSize: "14pt" }, "b")));
+    expect(readGroup(root, ["r0"]).map((x) => x.piece.size)).toEqual([10, 14]);
   });
 });
