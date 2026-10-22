@@ -91,6 +91,32 @@ with tempfile.TemporaryDirectory() as d:
           any(e.get("text") == "1.4 Emergency telephone number:" for e in out), body)
     check("no supplier identity left", "example-fragrance" not in body.lower() and "EXAMPLE FRAGRANCE" not in body, body)
 
+# MSDS round 2 (22/10/2026), each a synthetic copy of a real case
+from extract_sds import _tidy_number, _furniture, _open_sentence  # noqa: E402
+from neutralise_sds import harvest_identity  # noqa: E402
+check("'1 .3 Details' is read as '1.3 Details'; '28 Rue' and '12.5 kg' stay",
+      [_tidy_number(t) for t in ("1 .3 Details", "2 .1 .1 X", "28 Rue de Renory", "12.5 kg")]
+      == ["1.3 Details", "2.1.1 X", "28 Rue de Renory", "12.5 kg"])
+els = [{"kind": "section", "text": "1 .3 Details of the supplier of the safety data sheet"},
+       {"kind": "para", "text": "Supplier : Example Fils"}, {"kind": "section", "text": "1 .4 Emergency telephone number"},
+       {"kind": "para", "text": "Emergency telephone number : NCEC (regional) +44 1235 000000"},
+       {"kind": "para", "text": "Other Emergency Numbers : NCEC (Europe) +44 1235 000001"},
+       {"kind": "section", "text": "[x] 2 HAZARDS IDENTIFICATION"}]
+out, _m, _r = neutralise(els, {}, json.loads((ROOT / "entity.example.json").read_text(encoding="utf-8")), None, None)
+body = "\n".join(e.get("text", "") for e in out)
+check("'1 .3' with a space before the dot is found", "Example Fils" not in body, body)
+check("all of 1.4 becomes TMC's number only, the supplier's other numbers go too",
+      "NCEC" not in body and "Emergency telephone number :" in body and "58 45 45" in body, body)
+strong, _weak = harvest_identity([{"kind": "para", "text": "Company name Example PharmaChemikalien GmbH"},
+                                  {"kind": "kv", "label": "Telephone", "value": "+49 000 111-0"}], 0, 2)
+check("the company name is taken without its label, so it is also found in a disclaimer",
+      "Example PharmaChemikalien GmbH" in strong, strong)
+lines = [[{"text": "Product X SDS UK", "top": 40}, {"text": f"text {i}", "top": 400}] for i in range(4)]
+check("a line repeated at the top of most pages is page furniture", "product x sds uk" in _furniture(lines, [842] * 4))
+check("a table value at the bottom of a page does not continue on the next page",
+      not _open_sentence("Marine water 0.01 mg/l"))
+check("an unfinished sentence does", _open_sentence("If exposure limits have not been established and"))
+
 # review F2: the overprint rule follows the letter size; real repeated letters are never merged
 with tempfile.TemporaryDirectory() as d:
     p = Path(d) / "sizes.pdf"

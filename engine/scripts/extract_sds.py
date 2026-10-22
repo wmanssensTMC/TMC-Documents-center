@@ -40,6 +40,13 @@ def _is_page_number(text, n_pages):
     return bool(m) and (bool(m.group(1)) or (n_pages is not None and int(m.group(2)) == n_pages))
 
 
+def _tidy_number(text):
+    """A section number at the start of a line as printed: "1 .3 Details" -> "1.3 Details"
+    (22/10/2026: a PDF gave its numbers with a space before the dot). Only the leading number
+    with a dot in it; the gate reads "1 .3" and "1.3" the same."""
+    return re.sub(r"^(\s*\d{1,2}(?:\s?\.\s?\d{1,2})+)", lambda m: re.sub(r"\s+(?=\.)|(?<=\.)\s+", "", m.group(1)), text)
+
+
 def dedupe(page):
     """The page without overprinted letters: same letter, same font and size, within
     OVERPRINT x the letter size of a letter already kept."""
@@ -91,7 +98,7 @@ def _lines(page, n_pages=None):
             "size": max(w["size"] for w in ws),
             "bold": any("Bold" in w["fontname"] for w in ws),
             "words": ws,
-            "text": " ".join(w["text"] for w in ws),
+            "text": _tidy_number(" ".join(w["text"] for w in ws)),
         })
     return out
 
@@ -99,6 +106,16 @@ def _lines(page, n_pages=None):
 _CONNECTIVE = re.compile(
     r"(?:\b(?:or|and|of|to|in|with|for|the|a|an|by|on|at|from|as|is|are|not)\b|[-,])$",
     re.I)
+
+
+def _open_sentence(prev):
+    """Across a page break a line only continues on the next page when it ends like an
+    unfinished sentence: a connecting word or comma, or plain words with no number at the end.
+    A table value such as "Marine water 0.01 mg/l" never does (22/10/2026, real MSDS)."""
+    words = prev.split()
+    if _CONNECTIVE.search(prev.rstrip()):
+        return True
+    return len(words) >= 5 and not any(ch.isdigit() for w in words[-2:] for ch in w)
 
 
 def _continues(prev, cur):
@@ -177,6 +194,24 @@ def _split_kv(ln):
     return label.strip(), value.strip(), label_right, cx
 
 
+def _furn_key(text):
+    """A line's text with its numbers blanked: "Page 3 of 12" and "Page 4 of 12" are one key."""
+    return re.sub(r"\d+", "#", text.strip().lower())
+
+
+def _furniture(pages_lines, heights):
+    """Lines that repeat in the top or bottom band of at least half the pages (and at least 3):
+    a running header or footer, not content."""
+    n = len(pages_lines)
+    if n < 3:
+        return set()
+    seen = {}
+    for lines, h in zip(pages_lines, heights):
+        for k in {_furn_key(ln["text"]) for ln in lines if ln["top"] < 0.18 * h or ln["top"] > 0.85 * h}:
+            seen[k] = seen.get(k, 0) + 1
+    return {k for k, c in seen.items() if c >= max(3, n / 2) and len(k) > 3}
+
+
 def extract(path, image_dir=None):
     """-> (elements, meta). Kinds: section, sub, kv, para, table, image."""
     els, meta = [], {}
@@ -184,6 +219,10 @@ def extract(path, image_dir=None):
     meta["image_shas"] = sorted({i["sha"] for v in images.values() for i in v})
     with pdfplumber.open(path) as pdf:
         meta["pages"] = len(pdf.pages)
+        # every page's lines are read once; lines that repeat at the top or bottom of most pages
+        # ("Theophyllin wfr. Powder SDS UK") are page furniture (22/10/2026, real MSDS)
+        pages_lines = [_lines(dedupe(p), meta["pages"]) for p in pdf.pages]
+        furniture = _furniture(pages_lines, [p.height for p in pdf.pages])
         for pi, page in enumerate(pdf.pages):
             if hasattr(page, "dedupe_chars"):
                 page = dedupe(page)     # fake bold: letters printed twice, read once
@@ -232,7 +271,7 @@ def extract(path, image_dir=None):
                             el["in_value_col"] = False
                     els.append(el)
 
-            for ln in _lines(page, meta["pages"]):
+            for ln in pages_lines[pi]:
                 top = ln["top"]
                 _flush_images(top)
                 if top < HDR_BOTTOM:
@@ -265,6 +304,9 @@ def extract(path, image_dir=None):
                         rows = [r for r in rows if any(c for c in r)]
                         if rows:
                             els.append({"kind": "table", "rows": rows, "page": pi + 1})
+                    continue
+                # a line repeated at the top or bottom of most pages is page furniture
+                if _furn_key(ln["text"]) in furniture:
                     continue
 
                 # "SECTION 2: HAZARDS IDENTIFICATION" is a section heading also when the supplier
@@ -325,7 +367,8 @@ def extract(path, image_dir=None):
 
                 # a wrapped full-width sentence continues the previous paragraph
                 if els and els[-1]["kind"] == "para" and not els[-1].get("indent") \
-                        and _continues(els[-1]["text"], ln["text"]):
+                        and _continues(els[-1]["text"], ln["text"]) \
+                        and (els[-1].get("page") == pi + 1 or _open_sentence(els[-1]["text"])):
                     els[-1]["text"] += " " + ln["text"]
                     continue
 

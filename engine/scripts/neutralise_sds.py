@@ -16,9 +16,10 @@ def _is_trade_name(label):
 
 def _sec_no(text):
     """'1.3', also written '1.3.', '1.3 Fournisseur', 'SECTION 1.3:' (20/10/2026: real MSDS)."""
-    m = re.match(r"\s*(?:section|rubrique|abschnitt|rubriek)?\s*(\d{1,2}(?:\.\d{1,2})*)\.?(?=\s|:|$)",
+    # also "1 .3" with a space before the dot (22/10/2026, real MSDS)
+    m = re.match(r"\s*(?:section|rubrique|abschnitt|rubriek)?\s*(\d{1,2}(?:\s?\.\s?\d{1,2})*)\.?(?=\s|:|$)",
                  text or "", re.I)
-    return m.group(1) if m else None
+    return re.sub(r"\s", "", m.group(1)) if m else None
 
 
 _LATER_SECTIONS = {str(n) for n in range(2, 17)}
@@ -72,7 +73,10 @@ def harvest_identity(els, lo, hi):
     strong, weak = set(), set()
     name_taken = False
     for e in els[lo:hi]:
-        line = (e.get("text") or "").strip()
+        # a "Company name : X" row is a kv; a plain line may start with its label: only the
+        # value is the identity, so "X" is also found in the disclaimer (22/10/2026, real MSDS)
+        line = (e.get("value") if e["kind"] == "kv" else e.get("text")) or ""
+        line = _ID_LABEL.sub("", line.strip()).strip()
         if not line or line.lower() in ("supplier", "manufacturer", "distributor"):
             continue
 
@@ -101,6 +105,11 @@ def harvest_identity(els, lo, hi):
             weak.add(line)            # street, postcode, city, country
     return ({t for t in strong if len(t.strip()) > 3},
             {t for t in weak if len(t.strip()) > 3})
+
+
+_ID_LABEL = re.compile(
+    r"^(?:company(?:\s+name)?|supplier|manufacturer|distributor|name|firma|soci[ée]t[ée]|fournisseur|fabricant"
+    r"|hersteller|lieferant|raison\s+sociale|address|adresse|anschrift)\s*[:.]?\s+(?=\S)", re.I)
 
 
 def tmc_block(ent):
@@ -170,31 +179,43 @@ def neutralise(els, meta, entity, product_name=None, file_nr=None):
                  for t in block_lines]
     els = els[:lo] + new_block + els[hi:]
 
-    # 1.4 -> TMC emergency number
+    # 1.4 -> TMC emergency number, and only that: the supplier's other emergency numbers (its own
+    # service contracts, "Other Emergency Numbers: NCEC ...") go too, as colleagues do on the TMC
+    # MSDS (22/10/2026, real MSDS). Heading and TMC number stay separate lines: each is traceable.
+    tmc_no = entity.get("nood") or TMC_EMERGENCY
     for i, e in enumerate(els):
-        if _heading(e) == "1.4":
-            # the number on the heading line itself: "1.4 Emergency telephone number: +34 ..."
-            m = re.match(r"(.*?:)\s*(?=[+(\d])(.+)$", (e.get("text") or "")[:300])
-            # only a telephone number (6+ digits), never "(see section 16)" (review F5)
-            if m and len(re.findall(r"\d", m.group(2))) >= 6:
-                # heading and TMC number as two lines: each one traceable (the gate checks lines)
-                report["old_emergency"] = m.group(2)
-                e["text"] = m.group(1)
-                els.insert(i + 1, {"kind": "para", "text": entity.get("nood") or TMC_EMERGENCY, "page": e.get("page")})
-                break
-            for j in range(i + 1, len(els)):
-                # only a real next heading ends 1.4: "24 h/24 +32 ..." is the number itself (R1)
-                if els[j]["kind"] == "section" or (_heading(els[j]) or "").split(".")[0] in _LATER_SECTIONS:
-                    break
-                if els[j]["kind"] == "kv":
-                    report["old_emergency"] = els[j]["value"]
-                    els[j]["value"] = entity.get("nood") or TMC_EMERGENCY
-                    break
-                if els[j]["kind"] == "para":
-                    report["old_emergency"] = els[j]["text"]
-                    els[j]["text"] = entity.get("nood") or TMC_EMERGENCY
-                    break
-            break
+        if _heading(e) != "1.4":
+            continue
+        page = e.get("page")
+        # the number on the heading line itself: "1.4 Emergency telephone number: +34 ..."
+        m = re.match(r"(.*?:)\s*(?=[+(\d])(.+)$", (e.get("text") or "")[:300])
+        # only a telephone number (6+ digits), never "(see section 16)" (review F5)
+        on_heading = bool(m and len(re.findall(r"\d", m.group(2))) >= 6)
+        if on_heading:
+            report["old_emergency"] = m.group(2)
+            e["text"] = m.group(1)
+        end = i + 1
+        # only a real next heading ends 1.4: "24 h/24 +32 ..." is the number itself (R1)
+        while end < len(els) and not (els[end]["kind"] == "section"
+                                      or (_heading(els[end]) or "").split(".")[0] in _LATER_SECTIONS):
+            end += 1
+        lines = [b for b in els[i + 1:end] if b["kind"] in ("kv", "para", "sub")]
+        new = []
+        first = lines[0] if lines and not on_heading else None
+        if first is not None and first["kind"] == "kv":
+            report["old_emergency"] = first["value"]
+            new = [dict(first, value=tmc_no)]
+        elif first is not None:
+            report["old_emergency"] = first["text"]
+            lm = re.match(r"([^:]{3,60}:)", first["text"][:300])     # its label, whatever follows
+            new = ([{"kind": "para", "text": lm.group(1).strip(), "page": page}] if lm else []) + \
+                  [{"kind": "para", "text": tmc_no, "page": page}]
+        else:
+            new = [{"kind": "para", "text": tmc_no, "page": page}]
+        report["removed_lines"] += [b.get("text") or f"{b.get('label', '')} : {b.get('value', '')}" for b in lines]
+        keep = [b for b in els[i + 1:end] if b["kind"] not in ("kv", "para", "sub")]
+        els = els[:i + 1] + new + keep + els[end:]
+        break
 
     protected = {id(e) for e in new_block}
 
