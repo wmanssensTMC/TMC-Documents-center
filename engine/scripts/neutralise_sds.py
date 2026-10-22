@@ -258,6 +258,10 @@ def neutralise(els, meta, entity, product_name=None, file_nr=None):
             new.insert(0, {"kind": "para", "text": tmc_no, "page": page})
         els = els[:i + 1] + new + els[end:]
         break
+    else:
+        # No 1.4 found: the supplier's emergency number could stay unnoticed, so refused for a
+        # person, as for 1.3 (fail closed; security review of round 2)
+        raise ValueError("Section 1.4 (emergency telephone number) not found - a person neutralises this MSDS.")
     report["supplier_tokens"] = sorted(ident)
 
     protected = {id(e) for e in new_block}

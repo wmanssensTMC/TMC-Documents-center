@@ -143,6 +143,14 @@ strong, _weak = harvest_identity([{"kind": "para", "text": "Company name:"}, {"k
 check("a label-only line is skipped and the real name is taken, also as written (review L1)",
       "Name Chemicals Ltd" in strong, strong)
 
+try:
+    neutralise([{"kind": "para", "text": "1.3 Supplier"}, {"kind": "para", "text": "Example SA"},
+                {"kind": "section", "text": "SECTION 2: HAZARDS"}], {},
+               json.loads((ROOT / "entity.example.json").read_text(encoding="utf-8")), None, None)
+    check("no section 1.4 found: refused for a person (fail closed)", False)
+except ValueError as exc:
+    check("no section 1.4 found: refused for a person (fail closed)", "1.4" in str(exc), exc)
+
 # a long product name is never cut off in the page header (22/10/2026, Willem)
 from build_sds_docx import build  # noqa: E402
 from docx import Document  # noqa: E402
