@@ -16,9 +16,10 @@ def _is_trade_name(label):
 
 def _sec_no(text):
     """'1.3', also written '1.3.', '1.3 Fournisseur', 'SECTION 1.3:' (20/10/2026: real MSDS)."""
-    m = re.match(r"\s*(?:section|rubrique|abschnitt|rubriek)?\s*(\d{1,2}(?:\.\d{1,2})*)\.?(?=\s|:|$)",
+    # also "1 .3" with a space before the dot (22/10/2026, real MSDS)
+    m = re.match(r"\s*(?:section|rubrique|abschnitt|rubriek)?\s*(\d{1,2}(?:\s?\.\s?\d{1,2})*)\.?(?=\s|:|$)",
                  text or "", re.I)
-    return m.group(1) if m else None
+    return re.sub(r"\s", "", m.group(1)) if m else None
 
 
 _LATER_SECTIONS = {str(n) for n in range(2, 17)}
@@ -72,8 +73,12 @@ def harvest_identity(els, lo, hi):
     strong, weak = set(), set()
     name_taken = False
     for e in els[lo:hi]:
-        line = (e.get("text") or "").strip()
-        if not line or line.lower() in ("supplier", "manufacturer", "distributor"):
+        # a "Company name : X" row is a kv; a plain line may start with its label: only the
+        # value is the identity, so "X" is also found in the disclaimer (22/10/2026, real MSDS)
+        raw = ((e.get("value") if e["kind"] == "kv" else e.get("text")) or "").strip()
+        line = _ID_LABEL.sub("", raw).strip()
+        # a line that is only a label ("Company name:") is no name (review L1)
+        if not line or line.lower() in ("supplier", "manufacturer", "distributor") or _ONLY_LABEL.fullmatch(raw):
             continue
 
         emails = re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", line)
@@ -96,11 +101,23 @@ def harvest_identity(els, lo, hi):
 
         if not name_taken:
             strong.add(line)          # company / legal name
+            if raw != line:
+                strong.add(raw)       # also as written: "Name Chemicals Ltd" (review L1)
             name_taken = True
         else:
             weak.add(line)            # street, postcode, city, country
     return ({t for t in strong if len(t.strip()) > 3},
             {t for t in weak if len(t.strip()) > 3})
+
+
+_ID_LABEL = re.compile(
+    r"^(?:company(?:\s+name)?|supplier|manufacturer|distributor|name|firma|soci[ée]t[ée]|fournisseur|fabricant"
+    r"|hersteller|lieferant|raison\s+sociale|address|adresse|anschrift)\s*[:.]?\s+(?=\S)", re.I)
+
+
+_ONLY_LABEL = re.compile(
+    r"\s*(?:company(?:\s+name)?|supplier|manufacturer|distributor|name|firma|soci[ée]t[ée]|fournisseur|fabricant"
+    r"|hersteller|lieferant|raison\s+sociale|address|adresse|anschrift)\s*[:.]?\s*", re.I)
 
 
 def tmc_block(ent):
@@ -170,31 +187,82 @@ def neutralise(els, meta, entity, product_name=None, file_nr=None):
                  for t in block_lines]
     els = els[:lo] + new_block + els[hi:]
 
-    # 1.4 -> TMC emergency number
-    for i, e in enumerate(els):
-        if _heading(e) == "1.4":
-            # the number on the heading line itself: "1.4 Emergency telephone number: +34 ..."
-            m = re.match(r"(.*?:)\s*(?=[+(\d])(.+)$", (e.get("text") or "")[:300])
-            # only a telephone number (6+ digits), never "(see section 16)" (review F5)
-            if m and len(re.findall(r"\d", m.group(2))) >= 6:
-                # heading and TMC number as two lines: each one traceable (the gate checks lines)
-                report["old_emergency"] = m.group(2)
-                e["text"] = m.group(1)
-                els.insert(i + 1, {"kind": "para", "text": entity.get("nood") or TMC_EMERGENCY, "page": e.get("page")})
-                break
-            for j in range(i + 1, len(els)):
-                # only a real next heading ends 1.4: "24 h/24 +32 ..." is the number itself (R1)
-                if els[j]["kind"] == "section" or (_heading(els[j]) or "").split(".")[0] in _LATER_SECTIONS:
-                    break
-                if els[j]["kind"] == "kv":
-                    report["old_emergency"] = els[j]["value"]
-                    els[j]["value"] = entity.get("nood") or TMC_EMERGENCY
-                    break
-                if els[j]["kind"] == "para":
-                    report["old_emergency"] = els[j]["text"]
-                    els[j]["text"] = entity.get("nood") or TMC_EMERGENCY
-                    break
+    # 1.4 -> TMC emergency number, and only that: the supplier's other emergency numbers (its own
+    # service contracts, "Other Emergency Numbers: NCEC ...") go too, as colleagues do on the TMC
+    # MSDS (22/10/2026, real MSDS). Heading and TMC number stay separate lines: each is traceable.
+    tmc_no = entity.get("nood") or TMC_EMERGENCY
+
+    def line_of(b):
+        return b.get("text") or f"{b.get('label', '')} : {b.get('value', '')}"
+
+    def is_contact(text):
+        """A supplier phone number (6+ digits) or e-mail: identity, removed (review M2)."""
+        return len(re.findall(r"\d", text)) >= 6 or bool(re.search(r"[\w.+-]+@[\w-]+\.[\w.-]+", text))
+
+    # 1.4 is looked for only between 1.3 and the section 2 heading (review M1)
+    sec2 = next((k for k in range(lo, len(els)) if (_heading(els[k]) or "").split(".")[0] in _LATER_SECTIONS), len(els))
+    for i in range(lo, sec2):
+        e = els[i]
+        if _heading(e) != "1.4":
+            continue
+        page = e.get("page")
+        # the number on the heading line itself: "1.4 Emergency telephone number: +34 ..."
+        m = re.match(r"(.*?:)\s*(?=[+(\d])(.+)$", (e.get("text") or "")[:300])
+        # only a telephone number (6+ digits), never "(see section 16)" (review F5)
+        on_heading = bool(m and len(re.findall(r"\d", m.group(2))) >= 6)
+        if on_heading:
+            report["old_emergency"] = m.group(2)
+            e["text"] = m.group(1)
+        end = sec2
+        lines = [b for b in els[i + 1:end] if b["kind"] in ("kv", "para", "sub")]
+        # Phone numbers in 1.4 are removed inside 1.4 only, its tables included (review M3): a
+        # national poison-centre number in section 4 is no supplier identity. E-mail addresses
+        # are the supplier's and are scrubbed everywhere.
+        local = set()
+        for b in els[i + 1:end]:
+            texts = [line_of(b)] if b["kind"] != "table" else [c for r in b.get("rows", []) for c in r if c]
+            for t in texts:
+                for tok in re.findall(r"\+?\d[\d ()/.-]{6,}\d|[\w.+-]+@[\w-]+\.[\w.-]+", t):
+                    local.add(tok.strip())
+                    if "@" in tok:
+                        ident.add(tok.strip())
+        for b in els[i + 1:end]:
+            if b["kind"] == "table":
+                b["rows"] = [[scrub_text(c, local) for c in r] for r in b["rows"]]
+        if len(lines) > 8:
+            # far longer than an emergency block: never cleared on a guess, a person checks it
+            for b in lines:
+                b["yellow"] = True
+            report.setdefault("review", []).append(("1.4", "long emergency block kept for a person to check"))
+            els = els[:i + 1] + [{"kind": "para", "text": tmc_no, "page": page}] + els[i + 1:]
             break
+        # Only the supplier's numbers and e-mails go (their own emergency contracts, as colleagues
+        # do on the TMC MSDS); any other line ("available outside office hours") stays (review M2).
+        new, first_done = [], on_heading
+        for b in els[i + 1:end]:
+            if b["kind"] in ("kv", "para", "sub") and is_contact(line_of(b)):
+                report["removed_lines"].append(line_of(b))
+                if not first_done:
+                    report["old_emergency"] = line_of(b)
+                    if b["kind"] == "kv":
+                        new.append(dict(b, value=tmc_no))
+                    else:
+                        lm = re.match(r"([^:]{3,60}:)", b["text"][:300])     # its label, whatever follows
+                        if lm:
+                            new.append({"kind": "para", "text": lm.group(1).strip(), "page": page})
+                        new.append({"kind": "para", "text": tmc_no, "page": page})
+                    first_done = True
+                continue
+            new.append(b)
+        if on_heading or not first_done:
+            new.insert(0, {"kind": "para", "text": tmc_no, "page": page})
+        els = els[:i + 1] + new + els[end:]
+        break
+    else:
+        # No 1.4 found: the supplier's emergency number could stay unnoticed, so refused for a
+        # person, as for 1.3 (fail closed; security review of round 2)
+        raise ValueError("Section 1.4 (emergency telephone number) not found - a person neutralises this MSDS.")
+    report["supplier_tokens"] = sorted(ident)
 
     protected = {id(e) for e in new_block}
 
