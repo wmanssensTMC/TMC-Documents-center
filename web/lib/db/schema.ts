@@ -64,6 +64,15 @@ export type FinalisePayload = {
   // acceptChanges = the person saw the warnings and goes on
   | { mode: "edited"; edits: Edits; acceptChanges?: boolean }
 );
+/** label jobs: the template (an id from lib/labels, never a path) and the other form values.
+ * Product name, file nr and batch sit in the job's own columns, like a neutralise job. */
+export type LabelPayload = {
+  template: string;
+  language: string;
+  fields: Record<string, string>;
+  /** Kept from the moment the label was made: a sample label stays a sample (security M3). */
+  sample: boolean;
+};
 
 // One neutralise job = one supplier document (+ commercial documents for a COA), run by the
 // worker. A COA with several batches can give several documents (documents.job_id).
@@ -85,6 +94,7 @@ export const jobs = pgTable(
     // finalise jobs: the draft being finalised, and what the person decided
     documentId: uuid("document_id").references((): AnyPgColumn => documents.id),
     payload: jsonb("payload").$type<FinalisePayload>(),
+    label: jsonb("label").$type<LabelPayload>(),
     exitCode: integer("exit_code"),
     log: text("log"),
     attempts: integer("attempts").notNull().default(0),
@@ -100,6 +110,8 @@ export const jobs = pgTable(
     uniqueIndex("jobs_one_open_finalise")
       .on(t.documentId)
       .where(sql`${t.kind} = 'finalise' and ${t.state} in ('queued', 'running')`),
+    // ::text: the enum value is new in the same migration
+    check("jobs_label_has_payload", sql`${t.kind}::text <> 'label' OR ${t.label} IS NOT NULL`),
   ],
 );
 

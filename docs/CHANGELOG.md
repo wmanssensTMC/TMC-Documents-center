@@ -8,6 +8,35 @@
 - Security review fixes (first score 82): the editor view, like the DRAFT preview, is only served while the draft waits for a check (H1); browser, server and worker refuse the same invisible characters that could split a supplier name (M1, L4); tighter browser connection rule (L2); sizes from the view checked (L3). Open, Low: look-alike letters from other alphabets (L1, existed before).
 - Tests: `web/worker/test_yellow.py` (view and edit), `web/components/doc-editor-model.test.ts`, edited mode in `check.test.ts` and `worker.test.ts`. Tried in the browser on a sample draft (test data).
 
+## 20/10/2026 · Phase 3 started early: label frame with a SAMPLE template (branch `phase-3-labels`, merged 21/10; security 83/100, fixes applied)
+- New label screen: choose a template, language (EN/FR) and entity, fill in the form (or start from a Final COA: product, dossier, batch and the dates it holds), send. The worker makes Word + PDF with the engine (`engine/scripts/make_label.py`); nothing heavy runs on Vercel.
+- Labels are LABEL documents in the library: To check, approved like other documents, versions and Superseded, audit trail. A label is approved as it was made (no Word round trip); dossier and batch are locked at approval.
+- File name (BRIEF 7.5, Willem 20/10): `<CODE>_LABEL_<file nr>_<product>_<batch>_<pack size>_<LANG>`, pack size = the printed net weight (e.g. `_25kg_`). A label keeps the name it was made with; product, dossier and batch are locked at approval.
+- Fixed label texts from `engine/assets/label_texts.json`, copied from Kars' TMC Label Creator (official CLP EN/FR wording). A language or text that is not in it stops the run: Arabic follows when its texts are supplied.
+- `engine/assets/TMC_LABEL_SAMPLE.docx` (A4 landscape, one label per sheet) is marked SAMPLE on the label itself; a label made with it can never become Final (checked where every document becomes Final; the flag is kept on the job).
+- Provenance gate runs on every label; an empty value leaves its row out; dates dd/mm/yyyy; French decimal comma.
+- Worker: job kind `label`, explicit dispatch per job kind (deploy the worker before the web app). Migration 0009: job kind `label`, column `jobs.label`.
+- BRIEF 7.3: labels may show a supplier name only when the person types it in (the sample has no such field).
+- Tests: `engine/tests/test_labels.py` (+ GitHub step), `web/lib/labels/labels.test.ts`, LABEL naming, worker end to end with the real engine.
+- Open: questions for Kars (fields and sources, printer and label stock, Arabic texts: Kars' Label Creator has none, so they must come from his real example labels; the worker image then also needs an Arabic font).
+
+## 20/10/2026 · MSDS round 1 on the real MSDS (branch `phase-2g-msds`, laptop only; security gate PASS 90/100)
+- Reading: letters printed twice to fake bold are read once (also TDS: "OORRGGAALL" -> "ORGAL"); a letter in another font or a point lower stays in its word ("l'écart"); page-number lines ("2 / 21") are not glued into paragraphs; a box drawn around a whole section is a frame, not a table; "SECTION n:" lines are section headings also when not bold.
+- Section 1.3 / 1.4: found however written; the supplier's emergency number on the 1.4 heading line itself is replaced by TMC's.
+- "Technical sheet" goes to the TDS route.
+- Measured on the real MSDS: one supplier's 7 MSDS went from 0 to 7 made, each 98% the same text as the TMC version colleagues made, supplier fully removed. Still open: section 1 inside a table (2 suppliers), two-column French layout (gate refuses, safe), a 426-page extended MSDS (too slow), one MSDS refused for leftover supplier identity (correct).
+- Tests: `engine/tests/test_sds_reading.py` (synthetic copies of each case).
+
+## 20/10/2026 · Engine: first run on the real dossiers (branch `phase-2f-corpus`, laptop only; security gate PASS 90/100)
+- 8 real dossiers run on the laptop and compared with the TMC versions colleagues made (no real document in git, GitHub or Vercel). New tool: `engine/tests/compare_real_corpus.py`.
+- Fixed: the provenance gate crashed on product lists of real order confirmations; a purchase order that mentions "certificate of analysis" became a COA; unrecognised files (scans without OCR) were left out silently (now "NOT PROCESSED", the run asks for a person).
+- TMC file nr: the sales file number (840.S0938) always wins; on a purchase order the PO number (PO019423) (Willem 20/10).
+- Reading: decimal commas (1,018 / 98,0), ">/=", "</=", "÷"; columns are cut between words, never through one; disclaimer text under the table ends it; "Lot/ Batchnumber"; date format labels and run-on fields removed from dates; separate MIN/MAX columns fill Limit min/max without a made-up Quality standard text.
+- Result on the dossiers: no document stopped by the gate any more (was 3); purchase dossiers get their PO number and lots.
+- Test: `engine/tests/test_real_corpus_rules.py` (synthetic copies of each case).
+- Second round: header words only as whole words, longest wins ("Free Amine" is no "min" column, "Test results" is a result); a row with numbers is never a header; a header shifted by merged cells; an unnamed result column; a "Pesticide" first column; "Nil"/"None" kept as values; date lines kept out of the results; purchase-order items with item code and trade name line ("Lactose Monohydrate Pharmatose 200M"), tariff/ADR lines never part of a name; two order lines that fit a COA equally well give no product name (yellow, never a guess); the same batch in two files gives one document (identical) or is held back (different); "SLED" = expiry date; the analysis date is not taken as production date. The dispatcher uses the same list of COA titles as the COA route ("Quality certificate", "Product analysis report") and knows purchase orders.
+- Measured on the dossiers: Cocamide DEA 55% -> 95% of the values, Lanolin 51% -> 87%; no document stopped by the gate. Open: scans need Tesseract (IT); the MSDS route fails on most real MSDS (section 1.3 not found), next step.
+
 ## 20/10/2026 · On-screen document editor (branch `phase-2e-editor`, not merged; security gate PASS 90/100)
 - Check screen, "Edit the document": the draft opens as the real Word document in the browser, supplier original on the left. Any text and formatting can be changed (Willem 19/10, option A).
 - Save and finalise: the worker runs every Final check on the edited file (no macros or outside links, no supplier name, file-name values printed, no yellow left). Changes that bring in words or numbers not found in the supplier original come back as warnings; the person ticks "I checked these changes" and goes on. Every change is kept in the feedback overview ("Edited on screen") and CSV.

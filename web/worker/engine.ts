@@ -42,6 +42,21 @@ export function finaliseArgv(docx: string): string[] {
   return ["-I", path.join(ENGINE_DIR, "scripts", "neutralize.py"), docx, "--finalise"];
 }
 
+/** engine/scripts/make_label.py: one label, Word + PDF. The template is a file name from
+ * lib/labels/templates.ts; the engine also refuses anything that is not one of its own assets. */
+export function labelArgv(a: { templateFile: string; fieldsJson: string; entityJson: string; language: string; name: string; outDir: string }): string[] {
+  return [
+    "-I",
+    path.join(ENGINE_DIR, "scripts", "make_label.py"),
+    `--template=${a.templateFile}`,
+    `--fields=${a.fieldsJson}`,
+    `--entity=${a.entityJson}`,
+    `--lang=${a.language}`,
+    `--name=${a.name}`,
+    `--output-dir=${a.outDir}`,
+  ];
+}
+
 /** keepStdout: also return standard output on its own (machine-readable output of yellow.py). */
 export function runPython(argv: string[], workDir: string, opts: { keepStdout?: boolean } = {}): Promise<EngineRun> {
   const env = {

@@ -12,9 +12,10 @@ import { finalName, shownValues } from "../lib/documents/check";
 import { engineEntityJson, getEntity } from "../lib/entities";
 import { MAX_FILE_BYTES, newUploadKey } from "../lib/files";
 import { failJob, saveDrafts, saveFinal, type Draft } from "../lib/jobs/worker-state";
-import { nameParts, plainName } from "../lib/naming";
+import { labelTemplate } from "../lib/labels/templates";
+import { fileStem, nameParts, plainName } from "../lib/naming";
 import type { Storage } from "../lib/storage";
-import { cleanLog, engineArgv, finaliseArgv, runPython, yellowArgv } from "./engine";
+import { cleanLog, engineArgv, finaliseArgv, labelArgv, runPython, yellowArgv } from "./engine";
 
 export { plainName };
 
@@ -107,7 +108,8 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
     for (const docxName of names) {
       const stem = docxName.slice(0, -5);
       const m = nameParts(stem);
-      if (!m || !plainName(stem)) return failJob(db, job, run.code, `${run.log}\n[worker] unexpected output name: ${stem}`);
+      // the neutralizer never makes labels (review: a LABEL name here would be filed as a TDS)
+      if (!m || !plainName(stem) || m[2] === "LABEL") return failJob(db, job, run.code, `${run.log}\n[worker] unexpected output name: ${stem}`);
       const pdfName = `${stem}.pdf`;
       const docxPath = path.join(outDir, docxName);
       // Always read the yellow parts, also when the engine made a PDF (review N5): any yellow
@@ -170,6 +172,74 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
       });
     }
     await saveDrafts(db, job, drafts, run.code, run.log);
+  } catch (err) {
+    await failJob(db, job, null, cleanLog(`[worker] ${err instanceof Error ? err.message : "unexpected error"}`, dir));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * One label: the engine fills the template with the form values and renders the PDF; its
+ * provenance gate runs inside. The label waits for a person's approval like any draft.
+ */
+export async function processLabelJob(db: Db, storage: Storage, job: Job) {
+  const label = job.label;
+  if (!label) return failJob(db, job, null, "[worker] label job without label details");
+  const template = labelTemplate(label.template); // never a path from the database
+  if (!template) return failJob(db, job, null, "[worker] unknown label template");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "tmc-job-"));
+  try {
+    const entity = await getEntity(db, job.entity);
+    if (!entity) return failJob(db, job, null, `[worker] no details for entity ${job.entity}; an admin adds them under Settings > Entities`);
+    const packSize = label.fields.netWeight ? `${label.fields.netWeight}kg` : null;
+    const name = fileStem({ type: "LABEL", entity: job.entity, productName: job.productName, fileNr: job.fileNr, batch: job.batch, packSize, language: label.language });
+    if (!plainName(name)) return failJob(db, job, null, "[worker] these details do not give a valid file name");
+
+    const outDir = path.join(dir, "out");
+    await mkdir(outDir);
+    const fieldsJson = path.join(dir, "fields.json");
+    await writeFile(fieldsJson, JSON.stringify({ ...label.fields, productName: job.productName ?? "", batch: job.batch ?? "" }), "utf8");
+    const entityJson = path.join(dir, "entity.json");
+    await writeFile(entityJson, JSON.stringify(engineEntityJson(entity)), "utf8");
+
+    const run = await runPython(labelArgv({ templateFile: template.file, fieldsJson, entityJson, language: label.language, name, outDir }), dir);
+    if (run.code !== 0) return failJob(db, job, run.code, run.log); // only 0 is a label
+    const docx = await readFile(path.join(outDir, `${name}.docx`)).catch(() => null);
+    const pdf = await readFile(path.join(outDir, `${name}.pdf`)).catch(() => null);
+    if (!docx || !pdf) return failJob(db, job, run.code, `${run.log}\n[worker] the engine wrote no label`);
+
+    const docxKey = newUploadKey("docx");
+    await storage.put(docxKey, docx, DOCX);
+    const pdfKey = newUploadKey("pdf");
+    await storage.put(pdfKey, pdf, PDF);
+    await saveDrafts(
+      db,
+      job,
+      [
+        {
+          name,
+          type: "LABEL",
+          entity: job.entity,
+          docxKey,
+          docxFilename: `${name}.docx`,
+          pdfKey,
+          pdfFilename: `${name}.pdf`,
+          sourceKey: null,
+          sourceFilename: null,
+          yellow: false,
+          yellowParts: [],
+          previewKey: null,
+          batch: job.batch,
+          language: label.language,
+          manufacturingDate: label.fields.productionDate || null,
+          expiryOrRetestDate: label.fields.expiryDate || null,
+          by: "label",
+        },
+      ],
+      run.code,
+      run.log,
+    );
   } catch (err) {
     await failJob(db, job, null, cleanLog(`[worker] ${err instanceof Error ? err.message : "unexpected error"}`, dir));
   } finally {

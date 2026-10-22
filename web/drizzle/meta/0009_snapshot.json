@@ -1,5 +1,5 @@
 {
-  "id": "08c33ce4-6d4b-4acf-a312-c83dfa9287ea",
+  "id": "f2097218-1603-4778-add1-f1e86479e43e",
   "prevId": "4c55f905-8f3e-4f3f-a3b2-2ae34559ac4c",
   "version": "7",
   "dialect": "postgresql",
@@ -721,6 +721,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "label": {
+          "name": "label",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "exit_code": {
           "name": "exit_code",
           "type": "integer",
@@ -844,7 +850,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "jobs_label_has_payload": {
+          "name": "jobs_label_has_payload",
+          "value": "\"jobs\".\"kind\"::text <> 'label' OR \"jobs\".\"label\" IS NOT NULL"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.users": {
@@ -970,8 +981,7 @@
         "corrected",
         "confirmed",
         "rejected",
-        "word_upload",
-        "edited"
+        "word_upload"
       ]
     },
     "public.job_kind": {
@@ -979,7 +989,8 @@
       "schema": "public",
       "values": [
         "neutralise",
-        "finalise"
+        "finalise",
+        "label"
       ]
     },
     "public.job_state": {

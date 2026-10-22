@@ -106,6 +106,15 @@ The script detects image-based PDFs and applies OCR before extraction.
 6. **All output text is explicit black.** The script forces every filled cell to
    `w:color = 000000` so text is never invisible regardless of template styling.
 
+## Labels (phase 3 frame, 20/10/2026)
+
+`scripts/make_label.py` fills a label template from `assets/` with the form values
+(the worker passes them as `fields.json`) and renders Word + PDF. Fixed texts come from
+`assets/label_texts.json` (EN/FR from Kars' Label Creator); a language or text that is not
+in it stops the run. An empty value leaves its row out. The provenance gate checks every
+label. `assets/TMC_LABEL_SAMPLE.docx` (made by `scripts/make_label_template.py`) is a
+SAMPLE only: Kars' real template replaces it. Tests: `tests/test_labels.py`.
+
 ## How to run
 
 ### Step 1: Install dependencies (first run only)

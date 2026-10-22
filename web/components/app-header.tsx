@@ -20,6 +20,9 @@ export function AppHeader({ user }: { user: CurrentUser }) {
           <Link href="/neutralise" className="rounded px-3 py-1 hover:bg-white/10">
             Neutralise
           </Link>
+          <Link href="/labels/new" className="rounded px-3 py-1 hover:bg-white/10">
+            New label
+          </Link>
           <Link href="/jobs" className="rounded px-3 py-1 hover:bg-white/10">
             Jobs
           </Link>

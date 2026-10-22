@@ -15,22 +15,49 @@ def _is_trade_name(label):
 
 
 def _sec_no(text):
-    m = re.match(r"\s*(\d+(?:\.\d+)*)\.", text or "")
+    """'1.3', also written '1.3.', '1.3 Fournisseur', 'SECTION 1.3:' (20/10/2026: real MSDS)."""
+    m = re.match(r"\s*(?:section|rubrique|abschnitt|rubriek)?\s*(\d{1,2}(?:\.\d{1,2})*)\.?(?=\s|:|$)",
+                 text or "", re.I)
     return m.group(1) if m else None
 
 
+_LATER_SECTIONS = {str(n) for n in range(2, 17)}
+_SECTION_WORD = re.compile(r"\s*(?:section|rubrique|abschnitt|rubriek)\b", re.I)
+
+
+def _heading(e):
+    """The section number of a heading line, whatever the supplier made it look like. A plain
+    line only counts with a dotted number ("1.4") or the word section: "5 Rue de la Paix" is an
+    address, not section 5 (security review R1)."""
+    if e["kind"] in ("sub", "section"):
+        return _sec_no(e.get("text"))
+    if e["kind"] == "para":
+        no = _sec_no(e.get("text"))
+        if no and ("." in no or _SECTION_WORD.match(e.get("text") or "")):
+            return no
+    return None
+
+
 def find_supplier_block(els):
-    """Index range of the body of '1.3 Details of the supplier ...'."""
+    """Index range of the body of '1.3 Details of the supplier ...'. The block runs to the next
+    real heading (1.4, section 2): every line in it is the supplier's identity and is replaced.
+    No heading after it: refused, never cut off at a guess (security review R2)."""
     start = end = None
     for i, e in enumerate(els):
-        if e["kind"] == "sub" and _sec_no(e["text"]) == "1.3":
-            start = i + 1
-        elif start is not None and e["kind"] in ("sub", "section"):
+        no = _heading(e)
+        if start is None:
+            if no == "1.3":
+                start = i + 1
+            continue
+        if e["kind"] == "section" or no == "1.4" or (no or "").split(".")[0] in _LATER_SECTIONS:
             end = i
             break
     if start is None:
         return None, None
-    return start, (end if end is not None else len(els))
+    if end is None:
+        raise ValueError("Section 1.3 (supplier details) has no end (no 1.4 or section 2 after it) - "
+                         "cannot neutralise safely.")
+    return start, end
 
 
 def harvest_identity(els, lo, hi):
@@ -109,8 +136,13 @@ def neutralise(els, meta, entity, product_name=None, file_nr=None):
               "old_emergency": "", "tmc_block": [],
               "product_name_from": "", "product_name_to": "", "trade_name_was": ""}
     if lo is None:
-        raise ValueError("Section 1.3 (supplier details) not found - cannot neutralise.")
+        raise ValueError("Section 1.3 (supplier details) not found - cannot neutralise. When the supplier "
+                         "details are inside a table (seen on real MSDS), a person neutralises this MSDS.")
 
+    # A table inside 1.3: its supplier name, phone and e-mail could not be harvested for the
+    # scrub of the rest of the document, so refused for a person (security review F4).
+    if any(e["kind"] == "table" for e in els[lo:hi]):
+        raise ValueError("Section 1.3 (supplier details) is a table - a person neutralises this MSDS.")
     ident, weak = harvest_identity(els, lo, hi)
     report["supplier_tokens"] = sorted(ident)
     report["block_only"] = sorted(weak)
@@ -140,9 +172,19 @@ def neutralise(els, meta, entity, product_name=None, file_nr=None):
 
     # 1.4 -> TMC emergency number
     for i, e in enumerate(els):
-        if e["kind"] == "sub" and _sec_no(e["text"]) == "1.4":
+        if _heading(e) == "1.4":
+            # the number on the heading line itself: "1.4 Emergency telephone number: +34 ..."
+            m = re.match(r"(.*?:)\s*(?=[+(\d])(.+)$", (e.get("text") or "")[:300])
+            # only a telephone number (6+ digits), never "(see section 16)" (review F5)
+            if m and len(re.findall(r"\d", m.group(2))) >= 6:
+                # heading and TMC number as two lines: each one traceable (the gate checks lines)
+                report["old_emergency"] = m.group(2)
+                e["text"] = m.group(1)
+                els.insert(i + 1, {"kind": "para", "text": entity.get("nood") or TMC_EMERGENCY, "page": e.get("page")})
+                break
             for j in range(i + 1, len(els)):
-                if els[j]["kind"] in ("sub", "section"):
+                # only a real next heading ends 1.4: "24 h/24 +32 ..." is the number itself (R1)
+                if els[j]["kind"] == "section" or (_heading(els[j]) or "").split(".")[0] in _LATER_SECTIONS:
                     break
                 if els[j]["kind"] == "kv":
                     report["old_emergency"] = els[j]["value"]

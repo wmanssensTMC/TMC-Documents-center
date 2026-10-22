@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Actor } from "../lib/audit";
 import { createPgliteDb, type Db } from "../lib/db";
 import { documents, feedback, jobs } from "../lib/db/schema";
@@ -14,7 +14,9 @@ import { localStorage, type Storage } from "../lib/storage";
 import { cleanLog, engineArgv } from "./engine";
 import { changeWarnings } from "../lib/documents/changes";
 import { approveDraft, requestFinalise } from "../lib/documents/check";
-import { plainName, processFinaliseJob, processNeutraliseJob, safeName } from "./process";
+import { createLabelJob } from "../lib/labels";
+import { LABEL_TEMPLATES } from "../lib/labels/templates";
+import { plainName, processFinaliseJob, processLabelJob, processNeutraliseJob, safeName } from "./process";
 
 const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]);
 const willem: Actor = { email: "wilman@transmare.com", name: "Willem", role: "admin" };
@@ -314,4 +316,63 @@ c.save()`;
     expect(failed.log).toMatch(/not recognised/);
     expect(await db.select().from(documents)).toHaveLength(0);
   }, 120_000);
+});
+
+describe.skipIf(!python)("labels with the real engine", () => {
+  const form = { template: "sample", language: "FR" as const, entity: "TMC" as const, productName: "Betaine AI test", batch: "BT-3877", fileNr: "840.S0850", productionDate: "2026-03-01", netWeight: "25,5" };
+  const name = "TMC_LABEL_840.S0850_Betaine_AI_test_BT-3877_25.5kg_FR"; // pack size = net weight
+
+  afterEach(() => {
+    const i = LABEL_TEMPLATES.findIndex((t) => t.id === "test-real");
+    if (i >= 0) LABEL_TEMPLATES.splice(i, 1);
+  });
+
+  it("makes a SAMPLE label (Word + PDF) that waits in the library and can never become Final", async () => {
+    await createLabelJob(db, willem, form);
+    await processLabelJob(db, storage, (await claimNextJob(db))!);
+    const [job] = await db.select().from(jobs);
+    expect(job.state, job.log ?? "").toBe("to_check");
+    const [doc] = await db.select().from(documents);
+    expect(doc).toMatchObject({ name, type: "LABEL", status: "To check", language: "FR", batch: "BT-3877", manufacturingDate: "2026-03-01", supplierName: null, docxFilename: `${name}.docx`, pdfFilename: `${name}.pdf` });
+    expect(plainName(doc.name)).toBe(true);
+    expect((await storage.get(doc.pdfKey!))).not.toBeNull();
+    await expect(approveDraft(db, willem, doc.id, { productName: form.productName, fileNr: form.fileNr, batch: form.batch })).rejects.toThrow(/SAMPLE template/);
+  }, 300_000);
+
+  it("with a real template the label is approved through the worker and becomes Final", async () => {
+    LABEL_TEMPLATES.push({ id: "test-real", name: "test", file: "TMC_LABEL_SAMPLE.docx", sample: false });
+    await createLabelJob(db, willem, { ...form, template: "test-real" });
+    await processLabelJob(db, storage, (await claimNextJob(db))!);
+    const [doc] = await db.select().from(documents);
+    await approveDraft(db, willem, doc.id, { productName: form.productName, fileNr: form.fileNr, batch: form.batch });
+    const fin = (await claimNextJob(db))!;
+    await processFinaliseJob(db, storage, fin);
+    const [fj] = await db.select().from(jobs).where(eq(jobs.id, fin.id));
+    expect(fj.state, fj.log ?? "").toBe("done");
+    expect((await db.select().from(documents))[0]).toMatchObject({ name, status: "Final", version: 1, approvedBy: willem.email });
+  }, 300_000);
+
+  it("a SAMPLE label sent straight to the finalise worker (approval check skipped) still never becomes Final", async () => {
+    await createLabelJob(db, willem, form);
+    await processLabelJob(db, storage, (await claimNextJob(db))!);
+    const [doc] = await db.select().from(documents);
+    const metadata = { productName: form.productName, fileNr: form.fileNr, batch: form.batch };
+    await db.insert(jobs).values({ kind: "finalise", documentId: doc.id, entity: doc.entity, payload: { mode: "approve", metadata }, createdBy: willem.email });
+    const fin = (await claimNextJob(db))!;
+    await processFinaliseJob(db, storage, fin);
+    const [fj] = await db.select().from(jobs).where(eq(jobs.id, fin.id));
+    expect(fj.state).toBe("failed");
+    expect(fj.log).toMatch(/SAMPLE template/);
+    expect(await db.select().from(documents)).toEqual([expect.objectContaining({ id: doc.id, status: "To check", version: null })]);
+  }, 300_000);
+
+  it("a label job with a template that is not in the list fails and stores nothing", async () => {
+    await createLabelJob(db, willem, form);
+    await db.update(jobs).set({ label: { template: "../../etc/passwd", language: "FR", fields: {}, sample: false } });
+    await processLabelJob(db, storage, (await claimNextJob(db))!);
+    const [job] = await db.select().from(jobs);
+    expect(job.state).toBe("failed");
+    expect(job.log).toMatch(/unknown label template/);
+    expect(await db.select().from(documents)).toHaveLength(0);
+  });
 });

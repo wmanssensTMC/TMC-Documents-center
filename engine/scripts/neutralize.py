@@ -23,17 +23,25 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
 from tmc_common import DEFAULT_ENTITY, finalise, EXIT_REVIEW   # noqa: E402
 
+def _phrases(words):
+    return "|".join(re.escape(w).replace(r"\ ", r"\s+") for w in words)
+
+
+# One list of COA titles for the dispatcher and the COA route (20/10/2026: real COAs titled
+# "Quality certificate" and "PRODUCT ANALYSIS REPORT" were not recognised here).
+from neutralize_docx import COA_KEYWORDS  # noqa: E402
 COA_RE = re.compile(r"certificate\s+of\s+analysis|certificat\s+d.analyse|certificaat\s+van\s+analyse|"
                     r"analysenzertifikat|analysis\s+certificate|certificado\s+de\s+an[aá]lisis|"
-                    r"\bC\.?O\.?A\.?\b", re.I)
+                    r"\bC\.?O\.?A\.?\b|" + _phrases(COA_KEYWORDS), re.I)
 SDS_RE = re.compile(r"safety\s+data\s+sheet|fiche\s+de\s+donn[ée]es\s+de\s+s[ée]curit[ée]|"
                     r"veiligheidsinformatieblad|sicherheitsdatenblatt|ficha\s+de\s+datos\s+de\s+seguridad|"
                     r"\bM?SDS\b", re.I)
-TDS_RE = re.compile(r"technical\s+data\s+sheet|product\s+data\s+sheet|technical\s+information|"
+TDS_RE = re.compile(r"technical\s+data\s+sheet|product\s+data\s+sheet|technical\s+information|technical\s+sheet|"
                     r"\bspecifications?\b|fiche\s+technique|technische\s+fiche|technisches\s+datenblatt|"
                     r"ficha\s+t[ée]cnica|\bTDS\b", re.I)
 REF_RE = re.compile(r"pro\s*-?forma|\bPFI\b|order\s+confirmation|contrat\s+de\s+vente|"
-                    r"sales\s+contract|commercial\s+invoice|\binvoice\b|factuur|facture", re.I)
+                    r"sales\s+contract|commercial\s+invoice|\binvoice\b|factuur|facture|"
+                    r"purchase\s+order|bestelbon|inkooporder|bon\s+de\s+commande", re.I)
 
 
 def first_text(path, chars=2500):
@@ -57,6 +65,10 @@ def first_text(path, chars=2500):
 def classify(path):
     t = first_text(path)
     head = t[:600]
+    # an order or contract titled as such stays one, also when it asks for a COA further down
+    title = "\n".join([ln for ln in t.split("\n") if ln.strip()][:3])
+    if REF_RE.search(title) and not COA_RE.search(title):
+        return "ref"
     # the title decides first: a COA with a "Specification" column is still a COA
     if COA_RE.search(head):
         return "coa"
