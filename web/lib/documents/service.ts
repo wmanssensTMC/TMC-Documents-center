@@ -7,7 +7,7 @@ import { and, desc, eq, ilike, inArray, notInArray, or, sql, type SQL } from "dr
 import { logAudit, type Actor } from "../audit";
 import type { Db } from "../db";
 import { auditLog, documents, type DocStatus, type DocType, type Entity } from "../db/schema";
-import { detectType, MAX_FILE_BYTES, parseUploadKey, cleanFilename, type FileKind } from "../files";
+import { detectType, MAX_FILE_MB, maxFileBytes, parseUploadKey, cleanFilename, type FileKind } from "../files";
 import { fileStem } from "../naming";
 import type { Storage } from "../storage";
 import { documentInput, type DocumentInput } from "./input";
@@ -107,7 +107,7 @@ async function checkUploadedFile(db: Db, storage: Storage, kind: FileKind, key: 
   if (!parsed || parsed.kind !== kind) throw new DocumentError(`${kind}: invalid upload reference`);
   const head = await storage.head(key, 8);
   if (!head) throw new DocumentError(`${kind}: uploaded file not found`);
-  if (head.size > MAX_FILE_BYTES) throw new DocumentError(`${kind}: file is larger than 25 MB`);
+  if (head.size > maxFileBytes(kind)) throw new DocumentError(`${kind}: file is larger than ${MAX_FILE_MB[kind]} MB`);
   if (!detectType(kind, head.bytes)) throw new DocumentError(`${kind}: file content is not an allowed type`);
   const [used] = await db
     .select({ id: documents.id })

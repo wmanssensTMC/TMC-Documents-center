@@ -228,6 +228,12 @@ def build(els, meta, template, output):
                 _cell_text(c0, kv["label"])
                 _cell_text(cc, ":" if kv["label"] or kv["value"] else "")
                 _cell_text(c1, kv["value"])
+                if kv.get("yellow"):            # a person checks this row (security review M3)
+                    from tmc_common import mark_yellow
+                    for cell in (c0, c1):
+                        for p in cell.paragraphs:
+                            for r in p.runs:
+                                mark_yellow(r)
                 if kv.get("images"):
                     pic = c1.add_paragraph()
                     pic.alignment = WD_ALIGN_PARAGRAPH.LEFT

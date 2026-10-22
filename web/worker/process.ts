@@ -1,6 +1,10 @@
 // One neutralise job: fetch the inputs, run the engine, store its drafts. Exit code 1 =
 // failure, nothing is stored (ENGINE.md: a failed run has nothing usable).
+import { createWriteStream } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import os from "node:os";
 import path from "node:path";
 import type { Db } from "../lib/db";
@@ -10,7 +14,7 @@ import { documents } from "../lib/db/schema";
 import { CHANGES_MARK, parseChanges, type Change } from "../lib/documents/changes";
 import { finalName, shownValues } from "../lib/documents/check";
 import { engineEntityJson, getEntity } from "../lib/entities";
-import { MAX_FILE_BYTES, newUploadKey } from "../lib/files";
+import { MAX_FILE_MB, maxFileBytes, newUploadKey } from "../lib/files";
 import { failJob, saveDrafts, saveFinal, type Draft } from "../lib/jobs/worker-state";
 import { labelTemplate } from "../lib/labels/templates";
 import { fileStem, nameParts, plainName } from "../lib/naming";
@@ -55,20 +59,16 @@ export function safeName(original: string, index: number) {
 async function download(storage: Storage, key: string, to: string) {
   const file = await storage.get(key);
   if (!file) throw new Error("input file missing in storage");
-  const chunks: Uint8Array[] = [];
+  // streamed to disk with a byte count, never held in memory whole (security review M5)
   let size = 0;
-  const reader = file.stream.getReader();
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    size += value.length;
-    if (size > MAX_FILE_BYTES) {
-      await reader.cancel();
-      throw new Error("input file larger than 25 MB");
-    }
-    chunks.push(value);
-  }
-  await writeFile(to, Buffer.concat(chunks), { flag: "wx" });
+  const cap = new Transform({
+    transform(chunk: Buffer, _enc, done) {
+      size += chunk.length;
+      if (size > maxFileBytes("input")) return done(new Error(`input file larger than ${MAX_FILE_MB.input} MB`));
+      done(null, chunk);
+    },
+  });
+  await pipeline(Readable.fromWeb(file.stream as WebReadableStream<Uint8Array>), cap, createWriteStream(to, { flags: "wx" }));
 }
 
 export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {

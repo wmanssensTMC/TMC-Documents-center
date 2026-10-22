@@ -1,5 +1,12 @@
 # Changelog
 
+## 22/10/2026 · MSDS round 3 (branch `phase-2k-msds3`)
+- No page limit on an MSDS (Willem 22/10: we cannot choose what suppliers send). Reading is much faster: overprinted letters are compared with their neighbours only (426 pages: from about 7 minutes of reading to TODO).
+- French MSDS (Butanox) now goes through: a row that wraps in both columns puts each part in its own column; body text that starts high on a page is no longer dropped (two lines were silently lost before; the gate caught it); the title printed below the header band is the document's own title, no English default.
+- The gate also reads the label and value columns where the document's own ":" column stands, and through the whole document (values that run over a page break). Still only the source's own words, in its own order.
+- Uploads up to 100 MB (was 25 MB; largest real file so far 4 MB). One setting: `MAX_FILE_MB` in `web/lib/files.ts`.
+- TCCA stays with a person: section 1 has no numbered parts, so there is no supplier block to replace without guessing.
+
 ## 22/10/2026 · MSDS round 2 on the real MSDS (branch `phase-2i-msds2`, merged 22/10; security gate PASS 90/100)
 - Section numbers written with a space ("1 .3") are found; the whole of 1.4 becomes TMC's emergency number: only lines with a phone number or e-mail go, other lines stay; no 1.4 found = refused for a person; a long 1.4 is kept and marked yellow.
 - The supplier's company name is taken without its label ("Company name X"), so it is also found in the disclaimer.

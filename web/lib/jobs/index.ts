@@ -7,7 +7,7 @@ import { logAudit, type Actor } from "../audit";
 import type { Db } from "../db";
 import { documents, ENTITIES, jobs, ROUTES, type Job } from "../db/schema";
 import { getEntity } from "../entities";
-import { cleanFilename, detectType, MAX_FILE_BYTES, parseUploadKey } from "../files";
+import { cleanFilename, detectType, MAX_FILE_MB, maxFileBytes, parseUploadKey } from "../files";
 import type { Storage } from "../storage";
 
 export class JobError extends Error {}
@@ -46,7 +46,7 @@ async function checkInput(storage: Storage, ref: { key: string; filename: string
   if (!parsed || parsed.kind !== "input") throw new JobError(`${cleanFilename(ref.filename)}: invalid upload reference`);
   const head = await storage.head(ref.key, 8);
   if (!head) throw new JobError(`${cleanFilename(ref.filename)}: uploaded file not found`);
-  if (head.size > MAX_FILE_BYTES) throw new JobError(`${cleanFilename(ref.filename)}: larger than 25 MB`);
+  if (head.size > maxFileBytes("input")) throw new JobError(`${cleanFilename(ref.filename)}: larger than ${MAX_FILE_MB.input} MB`);
   if (!detectType("input", head.bytes)) throw new JobError(`${cleanFilename(ref.filename)}: not a PDF`);
   return { key: ref.key, filename: cleanFilename(ref.filename) };
 }

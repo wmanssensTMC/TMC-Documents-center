@@ -31,6 +31,7 @@ entity.json (empty fields are simply left off the document):
      "email": "...", "web": "...", "btw": "...", "nood": "+32 (0)14 58 45 45"}
 """
 import argparse, json, re, subprocess, sys, shutil
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -122,6 +123,25 @@ def _source_corpus(pdf_path, scrub_tokens=()):
         pages_lines = [_lines(dedupe(p), len(pdf.pages)) for p in pdf.pages]
         furniture = _furniture(pages_lines, [p.height for p in pdf.pages])
         texts.append(" ".join(ln["text"] for lines in pages_lines for ln in lines if _furn_key(ln["text"]) not in furniture))
+        # 6. each column read through the whole document at the ":" columns the document itself
+        # uses (at least twice, the 5 most used): a label wider than LABEL_X and a value that runs
+        # over a page break are found in one piece (22/10/2026, real French MSDS). A line that does
+        # not split cleanly at that column (a full-width sentence) ends the run, so no word order is
+        # made that the source does not show (security review M1, M2).
+        body = [ln for lines in pages_lines for ln in lines if _furn_key(ln["text"]) not in furniture]
+        colons = Counter(round(w["x0"]) for ln in body for w in ln["words"] if w["text"] == ":" and w["x0"] > LABEL_X)
+        for cx in [x for x, n in colons.most_common(5) if n >= 2]:
+            for keep in (lambda w: w["x1"] <= cx - 8, lambda w: w["x0"] >= cx + 8):
+                run = []
+                for ln in body:
+                    if any(w["x1"] > cx - 8 and w["x0"] < cx + 8 and w["text"] != ":" for w in ln["words"]):
+                        if run:
+                            texts.append(" ".join(run))
+                        run = []
+                        continue
+                    run += [w["text"] for w in ln["words"] if keep(w)]
+                if run:
+                    texts.append(" ".join(run))
         for page in pdf.pages:
             texts.append(page.extract_text() or "")
             # 4. the same source as the reader sees it: letters printed twice for bold read

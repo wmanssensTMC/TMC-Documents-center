@@ -5,7 +5,7 @@ import { useState, useSyncExternalStore } from "react";
 import { sendFile } from "@/lib/client-upload";
 import type { YellowPart } from "@/lib/db/schema";
 import type { DocType, Entity } from "@/lib/constants";
-import { MAX_FILE_BYTES } from "@/lib/files";
+import { MAX_FILE_MB, maxFileBytes } from "@/lib/files";
 import { fileStem } from "@/lib/naming";
 import { approve, finaliseDraft, reject, type CheckResult } from "./actions";
 import { EditSection, type EditProps } from "./edit-section";
@@ -225,7 +225,7 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
             onClick={() =>
               act(async () => {
                 if (!word) return { ok: false, error: "Choose the checked Word file." };
-                if (word.size > MAX_FILE_BYTES) return { ok: false, error: "The file is larger than 25 MB." };
+                if (word.size > maxFileBytes("docx")) return { ok: false, error: `The file is larger than ${MAX_FILE_MB.docx} MB.` };
                 const key = await sendFile(uploadMode, "docx", word);
                 return finaliseDraft(documentId, { mode: "upload", metadata, confirmReplace: replace, docx: { key, filename: word.name } });
               })
