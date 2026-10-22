@@ -1,5 +1,11 @@
 # Changelog
 
+## 22/10/2026 · Simpler menu (branch `phase-2h-menu`)
+- Five tabs in the order of the work (Willem 22/10): Neutralise, To check (with the number of drafts waiting), Labels, Library, Settings (admins).
+- Jobs is folded into Neutralise: the last 15 jobs show under the form, updating themselves while running; "All jobs" keeps the full list.
+- Upload is a button in the Library: "Add an existing TMC document".
+
+
 ## 20/10/2026 · Phase 3 started early: label frame with a SAMPLE template (branch `phase-3-labels`, merged 21/10; security 83/100, fixes applied)
 - New label screen: choose a template, language (EN/FR) and entity, fill in the form (or start from a Final COA: product, dossier, batch and the dates it holds), send. The worker makes Word + PDF with the engine (`engine/scripts/make_label.py`); nothing heavy runs on Vercel.
 - Labels are LABEL documents in the library: To check, approved like other documents, versions and Superseded, audit trail. A label is approved as it was made (no Word round trip); dossier and batch are locked at approval.

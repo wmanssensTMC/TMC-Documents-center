@@ -2,8 +2,15 @@ import Image from "next/image";
 import Link from "next/link";
 import { logout } from "@/app/actions";
 import type { CurrentUser } from "@/lib/auth";
+import { getDb } from "@/lib/db";
+import { countToCheck } from "@/lib/documents/service";
 
-export function AppHeader({ user }: { user: CurrentUser }) {
+const tab = "rounded px-3 py-1 hover:bg-white/10";
+
+// Five tabs, in the order of the work (Willem 22/10): Jobs is part of Neutralise, Upload is a
+// button in the Library.
+export async function AppHeader({ user }: { user: CurrentUser }) {
+  const waiting = await countToCheck(await getDb());
   return (
     <header className="bg-tmc text-white">
       <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
@@ -14,30 +21,29 @@ export function AppHeader({ user }: { user: CurrentUser }) {
           <span className="font-semibold">Document Center</span>
         </Link>
         <nav className="flex flex-wrap items-center gap-1 text-sm">
-          <Link href="/" className="rounded px-3 py-1 hover:bg-white/10">
-            Library
-          </Link>
-          <Link href="/neutralise" className="rounded px-3 py-1 hover:bg-white/10">
+          <Link href="/neutralise" className={tab}>
             Neutralise
           </Link>
-          <Link href="/labels/new" className="rounded px-3 py-1 hover:bg-white/10">
-            New label
-          </Link>
-          <Link href="/jobs" className="rounded px-3 py-1 hover:bg-white/10">
-            Jobs
-          </Link>
-          <Link href="/?status=To%20check" className="rounded px-3 py-1 hover:bg-white/10">
+          <Link href="/?status=To%20check" className={tab}>
             To check
+            {waiting > 0 && (
+              <span className="ml-1.5 rounded-full bg-amber-400 px-1.5 py-0.5 text-xs font-semibold text-tmc" aria-label={`${waiting} waiting`}>
+                {waiting}
+              </span>
+            )}
           </Link>
-          <Link href="/upload" className="rounded px-3 py-1 hover:bg-white/10">
-            Upload
+          <Link href="/labels/new" className={tab}>
+            Labels
+          </Link>
+          <Link href="/" className={tab}>
+            Library
           </Link>
           {user.role === "admin" && (
-            <Link href="/settings/users" className="rounded px-3 py-1 hover:bg-white/10">
+            <Link href="/settings/users" className={tab}>
               Settings
             </Link>
           )}
-          <Link href="/account/password" className="hidden rounded px-3 py-1 hover:bg-white/10 sm:inline" title="Change password">
+          <Link href="/account/password" className={`hidden sm:inline ${tab}`} title="Change password">
             {user.name}
           </Link>
           <form action={logout}>
