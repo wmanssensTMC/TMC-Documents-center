@@ -52,7 +52,7 @@ export default async function LibraryPage({ searchParams }: PageProps<"/">) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold text-tmc">Library</h1>
         <Link href="/upload" className="rounded-md bg-tmc px-4 py-2 text-sm font-medium text-white hover:bg-tmc/90">
-          Upload document
+          Add an existing TMC document
         </Link>
       </div>
       <Notice ok={sp.ok} error={sp.error} />
