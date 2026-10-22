@@ -30,7 +30,7 @@ entity.json (empty fields are simply left off the document):
     {"naam": "...", "adres": "...", "telefoon": "...",
      "email": "...", "web": "...", "btw": "...", "nood": "+32 (0)14 58 45 45"}
 """
-import argparse, json, re, subprocess, sys, shutil
+import argparse, contextlib, json, re, subprocess, sys, shutil
 from collections import Counter
 from pathlib import Path
 
@@ -99,7 +99,7 @@ def non_clobbering(path):
         n += 1
 
 
-def _source_corpus(pdf_path, scrub_tokens=()):
+def _source_corpus(pdf_path, scrub_tokens=(), pdf=None):
     """Everything the source actually says, read three ways:
 
       1. linear page text, as printed;
@@ -117,7 +117,7 @@ def _source_corpus(pdf_path, scrub_tokens=()):
     from neutralise_sds import scrub_text
     from extract_sds import LABEL_X, _furn_key, _furniture, _lines, dedupe
     texts = []
-    with pdfplumber.open(pdf_path) as pdf:
+    with (contextlib.nullcontext(pdf) if pdf is not None else pdfplumber.open(pdf_path)) as pdf:
         # 5. the whole text with repeated page headers/footers left out, as the reader joins a
         # paragraph over a page break (22/10/2026, real MSDS): still only the source's own text
         pages_lines = [_lines(dedupe(p), len(pdf.pages)) for p in pdf.pages]
@@ -186,7 +186,9 @@ def main():
     entity = json.loads(Path(a.entity).read_text(encoding="utf-8"))
 
     img_dir = Path(a.output).parent / ("_img_" + Path(a.pdf).stem)
-    els, meta = extract(a.pdf, str(img_dir))
+    import pdfplumber
+    source = pdfplumber.open(a.pdf)          # parsed once, read by the reader and the gate
+    els, meta = extract(a.pdf, str(img_dir), pdf=source)
     n_img = sum(len(e["images"]) for e in els if e["kind"] == "image")
     print(f"  i  source      : {meta.get('pages')} page(s), "
           f"product '{meta.get('product_name')}'")
@@ -232,7 +234,8 @@ def main():
     build(els, meta, a.template, a.output)
 
     # ---- HARD RULE: nothing in the output may be invented -------------------
-    src_texts = _source_corpus(a.pdf, rep.get("supplier_tokens", []))
+    src_texts = _source_corpus(a.pdf, rep.get("supplier_tokens", []), pdf=source)
+    source.close()
     allowed = [v for v in entity.values() if isinstance(v, str)]
     allowed += [a.product_name or "", a.file_nr or "", TMC_EMERGENCY]
     allowed += rep.get("tmc_block", [])

@@ -1,4 +1,5 @@
 """SDS extraction: turn a supplier SDS PDF into a structured element list."""
+import contextlib
 import hashlib
 import io
 import os
@@ -52,6 +53,11 @@ def _tidy_number(text):
 def dedupe(page):
     """The page without overprinted letters: same letter, same font and size, within
     OVERPRINT x the letter size of a letter already kept."""
+    # done once per page: a cleaned page, or a page cleaned before, is returned as it is
+    if getattr(page, "_tmc_clean", False):
+        return page
+    if getattr(page, "_tmc_deduped", None) is not None:
+        return page._tmc_deduped
     # letters are kept in a grid of cells at least `tol` wide, so each letter is compared with
     # its neighbours only, not with every same letter on the page (a 426-page MSDS took minutes)
     kept, drop = {}, set()
@@ -65,7 +71,10 @@ def dedupe(page):
             drop.add(id(c))
         else:
             kept.setdefault((key, gx, gy), []).append(c)
-    return page.filter(lambda obj: id(obj) not in drop) if drop else page
+    clean = page.filter(lambda obj: id(obj) not in drop) if drop else page
+    clean._tmc_clean = True
+    page._tmc_deduped = clean
+    return clean
 
 
 def _lines(page, n_pages=None):
@@ -237,12 +246,13 @@ def _furniture(pages_lines, heights):
     return out
 
 
-def extract(path, image_dir=None):
+def extract(path, image_dir=None, pdf=None):
     """-> (elements, meta). Kinds: section, sub, kv, para, table, image."""
     els, meta = [], {}
     images = _page_images(path, image_dir) if image_dir else {}
     meta["image_shas"] = sorted({i["sha"] for v in images.values() for i in v})
-    with pdfplumber.open(path) as pdf:
+    # an already-open PDF is shared with the gate, so a long MSDS is parsed once (22/10/2026)
+    with (contextlib.nullcontext(pdf) if pdf is not None else pdfplumber.open(path)) as pdf:
         meta["pages"] = len(pdf.pages)
         # every page's lines are read once; lines that repeat at the top or bottom of most pages
         # ("Theophyllin wfr. Powder SDS UK") are page furniture (22/10/2026, real MSDS)
