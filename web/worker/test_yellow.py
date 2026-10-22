@@ -179,6 +179,111 @@ with tempfile.TemporaryDirectory() as d:
     rc, out, err = run("changes", d / "before.docx", d / "swap.docx", d / "source.pdf")
     check("changes: digits moved around is still a new number (6.99 is not 99.6)", rc == 0 and json.loads(out)[0]["unknown"] == ["6.99"], out + err)
 
+    # ---- own on-screen editor (Willem 20/10): a view with numbered text, changes written in ----
+    from docx.oxml import parse_xml
+    from docx.shared import Pt
+    W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+    ed = Document()
+    ed.sections[0].header.paragraphs[0].add_run("TMC header")
+    p = ed.add_paragraph("Product: ")
+    p.add_run("PRODUCTNAME").font.highlight_color = WD_COLOR_INDEX.YELLOW
+    big = p.add_run(" grade"); big.font.size = Pt(14); big.bold = True
+    t = ed.add_table(rows=2, cols=2)
+    t.cell(0, 0).text = "Assay"
+    t.cell(0, 1).paragraphs[0].add_run("99.6").font.highlight_color = WD_COLOR_INDEX.YELLOW
+    t.cell(1, 0).merge(t.cell(1, 1)).paragraphs[0].add_run("Merged row")
+    inner = t.cell(0, 0).add_table(rows=1, cols=1); inner.cell(0, 0).text = "Nested"
+    box = '<w:p><w:r><w:t>Box text</w:t></w:r></w:p>'
+    ed.add_paragraph()._p.append(parse_xml(
+        f'<w:r xmlns:w="{W}" xmlns:mc="{MC}"><mc:AlternateContent><mc:Choice Requires="wps"><w:txbxContent>{box}'
+        f'</w:txbxContent></mc:Choice><mc:Fallback><w:txbxContent>{box}</w:txbxContent></mc:Fallback></mc:AlternateContent></w:r>'))
+    ed.add_paragraph()                                   # an empty line a person may type in
+    ed.add_paragraph()._p.append(parse_xml(f'<w:r xmlns:w="{W}"><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>'))
+    ed.sections[0].footer.paragraphs[0].add_run("Footer line")
+    ed.save(d / "ed.docx")
+
+    def view_of(path):
+        rc, _, err = run("view", path, d / "view.json")
+        return (json.loads((d / "view.json").read_text(encoding="utf-8")) if rc == 0 else None), err
+
+    def flat(blocks, out):
+        for b in blocks:
+            if b["t"] == "p":
+                out.append(b)
+                for i in b["items"]:
+                    if i["t"] == "box":
+                        flat(i["blocks"], out)
+            else:
+                for row in b["rows"]:
+                    for cell in row:
+                        flat(cell["blocks"], out)
+        return out
+
+    v, err = view_of(d / "ed.docx")
+    paras = flat([b for part in v["parts"] for b in part["blocks"]], []) if v else []
+    shown = [i for p in paras for i in p["items"] if i["t"] == "r"]
+    runs = {i["text"]: i for i in shown}
+    check("view: body, table, nested table, merged cell, text box, header and footer all shown",
+          all(k in runs for k in ("Product: ", "PRODUCTNAME", "Assay", "99.6", "Nested", "Merged row", "Box text", "TMC header", "Footer line")),
+          err + str(sorted(runs)))
+    check("view: the text box is shown once (its fallback copy is skipped)", [i["text"] for i in shown].count("Box text") == 1)
+    check("view: yellow parts and formatting carried over",
+          runs.get("PRODUCTNAME", {}).get("hl") is True and runs.get(" grade", {}).get("b") is True and runs.get(" grade", {}).get("size") == 14,
+          str(runs.get(" grade")))
+    check("view: a merged cell spans its columns",
+          v and any(c.get("span") == 2 for b in v["parts"][1]["blocks"] if b["t"] == "table" for r in b["rows"] for c in r))
+    check("view: a field's code is not shown", " PAGE " not in runs, str(sorted(runs)))
+    check("view: header first, footer last", v and [p["kind"] for p in v["parts"]] == ["header", "body", "footer"])
+    empty = [p for p in paras if p.get("empty")]
+    check("view: an empty line is offered for typing", len(empty) >= 1)
+
+    def edit(edits, out="ed_out.docx"):
+        (d / "edits.json").write_text(json.dumps(edits), encoding="utf-8")
+        if (d / out).exists():
+            (d / out).unlink()
+        return run("edit", d / "ed.docx", d / "edits.json", d / out)
+
+    def piece(text, b=False, i=False, u=False, hl=False):
+        return {"text": text, "b": b, "i": i, "u": u, "hl": hl}
+
+    pn, assay = runs["PRODUCTNAME"], runs["99.6"]
+    rc, _, err = edit({"runs": [
+        {"id": pn["id"], "was": "PRODUCTNAME", "parts": [piece("Sodium "), piece("Benzoate", b=True)]},
+        {"id": assay["id"], "was": "99.6", "parts": [piece("99.6")]},
+        {"id": runs["Box text"]["id"], "was": "Box text", "parts": [piece("Box text\nsecond line", i=True)]},
+        {"id": runs["TMC header"]["id"], "was": "TMC header", "parts": [piece("TMC header", u=True)]},
+    ], "paras": [{"id": empty[0]["id"], "parts": [piece("typed on an empty line")]}]})
+    out = Document(str(d / "ed_out.docx")) if rc == 0 else None
+    check("edit: the changes are written in", out is not None and "Product: Sodium Benzoate grade" in [x.text for x in out.paragraphs], err)
+    if out is not None:
+        body = [r for x in out.paragraphs for r in x.runs]
+        bold = [r.text for r in body if r.bold]
+        check("edit: part of a piece made bold, the rest not", "Benzoate" in bold and "Sodium " not in bold, str(bold))
+        check("edit: yellow goes only where the person removed it", yellow_runs(d / "ed_out.docx") == [], str(yellow_runs(d / "ed_out.docx")))
+        check("edit: the size of an untouched piece is kept", any(r.text == " grade" and r.font.size == Pt(14) for r in body))
+        check("edit: line break and italic in the shown text box",
+              out.element.body.xpath('.//*[local-name()="Choice"]//w:r[w:rPr/w:i]/w:br'), out.element.xml[-1200:])
+        check("edit: header underlined", out.sections[0].header.paragraphs[0].runs[0].underline is True)
+        every = ["".join(t.text or "" for t in x.iter(f"{{{W}}}t")) for x in out.element.body.iter(f"{{{W}}}p")]
+        check("edit: text typed on an empty line is added there", "typed on an empty line" in every, str(every))
+        check("edit: tables and rows unchanged", len(out.tables) == 1 and len(out.tables[0].rows) == 2)
+    rc, _, err = edit({"runs": [{"id": pn["id"], "was": "something else", "parts": [piece("x")]}]})
+    check("edit: refused when a piece no longer reads what was shown", rc == 1 and "does not match" in err and not (d / "ed_out.docx").exists(), err)
+    rc, _, err = edit({"runs": [{"id": "r999", "was": "", "parts": [piece("x")]}]})
+    check("edit: unknown piece refused", rc == 1, err)
+    rc, _, err = edit({"runs": [{"id": pn["id"], "was": "PRODUCTNAME", "parts": [piece("a\u0007b")]}]})
+    check("edit: control characters refused", rc == 1, err)
+    rc, _, err = edit({"runs": [{"id": pn["id"], "was": "PRODUCTNAME", "parts": [{"text": "x", "b": "yes", "i": False, "u": False, "hl": False}]}]})
+    check("edit: formatting must be true or false", rc == 1, err)
+    rc, _, err = edit({"runs": [{"id": pn["id"], "was": "PRODUCTNAME", "parts": [piece("x")]}, {"id": pn["id"], "was": "PRODUCTNAME", "parts": [piece("y")]}]})
+    check("edit: the same piece twice refused", rc == 1, err)
+    with_text = next(p for p in paras if not p.get("empty"))
+    rc, _, err = edit({"paras": [{"id": with_text["id"], "parts": [piece("x")]}]})
+    check("edit: a paragraph with its own text is changed through that text", rc == 1, err)
+    rc, _, err = edit({"runs": [], "paras": []})
+    check("edit: no changes keeps every yellow part", rc == 0 and sorted(yellow_runs(d / "ed_out.docx")) == ["99.6", "PRODUCTNAME"], err)
+
     (d / "zip.docx").write_bytes(b"PK\x03\x04 not really a zip")
     rc, _, err = run("check", d / "zip.docx", d / "forbid.json")
     check("check: refused when it is not a real Word file", rc == 1, err)

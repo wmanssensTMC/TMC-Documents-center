@@ -9,6 +9,8 @@ on the check screen -- never automatically (BRIEF 7.2).
   python yellow.py --engine DIR apply DOCX FIXES.json OUT.docx
   python yellow.py --engine DIR preview DOCX OUT.pdf          -> PDF stamped DRAFT
   python yellow.py --engine DIR changes DRAFT EDITED SOURCE.pdf -> JSON list of changes on stdout
+  python yellow.py --engine DIR view DOCX OUT.json            -> the on-screen editor's view
+  python yellow.py --engine DIR edit DOCX EDITS.json OUT.docx -> the editor's changes written in
   python yellow.py --engine DIR check DOCX FORBID.json [SHOWN.json]
                                      -> exit 1 if unsafe, names the supplier, or does not
                                         print a value of its file name (SHOWN: [[label, value]])
@@ -185,6 +187,7 @@ def paragraph_texts(docx):
     import xml.etree.ElementTree as ET
     import zipfile
     P, T = f"{W_NS}p", f"{W_NS}t"
+    BREAKS = {f"{W_NS}br", f"{W_NS}cr", f"{W_NS}tab"}
 
     def walk(el, out):
         for c in el:
@@ -204,6 +207,8 @@ def paragraph_texts(docx):
                 continue
             if c.tag == T:
                 own.append(c.text or "")
+            elif c.tag in BREAKS:
+                own.append(" ")                 # a line break or tab keeps words apart
             elif c.tag == P:
                 walk(_wrap(c), nested)          # a text box inside this paragraph
             else:
@@ -283,6 +288,418 @@ def cmd_changes(draft, edited, source_pdf):
     json.dump(changes, sys.stdout, ensure_ascii=False)
 
 
+# ---- Own on-screen editor (Willem 20/10/2026: no SuperDoc, no outside licence) ---------------
+# The draft is shown in the browser as a simple view in which every piece of text (a Word
+# "run") has a number. The browser sends back only the runs that changed, and they are written
+# into the engine's own Word file: tables, pictures and the TMC template cannot break. The same
+# walk gives the numbers for the view and for writing in, so they always agree; each change also
+# carries the run's old text, and a run that no longer reads that is refused.
+
+W_URI = W_NS[1:-1]
+R_ID = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+R_EMBED = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+# A run whose content is only text, tabs and line breaks can be retyped without losing anything.
+TEXT_ONLY = {f"{W_NS}{t}" for t in ("rPr", "t", "tab", "br", "cr", "noBreakHyphen", "softHyphen", "lastRenderedPageBreak")}
+NOT_SHOWN = {f"{W_NS}{t}" for t in ("del", "moveFrom", "pPr")} | {MC_FALLBACK}
+IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif"}
+MAX_IMAGE = 600 * 1024          # one picture in the view
+MAX_IMAGES = 6 * 1024 * 1024    # all pictures in the view
+MAX_RUNS = 20000
+MAX_PART = 5000                 # characters in one piece of text
+MAX_TEXT = 300_000              # characters in all changes together
+SAFE_FONT = re.compile(r"^[A-Za-z0-9 ._-]{1,40}$")
+HEX = re.compile(r"^[0-9A-Fa-f]{6}$")
+
+
+def _containers(doc):
+    """Body, then every header and footer once (as iter_highlighted reads them)."""
+    out = [("body", doc.element.body, doc)]
+    seen = []
+    for s in doc.sections:
+        for attr, kind in (("first_page_header", "header"), ("header", "header"), ("even_page_header", "header"),
+                           ("first_page_footer", "footer"), ("footer", "footer"), ("even_page_footer", "footer")):
+            hf = getattr(s, attr)
+            if hf.is_linked_to_previous:
+                continue
+            el = hf._element
+            if any(el is x for x in seen):
+                continue
+            seen.append(el)
+            out.append((kind, el, hf))
+    return out
+
+
+def _numbered(doc):
+    """Every run and paragraph with its number (r0.., p0..) and the part it belongs to."""
+    runs, paras = [], []
+    for _kind, el, parent in _containers(doc):
+        runs += [(r, parent) for r in el.xpath('.//w:r[not(ancestor::*[local-name()="Fallback"])]')]
+        paras += [(p, parent) for p in el.xpath('.//w:p[not(ancestor::*[local-name()="Fallback"])]')]
+    return runs, paras
+
+
+def _editable(r_el):
+    if any(c.tag not in TEXT_ONLY for c in r_el):
+        return False
+    if any(b.get(f"{W_NS}type") not in (None, "textWrapping") for b in r_el.iter(f"{W_NS}br")):
+        return False                              # a page or column break: layout, not text
+    return r_el.find(f"{W_NS}t") is not None and not r_el.xpath("ancestor::w:del | ancestor::w:moveFrom")
+
+
+def _owner_run(el):
+    """The nearest run around an element (pictures are not python-docx elements: no xpath prefixes)."""
+    el = el.getparent()
+    while el is not None and el.tag != f"{W_NS}r":
+        el = el.getparent()
+    return el
+
+
+def _run_obj(r_el, parent):
+    from docx.text.paragraph import Paragraph
+    from docx.text.run import Run
+    p_els = r_el.xpath("ancestor::w:p[1]")
+    para = Paragraph(p_els[0], parent) if p_els else None
+    return Run(r_el, para if para is not None else parent), para
+
+
+def _chain(style):
+    while style is not None:
+        yield style
+        style = style.base_style
+
+
+def _effective(run, para, attr):
+    """Bold, italic or underline as Word shows it: the run, its character style, its paragraph style."""
+    v = getattr(run.font, attr)
+    if v is None:
+        try:
+            styles = list(_chain(run.style)) + (list(_chain(para.style)) if para is not None else [])
+        except Exception:
+            styles = []
+        v = next((getattr(s.font, attr) for s in styles if getattr(s.font, attr) is not None), None)
+    return bool(v)
+
+
+def _look(run, para):
+    """Font, size and colour for the view only (never written back)."""
+    try:
+        styles = list(_chain(run.style)) + (list(_chain(para.style)) if para is not None else [])
+    except Exception:
+        styles = []
+    fonts = [run.font] + [s.font for s in styles]
+    out = {}
+    size = next((f.size for f in fonts if f.size is not None), None)
+    if size is not None and 4 <= size.pt <= 96:
+        out["size"] = round(size.pt, 1)
+    name = next((f.name for f in fonts if f.name), None)
+    if name and SAFE_FONT.match(name):
+        out["font"] = name
+    for f in fonts:
+        try:
+            rgb = f.color.rgb if f.color is not None and f.color.type is not None else None
+        except Exception:
+            rgb = None
+        if rgb is not None and HEX.match(str(rgb)):
+            out["color"] = f"#{rgb}"
+            break
+    return out
+
+
+def _mm(twips):
+    try:
+        return round(int(twips) / 56.7, 1)
+    except (TypeError, ValueError):
+        return None
+
+
+class _View:
+    def __init__(self, doc):
+        from tmc_common import is_marked
+        self.is_marked = is_marked
+        self.runs, self.paras = _numbered(doc)
+        if len(self.runs) > MAX_RUNS:
+            sys.exit(f"refused: too many text pieces for the on-screen editor ({len(self.runs)})")
+        self.rid = {r: f"r{i}" for i, (r, _) in enumerate(self.runs)}
+        self.rparent = {r: parent for r, parent in self.runs}
+        self.pid = {p: f"p{i}" for i, (p, _) in enumerate(self.paras)}
+        self.pparent = {p: parent for p, parent in self.paras}
+        self.media, self.media_bytes, self.media_ids = {}, 0, {}
+        self.styles = doc.styles.element
+
+    def picture(self, part, rel_id, extent):
+        import base64
+        import hashlib
+        try:
+            target = part.related_parts[rel_id]
+        except (KeyError, AttributeError):
+            return None
+        if target.content_type not in IMAGE_TYPES or len(target.blob) > MAX_IMAGE:
+            return {"t": "img", "m": None, **extent}
+        digest = hashlib.sha256(target.blob).hexdigest()
+        if digest not in self.media_ids:
+            if self.media_bytes + len(target.blob) > MAX_IMAGES:
+                return {"t": "img", "m": None, **extent}
+            self.media_bytes += len(target.blob)
+            self.media_ids[digest] = f"m{len(self.media_ids)}"
+            self.media[self.media_ids[digest]] = f"data:{target.content_type};base64," + base64.b64encode(target.blob).decode()
+        return {"t": "img", "m": self.media_ids[digest], **extent}
+
+    def run_items(self, r_el):
+        run, para = _run_obj(r_el, self.rparent[r_el])
+        items = []
+        if r_el.find(f"{W_NS}instrText") is None:    # a field's code is not shown, only its result
+            fmt = {"b": _effective(run, para, "bold"), "i": _effective(run, para, "italic"),
+                   "u": _effective(run, para, "underline"), "hl": bool(self.is_marked(run)), **_look(run, para)}
+            text = run.text
+            if _editable(r_el):
+                items.append({"t": "r", "id": self.rid[r_el], "text": text, **fmt})
+            elif text:
+                items.append({"t": "r", "id": None, "text": text, **fmt})
+        part = self.rparent[r_el].part
+        # pictures and text boxes of this run itself (not of a run inside its text box)
+        for el in r_el.xpath('.//*[(local-name()="blip" or local-name()="imagedata" or local-name()="txbxContent")'
+                             ' and not(ancestor::*[local-name()="Fallback"])]'):
+            if _owner_run(el) is not r_el:
+                continue
+            if el.tag == f"{W_NS}txbxContent":
+                items.append({"t": "box", "blocks": self.blocks(el)})
+                continue
+            rel = el.get(R_EMBED) or el.get(R_ID)
+            ext = el.xpath('ancestor::*[local-name()="inline" or local-name()="anchor"][1]/*[local-name()="extent"]')
+            extent = {}
+            if ext:
+                try:
+                    extent = {"w": round(int(ext[0].get("cx")) / 36000, 1), "h": round(int(ext[0].get("cy")) / 36000, 1)}
+                except (TypeError, ValueError):
+                    pass
+            pic = self.picture(part, rel, extent) if rel else None
+            if pic:
+                items.append(pic)
+        return items
+
+    def para(self, p_el):
+        from docx.text.paragraph import Paragraph
+        items = []
+
+        def walk(el):
+            for c in el:
+                if c.tag in NOT_SHOWN:
+                    continue
+                if c.tag == f"{W_NS}r":
+                    items.extend(self.run_items(c))
+                elif c.tag != f"{W_NS}p":           # hyperlinks, fields, inserted text, content controls
+                    walk(c)
+
+        walk(p_el)
+        out = {"t": "p", "id": self.pid[p_el], "items": items}
+        para = Paragraph(p_el, self.pparent[p_el])
+        try:
+            fmt = [para.paragraph_format] + [s.paragraph_format for s in _chain(para.style)]
+        except Exception:
+            fmt = [para.paragraph_format]
+        align = next((f.alignment for f in fmt if f.alignment is not None), None)
+        if align is not None:
+            name = {0: "left", 1: "center", 2: "right", 3: "justify"}.get(int(align))
+            if name:
+                out["align"] = name
+        for key, attr in (("before", "space_before"), ("after", "space_after")):
+            v = next((getattr(f, attr) for f in fmt if getattr(f, attr) is not None), None)
+            if v is not None and 0 <= v.pt <= 200:
+                out[key] = round(v.pt, 1)
+        indent = next((f.left_indent for f in fmt if f.left_indent is not None), None)
+        if indent is not None and 0 < indent.mm < 200:
+            out["indent"] = round(indent.mm, 1)
+        if not any(i["t"] == "r" and i["id"] for i in items):
+            out["empty"] = True                     # text typed here is added at its end
+        return out
+
+    def borders(self, tbl):
+        """Does the table draw lines? Its own setting, else its table style (followed up)."""
+        def has(tblPr):
+            b = tblPr.find(f"{W_NS}tblBorders") if tblPr is not None else None
+            return None if b is None else any(e.get(f"{W_NS}val") not in ("nil", "none") for e in b)
+        found = has(tbl.find(f"{W_NS}tblPr"))
+        style = tbl.xpath("./w:tblPr/w:tblStyle/@w:val")
+        sid = style[0] if style else None
+        for _ in range(10):
+            if found is not None or not sid:
+                break
+            el = self.styles.xpath(f'./w:style[@w:styleId="{sid}"]') if re.fullmatch(r"[\w-]{1,60}", sid) else []
+            if not el:
+                break
+            found = has(el[0].find(f"{W_NS}tblPr"))
+            base = el[0].xpath("./w:basedOn/@w:val")
+            sid = base[0] if base else None
+        return bool(found)
+
+    def table(self, tbl):
+        cols = [_mm(g.get(f"{W_NS}w")) or 20 for g in tbl.xpath("./w:tblGrid/w:gridCol")]
+        rows, active = [], {}
+        for tr in tbl.xpath("./w:tr"):
+            row, col = [], 0
+            for tc in tr.xpath("./w:tc | ./w:sdt/w:sdtContent/w:tc"):
+                span = tc.xpath("./w:tcPr/w:gridSpan/@w:val")
+                span = int(span[0]) if span and span[0].isdigit() else 1
+                vm = tc.find(f"{W_NS}tcPr/{W_NS}vMerge")
+                if vm is not None and vm.get(f"{W_NS}val") != "restart" and col in active:
+                    active[col]["rowspan"] = active[col].get("rowspan", 1) + 1
+                    col += span
+                    continue
+                cell = {"blocks": self.blocks(tc)}
+                if span > 1:
+                    cell["span"] = span
+                fill = tc.xpath("./w:tcPr/w:shd/@w:fill")
+                if fill and HEX.match(fill[0]):
+                    cell["shade"] = f"#{fill[0]}"
+                if vm is not None:
+                    active[col] = cell
+                else:
+                    active.pop(col, None)
+                row.append(cell)
+                col += span
+            rows.append(row)
+        return {"t": "table", "cols": cols, "lines": self.borders(tbl), "rows": rows}
+
+    def blocks(self, el):
+        out = []
+        for c in el:
+            if c.tag == f"{W_NS}p":
+                out.append(self.para(c))
+            elif c.tag == f"{W_NS}tbl":
+                out.append(self.table(c))
+            elif c.tag in (f"{W_NS}sdt", f"{W_NS}sdtContent", f"{W_NS}customXml"):
+                out.extend(self.blocks(c))
+        return out
+
+
+def cmd_view(docx, out):
+    """The editor's view of a draft as JSON: page size, headers, body, footers, pictures."""
+    from docx import Document
+    doc = Document(str(docx))
+    v = _View(doc)
+    sect = doc.sections[0]
+    page = {"width": round(sect.page_width.mm, 1) if sect.page_width else 210}
+    for key in ("left_margin", "right_margin", "top_margin", "bottom_margin"):
+        m = getattr(sect, key)
+        page[key.split("_")[0]] = round(m.mm, 1) if m is not None else 20
+    parts = [{"kind": kind, "blocks": v.blocks(el)} for kind, el, _ in _containers(doc)]
+    order = {"header": 0, "body": 1, "footer": 2}
+    parts.sort(key=lambda p: order[p["kind"]])     # shown top to bottom; numbers do not change
+    Path(out).write_text(json.dumps({"v": 1, "page": page, "parts": parts, "media": v.media}, ensure_ascii=False),
+                         encoding="utf-8")
+
+
+def _parts(raw, where):
+    """The new pieces of one run or paragraph, checked: text and four on/off switches."""
+    if not isinstance(raw, list) or not 1 <= len(raw) <= 50:
+        sys.exit(f"refused: {where}: wrong list of pieces")
+    out = []
+    for p in raw:
+        if not isinstance(p, dict) or not isinstance(p.get("text"), str) or len(p["text"]) > MAX_PART:
+            sys.exit(f"refused: {where}: text missing or too long")
+        if any(ord(ch) < 32 and ch not in "\t\n" for ch in p["text"]):
+            sys.exit(f"refused: {where}: control characters")
+        if any(not isinstance(p.get(k), bool) for k in ("b", "i", "u", "hl")):
+            sys.exit(f"refused: {where}: formatting must be true or false")
+        out.append(p)
+    return out
+
+
+def _restyle(run, para, part, before):
+    """Sets bold, italic, underline and the yellow mark only where the person changed them."""
+    from tmc_common import clear_mark, mark_yellow
+    for key, attr in (("b", "bold"), ("i", "italic"), ("u", "underline")):
+        if part[key] != before[key]:
+            setattr(run.font, attr, part[key])
+    if part["hl"] != before["hl"]:
+        if part["hl"]:
+            mark_yellow(run)
+        else:
+            clear_mark(run)          # a person removed it on screen (BRIEF 7.2: never automatic)
+
+
+def cmd_edit(docx, edits_path, out):
+    """Writes the editor's changes into the draft: {runs: [{id, was, parts}], paras: [{id, parts}]}.
+    Refuses the whole set when anything does not fit; nothing is written then."""
+    import copy
+    from docx import Document
+    from tmc_common import is_marked
+    data = json.loads(Path(edits_path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("runs", []), list) or not isinstance(data.get("paras", []), list):
+        sys.exit("refused: unreadable changes")
+    run_edits, para_edits = data.get("runs", []), data.get("paras", [])
+    if len(run_edits) + len(para_edits) > 5000:
+        sys.exit("refused: too many changes")
+    doc = Document(str(docx))
+    runs, paras = _numbered(doc)
+    total, seen, jobs = 0, set(), []
+
+    for e in run_edits:
+        rid = e.get("id") if isinstance(e, dict) else None
+        m = re.fullmatch(r"r(\d{1,6})", rid or "")
+        if not m or rid in seen or int(m[1]) >= len(runs):
+            sys.exit(f"refused: unknown or repeated text piece {rid!r}")
+        seen.add(rid)
+        r_el, parent = runs[int(m[1])]
+        run, para = _run_obj(r_el, parent)
+        if not _editable(r_el):
+            sys.exit(f"refused: {rid} cannot be edited on screen")
+        if e.get("was") != run.text:
+            sys.exit(f"refused: {rid} does not match the draft; open the editor again")
+        parts = _parts(e.get("parts"), rid)
+        total += sum(len(p["text"]) for p in parts)
+        jobs.append(("run", r_el, parent, parts))
+
+    for e in para_edits:
+        pid = e.get("id") if isinstance(e, dict) else None
+        m = re.fullmatch(r"p(\d{1,6})", pid or "")
+        if not m or pid in seen or int(m[1]) >= len(paras):
+            sys.exit(f"refused: unknown or repeated paragraph {pid!r}")
+        seen.add(pid)
+        p_el, parent = paras[int(m[1])]
+        own = [r for r in p_el.xpath('.//w:r[not(ancestor::*[local-name()="Fallback"])]') if r.xpath("ancestor::w:p[1]")[0] is p_el]
+        if any(_editable(r) for r in own):
+            sys.exit(f"refused: {pid} has text of its own; change that text instead")
+        parts = _parts(e.get("parts"), pid)
+        total += sum(len(p["text"]) for p in parts)
+        jobs.append(("para", p_el, parent, parts))
+    if total > MAX_TEXT:
+        sys.exit("refused: the changes are too long")
+
+    for what, el, parent, parts in jobs:
+        if what == "run":
+            run, para = _run_obj(el, parent)
+            before = {"b": _effective(run, para, "bold"), "i": _effective(run, para, "italic"),
+                      "u": _effective(run, para, "underline"), "hl": bool(is_marked(run))}
+            template, prev = copy.deepcopy(el), el
+            for k, part in enumerate(parts):
+                r_el = el
+                if k:
+                    r_el = copy.deepcopy(template)   # same font, size and colour as the original piece
+                    prev.addnext(r_el)
+                r, _ = _run_obj(r_el, parent)
+                if r.text != part["text"]:
+                    r.text = part["text"]
+                _restyle(r, para, part, before)
+                prev = r_el
+        else:
+            from docx.text.paragraph import Paragraph
+            para = Paragraph(el, parent)
+            mark = el.find(f"{W_NS}pPr/{W_NS}rPr")
+            for part in parts:
+                r = para.add_run(part["text"])
+                if mark is not None:                 # the paragraph's own letter, without marks or tracking
+                    rPr = r._r.get_or_add_rPr()
+                    for c in mark:
+                        if c.tag not in (f"{W_NS}highlight", f"{W_NS}shd", f"{W_NS}ins", f"{W_NS}del",
+                                         f"{W_NS}rPrChange", f"{W_NS}moveFrom", f"{W_NS}moveTo"):
+                            rPr.append(copy.deepcopy(c))
+                before = {"b": _effective(r, para, "bold"), "i": _effective(r, para, "italic"),
+                          "u": _effective(r, para, "underline"), "hl": bool(is_marked(r))}
+                _restyle(r, para, part, before)
+    doc.save(str(out))
+
+
 def cmd_preview(docx, out, engine_scripts):
     sys.path.insert(0, str(engine_scripts))
     from tmc_common import render_pdf          # the engine's own Word -> PDF
@@ -316,7 +733,7 @@ def cmd_preview(docx, out, engine_scripts):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", required=True, help="engine folder (contains scripts/)")
-    ap.add_argument("command", choices=["list", "apply", "preview", "check", "changes"])
+    ap.add_argument("command", choices=["list", "apply", "preview", "check", "changes", "view", "edit"])
     ap.add_argument("paths", nargs="+")
     a = ap.parse_args()
     scripts = Path(a.engine) / "scripts"
@@ -329,6 +746,10 @@ def main():
         cmd_preview(a.paths[0], a.paths[1], scripts)
     elif a.command == "changes" and len(a.paths) == 3:
         cmd_changes(a.paths[0], a.paths[1], a.paths[2])
+    elif a.command == "view" and len(a.paths) == 2:
+        cmd_view(a.paths[0], a.paths[1])
+    elif a.command == "edit" and len(a.paths) == 3:
+        cmd_edit(*a.paths)
     elif a.command == "check" and len(a.paths) in (2, 3):
         cmd_check(a.paths[0], a.paths[1], scripts, a.paths[2] if len(a.paths) == 3 else None)
     else:
