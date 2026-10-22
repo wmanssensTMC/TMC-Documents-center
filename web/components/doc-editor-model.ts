@@ -2,7 +2,7 @@
 // (web/worker/yellow.py view), how it is cut into editable pieces, and how the edited pieces
 // are read back into the short list of changes the worker writes into the Word file.
 // No browser APIs here, so it can be tested on its own.
-import type { Edits, Piece } from "@/lib/documents/edits";
+import { cleanDocText, type Edits, type Piece } from "@/lib/documents/edits";
 
 export type Fmt = { b: boolean; i: boolean; u: boolean; hl: boolean; size?: number; font?: string; color?: string };
 export type RunItem = { t: "r"; id: string | null; text: string } & Fmt;
@@ -26,6 +26,10 @@ export function parseView(raw: unknown): View {
   }
   return v;
 }
+
+/** A size from the view, only when it is a plain number in a sensible range (review L3). */
+export const dim = (x: unknown, max = 1000): number | undefined =>
+  typeof x === "number" && Number.isFinite(x) && x > 0 && x < max ? x : undefined;
 
 /** Only pictures as data of a plain image type are shown. */
 export function safeImage(src: unknown): string | null {
@@ -155,7 +159,7 @@ function ownerAt(node: DomLike, root: DomLike): string | null {
   return null;
 }
 
-const clean = (s: string) => s.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f\u2028\u2029\p{Cf}]/gu, "");
+const clean = cleanDocText;
 
 /**
  * The text of one edited group, piece by piece, with the run each piece belongs to. Text the

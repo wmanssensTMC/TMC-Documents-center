@@ -1,9 +1,10 @@
 import type { NextConfig } from "next";
 
 // The browser may only talk to this app and the file store (review F4, editor 20/10): the
-// document editor runs in the page and must never send a document anywhere else. Production
-// only; the development server needs its own live-reload connection.
-const CONNECT = "connect-src 'self' blob: data: https://vercel.com https://*.vercel-storage.com";
+// document editor runs in the page and must never send a document anywhere else (own editor:
+// no blob: or data: needed, review L2). Production only; the development server needs its own
+// live-reload connection.
+const CONNECT = "connect-src 'self' https://vercel.com https://*.vercel-storage.com";
 const CSP = process.env.NODE_ENV === "production" ? `frame-ancestors 'self'; ${CONNECT}` : "frame-ancestors 'self'";
 
 // Cache Components is off on purpose: every page here is per-user (login cookie),

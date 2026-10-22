@@ -4,8 +4,18 @@
 // layout cannot break. Checked here and again in the worker.
 import { z } from "zod";
 
-/** Line breaks and tabs are text; other control characters, invisible format characters and line separators are not (review I1). */
-export const SAFE_DOC_TEXT = (s: string) => !/[\u0000-\u0008\u000b-\u001f\u007f\u2028\u2029\p{Cf}]/u.test(s);
+// Line breaks and tabs are text. Other control characters, invisible format characters, line
+// separators and characters that show nothing (variation selectors, fillers) are not: they
+// could split a supplier name so the check does not see it (reviews I1, M1). The worker
+// refuses the same set (web/worker/yellow.py invisible).
+const INVISIBLE = "(?![\\t\\n])[\\p{Cc}\\p{Cf}\\u2028\\u2029\\u034f\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u3164\\ufe00-\\ufe0f\\uffa0\\u{e0100}-\\u{e01ef}]";
+const INVISIBLE_ONE = new RegExp(INVISIBLE, "u");
+const INVISIBLE_ALL = new RegExp(INVISIBLE, "gu");
+
+export const SAFE_DOC_TEXT = (s: string) => !INVISIBLE_ONE.test(s);
+
+/** Text as the editor keeps it: Windows line ends made plain, invisible characters dropped. */
+export const cleanDocText = (s: string) => s.replace(/\r\n?/g, "\n").replace(INVISIBLE_ALL, "");
 
 const piece = z.object({
   text: z.string().max(5000).refine(SAFE_DOC_TEXT, "contains control characters"),

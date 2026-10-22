@@ -239,7 +239,8 @@ export async function makeFinal(
       approvedBy: actor.email,
       approvedAt: now,
       yellowParts: [],
-      previewKey: null, // the DRAFT preview is no longer shown (review L6)
+      previewKey: null, // the DRAFT preview and the editor view are no longer shown (review L6, H1)
+      viewKey: null,
     })
     .where(and(eq(documents.id, doc.id), eq(documents.status, "To check")))
     .returning({ id: documents.id });
@@ -287,7 +288,7 @@ export async function rejectDraft(db: Db, actor: Actor, documentId: string, rawR
   if (await openFinaliseJob(db, documentId)) throw new CheckError("this document is being finalised");
   await db.transaction(async (tx) => {
     const doc = await loadDraft(tx, documentId);
-    await tx.update(documents).set({ status: "Rejected", rejectedReason: reason.data, previewKey: null }).where(eq(documents.id, doc.id));
+    await tx.update(documents).set({ status: "Rejected", rejectedReason: reason.data, previewKey: null, viewKey: null }).where(eq(documents.id, doc.id));
     await tx.insert(feedback).values({ actor: actor.email, documentId: doc.id, kind: "rejected", reason: reason.data });
     await logAudit(tx, actor, "document.rejected", doc.id, { reason: reason.data });
     await closeNeutraliseJobIfDone(tx, doc.jobId);

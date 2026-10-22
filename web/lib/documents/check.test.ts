@@ -6,6 +6,7 @@ import { documents, feedback, jobs } from "../db/schema";
 import { newUploadKey } from "../files";
 import type { Storage } from "../storage";
 import { CHANGES_MARK } from "./changes";
+import { cleanDocText, SAFE_DOC_TEXT } from "./edits";
 import { approveDraft, CheckError, finalName, makeFinal, rejectDraft, ReplaceConfirmError, requestFinalise, shownValues } from "./check";
 
 const kars: Actor = { email: "kars@transmare.com", name: "Kars", role: "user" };
@@ -218,6 +219,22 @@ describe("file name follows the details (Willem 19/10)", () => {
     const files = { pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf", docxKey: newUploadKey("docx"), docxFilename: "x.docx" };
     await db.transaction(async (tx) => makeFinal(tx, kars, d, files, meta));
     expect((await db.select().from(documents))[0].name).toBe("TMC_COA_840.S0999_Sodium_Benzoate_SB-1");
+  });
+
+  it("the editor view of the draft is no longer served once it is Final or rejected (review H1)", async () => {
+    const d = await draft({ yellowParts: [], viewKey: newUploadKey("view"), previewKey: newUploadKey("preview") });
+    const files = { pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf", docxKey: newUploadKey("docx"), docxFilename: "x.docx" };
+    await db.transaction(async (tx) => makeFinal(tx, kars, d, files, meta));
+    expect((await db.select().from(documents))[0]).toMatchObject({ viewKey: null, previewKey: null });
+    const r = await draft({ name: "TMC_COA_840.S0999_Sodium_Benzoate_SB-2", batch: "SB-2", viewKey: newUploadKey("view") });
+    await rejectDraft(db, kars, r.id, "wrong supplier document");
+    expect((await db.select().from(documents).where(eq(documents.id, r.id)))[0].viewKey).toBeNull();
+  });
+
+  it("the editor's text check refuses invisible characters that could split a supplier name (review M1)", () => {
+    for (const bad of ["BA\ufe0fSF", "BA\u0085SF", "BA\u202eSF", "BA\u200bSF", "BA\u3164SF", "BA\u{e0100}SF"]) expect(SAFE_DOC_TEXT(bad)).toBe(false);
+    expect(SAFE_DOC_TEXT("Assay\t99.6 %\nsecond line")).toBe(true);
+    expect(cleanDocText("BA\ufe0fSF\r\nnext")).toBe("BASF\nnext");
   });
 
   it("the values in the name must be printed: COA all three, MSDS/TDS the product", () => {

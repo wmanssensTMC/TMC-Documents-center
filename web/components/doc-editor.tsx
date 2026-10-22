@@ -7,10 +7,11 @@
 // TMC layout cannot break. The editor sits behind this one component, so it can be swapped (for
 // example for Word for the web in phase 4) without touching the pages.
 import { memo, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
-import type { Edits, Piece } from "@/lib/documents/edits";
+import { cleanDocText, type Edits, type Piece } from "@/lib/documents/edits";
 import {
   allGroups,
   collectEdits,
+  dim,
   parseView,
   readGroup,
   safeColor,
@@ -187,8 +188,8 @@ const Page = memo(function Page({ view, pending }: { view: View; pending: Edits 
     <div
       className="mx-auto bg-white shadow"
       style={{
-        width: `${page.width}mm`,
-        padding: `${page.top / 2}mm ${page.right}mm ${page.bottom / 2}mm ${page.left}mm`,
+        width: `${dim(page.width) ?? 210}mm`,
+        padding: `${(dim(page.top) ?? 20) / 2}mm ${dim(page.right) ?? 20}mm ${(dim(page.bottom) ?? 20) / 2}mm ${dim(page.left) ?? 20}mm`,
         fontFamily: "Arial, Helvetica, sans-serif",
         fontSize: "10pt",
         color: "#000",
@@ -223,9 +224,9 @@ function Paragraph({ p, ctx }: { p: Para; ctx: Ctx }) {
     <div
       style={{
         textAlign: p.align ? ALIGN[p.align] : undefined,
-        marginTop: p.before ? `${p.before}pt` : undefined,
-        marginBottom: p.after ? `${p.after}pt` : undefined,
-        paddingLeft: p.indent ? `${p.indent}mm` : undefined,
+        marginTop: dim(p.before) ? `${dim(p.before)}pt` : undefined,
+        marginBottom: dim(p.after) ? `${dim(p.after)}pt` : undefined,
+        paddingLeft: dim(p.indent) ? `${dim(p.indent)}mm` : undefined,
         whiteSpace: "pre-wrap",
         minHeight: "1.2em",
       }}
@@ -262,13 +263,13 @@ function pieceStyle(run: RunItem | null, pc: Piece): CSSProperties {
     fontStyle: pc.i ? "italic" : "normal",
     textDecorationLine: pc.u ? "underline" : "none",
     backgroundColor: pc.hl ? "#ffff00" : undefined,
-    fontSize: run?.size ? `${run.size}pt` : undefined,
+    fontSize: dim(run?.size, 100) ? `${dim(run?.size, 100)}pt` : undefined,
     fontFamily: font ? `"${font}", Arial, sans-serif` : undefined,
     color: safeColor(run?.color),
   };
 }
 
-const clean = (s: string) => s.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f\u2028\u2029\p{Cf}]/gu, "");
+const clean = cleanDocText;
 
 /**
  * Types text over the selection. When the selection lies inside one piece of text, the new text
@@ -350,7 +351,7 @@ function Fixed({ item, ctx }: { item: Item; ctx: Ctx }) {
       </div>
     );
   const src = item.m ? safeImage(ctx.media[item.m]) : null;
-  const size: CSSProperties = { width: item.w ? `${item.w}mm` : undefined, height: item.h ? `${item.h}mm` : undefined };
+  const size: CSSProperties = { width: dim(item.w) ? `${dim(item.w)}mm` : undefined, height: dim(item.h) ? `${dim(item.h)}mm` : undefined };
   return src ? (
     // eslint-disable-next-line @next/next/no-img-element -- a picture of the document itself, from the view
     <img src={src} alt="" className="inline-block align-middle" style={{ ...size, maxWidth: "100%" }} />
@@ -362,11 +363,12 @@ function Fixed({ item, ctx }: { item: Item; ctx: Ctx }) {
 }
 
 function TableView({ t, ctx }: { t: Table; ctx: Ctx }) {
-  const width = t.cols.reduce((a, b) => a + b, 0);
+  const cols = (Array.isArray(t.cols) ? t.cols : []).map((c) => dim(c) ?? 20);
+  const width = cols.reduce((a, b) => a + b, 0);
   return (
     <table style={{ borderCollapse: "collapse", tableLayout: "fixed", width: width ? `${width}mm` : "100%" }}>
       <colgroup>
-        {t.cols.map((c, k) => (
+        {cols.map((c, k) => (
           <col key={k} style={{ width: `${c}mm` }} />
         ))}
       </colgroup>
@@ -376,8 +378,8 @@ function TableView({ t, ctx }: { t: Table; ctx: Ctx }) {
             {row.map((cell, c) => (
               <td
                 key={c}
-                colSpan={cell.span}
-                rowSpan={cell.rowspan}
+                colSpan={dim(cell.span, 64)}
+                rowSpan={dim(cell.rowspan, 1000)}
                 style={{
                   border: t.lines ? "1px solid #444" : "1px dotted #d1d5db",
                   background: safeColor(cell.shade),

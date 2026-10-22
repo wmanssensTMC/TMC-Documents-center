@@ -18,6 +18,8 @@ export async function GET(req: Request, ctx: RouteContext<"/api/files/[id]/[kind
   const doc = await getDocument(db, id);
   const key = doc && { pdf: doc.pdfKey, docx: doc.docxKey, source: doc.sourceKey, preview: doc.previewKey, view: doc.viewKey }[kind];
   if (!doc || !key) return new Response("Not found", { status: 404 });
+  // The DRAFT preview and the editor view show the draft before the check: only while it waits (review H1).
+  if ((kind === "preview" || kind === "view") && doc.status !== "To check") return new Response("Not found", { status: 404 });
 
   const storage = getStorage();
   const head = await storage.head(key, 8);

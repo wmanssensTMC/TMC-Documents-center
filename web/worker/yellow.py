@@ -56,7 +56,7 @@ def cmd_apply(docx, fixes_path, out):
             print(f"y{i}: too long for the on-screen check; check it in Word", file=sys.stderr)
             sys.exit(1)
         value = str(fix.get("value", ""))
-        if any(ord(ch) < 32 for ch in value) or len(value) > 500:
+        if any(ord(ch) < 32 or invisible(ch) for ch in value) or len(value) > 500:
             print(f"y{i}: value refused", file=sys.stderr)
             sys.exit(1)
         if value != r.text:          # "OK as is" never touches the text (review M1)
@@ -589,6 +589,21 @@ def cmd_view(docx, out):
                          encoding="utf-8")
 
 
+SHOWS_NOTHING = {0x034F, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x3164, 0xFFA0}
+
+
+def invisible(ch):
+    """Control, format and other characters that show nothing (tab and line break excepted):
+    they could split a supplier name so the check misses it (review M1; same set as
+    web/lib/documents/edits.ts)."""
+    import unicodedata
+    o = ord(ch)
+    if ch in "\t\n":
+        return False
+    return (unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") or o in SHOWS_NOTHING
+            or 0x180B <= o <= 0x180F or 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF)
+
+
 def _parts(raw, where):
     """The new pieces of one run or paragraph, checked: text and four on/off switches."""
     if not isinstance(raw, list) or not 1 <= len(raw) <= 50:
@@ -597,8 +612,8 @@ def _parts(raw, where):
     for p in raw:
         if not isinstance(p, dict) or not isinstance(p.get("text"), str) or len(p["text"]) > MAX_PART:
             sys.exit(f"refused: {where}: text missing or too long")
-        if any(ord(ch) < 32 and ch not in "\t\n" for ch in p["text"]):
-            sys.exit(f"refused: {where}: control characters")
+        if any(invisible(ch) for ch in p["text"]):
+            sys.exit(f"refused: {where}: control or invisible characters")
         if any(not isinstance(p.get(k), bool) for k in ("b", "i", "u", "hl")):
             sys.exit(f"refused: {where}: formatting must be true or false")
         out.append(p)
