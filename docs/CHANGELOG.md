@@ -1,5 +1,14 @@
 # Changelog
 
+## 22/10/2026 · Editor: tables, letter size, alignment; layout check at Final (branch `phase-2j-editor-layout`, not merged; security gate PASS 90/100)
+- Tables in the on-screen editor (Willem 22/10): add a row above or below, delete a row, add a column left or right, delete a column, undo. A new row or column copies the look of its neighbour (no text, no yellow) and the table keeps its width on the page. Tables with cells merged down over several rows: change them in Word.
+- A deleted row or column always comes back as a warning with its text, so nothing from the supplier original is left out unnoticed.
+- Bigger and smaller letters (A+ and A-) for the selected text; a paragraph can be aligned left, centre or right. The TMC header and footer keep their layout (their text may still change).
+- Layout check at Final, also on Approve: Final is refused when text lies over the TMC letterhead (banner, address bar, stamp), runs off the page, or a word or number of the Word file does not show in the PDF (cut off). Page numbers on the address bar are fine.
+- Long product names on the MSDS: fixed in the engine by MSDS round 2 (name 16 to 11 pt, page text moves down). The TDS title is in the body and wraps.
+- Security review fixes (90/100): new-word warnings come before deleted rows; the cut-off check counts words and numbers; no rows, columns or alignment in the header or footer; new cells copy no yellow, hidden text or tracked changes; limits on table changes. Open, Low: text emptied before its row is deleted gives no extra warning; label templates not yet run through the layout check.
+- Tests: `web/worker/test_yellow.py` (rows, columns, size, alignment, layout), `web/components/doc-editor-model.test.ts` (table grid same as the worker). Tried in the browser on a sample draft (test data).
+
 ## 22/10/2026 · MSDS round 2 on the real MSDS (branch `phase-2i-msds2`, merged 22/10; security gate PASS 90/100)
 - Section numbers written with a space ("1 .3") are found; the whole of 1.4 becomes TMC's emergency number: only lines with a phone number or e-mail go, other lines stay; no 1.4 found = refused for a person; a long 1.4 is kept and marked yellow.
 - The supplier's company name is taken without its label ("Company name X"), so it is also found in the disclaimer.

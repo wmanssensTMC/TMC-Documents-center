@@ -71,9 +71,11 @@ export function EditSection(p: Props) {
         )}
       </div>
       <p className="mt-1 text-sm text-gray-600">
-        Click in any text to change it; Enter starts a new line. Select text for bold, italic or underline. Check every
-        yellow part and remove its yellow: nothing yellow can become Final. Tables, pictures and the TMC layout stay as
-        they are. When you save, the neutralizer checks the document again and makes the Word file and the PDF.
+        Click in any text to change it; Enter starts a new line. Select text for bold, italic, underline or bigger and
+        smaller letters; click in a paragraph to align it; click in a table cell to add or delete rows and columns.
+        Check every yellow part and remove its yellow: nothing yellow can become Final. When you save, the neutralizer
+        checks the document again, also its layout (nothing over the TMC letterhead, nothing cut off), and makes the
+        Word file and the PDF.
       </p>
 
       {warnings.length > 0 && (

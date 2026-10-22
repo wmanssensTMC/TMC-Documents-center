@@ -292,6 +292,119 @@ with tempfile.TemporaryDirectory() as d:
     rc, _, err = edit({"runs": [], "paras": []})
     check("edit: no changes keeps every yellow part", rc == 0 and sorted(yellow_runs(d / "ed_out.docx")) == ["99.6", "PRODUCTNAME"], err)
 
+    # ---- rows, columns, alignment and letter size (Willem 22/10) ----
+    body_tables = [b for b in v["parts"][1]["blocks"] if b["t"] == "table"]
+    tb = body_tables[0]
+    check("view: a table has its number and may get rows and columns (merged across only)", tb["id"] == "t0" and tb["plain"] is True, str(tb)[:200])
+
+    def edit_out(edits):
+        rc, out, err = edit(edits)
+        return rc, (json.loads(out) if rc == 0 and out.strip() else []), err
+
+    def widths(t):
+        return [int(g.get(f"{{{W}}}w")) for g in t._tbl.xpath("./w:tblGrid/w:gridCol")]
+
+    before_w = sum(widths(Document(str(d / "ed.docx")).tables[0]))
+    rc, notes, err = edit_out({"runs": [], "paras": [], "tables": [{"id": "t0", "ops": [
+        {"op": "addRow", "at": 1, "from": 0, "ids": ["n0", "n1"]},
+        {"op": "addCol", "at": 1, "ids": ["n2", "n3", None]},
+    ]}], "cells": [{"id": "n0", "parts": [piece("Density")]}, {"id": "n2", "parts": [piece("Method", b=True)]}]})
+    out = Document(str(d / "ed_out.docx")) if rc == 0 else None
+    if out is not None:
+        t0 = out.tables[0]
+        rows = [[c.text for c in r.cells] for r in t0.rows]
+        check("table: a new row and a new column, with the text typed in them", len(t0.rows) == 3 and rows[1][0] == "Density" and rows[0][1] == "Method", str(rows))
+        check("table: the merged row grows with the new column instead of getting a cell", len(t0.rows[2]._tr.xpath("./w:tc")) == 1, str(rows))
+        check("table: the table keeps its width on the page", abs(sum(widths(t0)) - before_w) <= 1, f"{widths(t0)} vs {before_w}")
+        check("table: a new cell has no yellow", "Density" not in yellow_runs(d / "ed_out.docx"))
+        check("table: new cell text keeps the bold that was asked for", any(r.bold for r in t0.rows[0].cells[1].paragraphs[0].runs))
+    else:
+        check("table: rows and columns added", False, err)
+    rc, _, err = edit({"runs": [], "paras": [], "tables": [{"id": "t0", "ops": [{"op": "addCol", "at": 1, "ids": ["n2", "n3", "n4"]}]}]})
+    check("table: refused when the new cells do not match the table", rc == 1, err)
+    rc, notes, err = edit_out({"runs": [], "paras": [], "tables": [{"id": "t0", "ops": [{"op": "delRow", "at": 0}]}]})
+    check("table: a deleted row is a warning with its text (nothing left out unnoticed)",
+          rc == 0 and notes and "Assay" in notes[0]["before"] and "deleted" in notes[0]["unknown"][0], err + str(notes))
+    rc, notes, err = edit_out({"runs": [], "paras": [], "tables": [{"id": "t0", "ops": [{"op": "delCol", "at": 1}]}]})
+    out = Document(str(d / "ed_out.docx")) if rc == 0 else None
+    check("table: a deleted column; the merged row keeps one cell", out is not None and len(out.tables[0].columns) == 1
+          and notes and "99.6" in notes[0]["before"], err + str(notes))
+    rc, _, err = edit({"runs": [], "paras": [], "tables": [{"id": "t0", "ops": [{"op": "delCol", "at": 0}, {"op": "delCol", "at": 0}]}]})
+    check("table: the last column cannot be deleted", rc == 1, err)
+    merged = Document(); mt = merged.add_table(rows=2, cols=2); mt.cell(0, 0).merge(mt.cell(1, 0)); mt.cell(0, 1).text = "x"
+    merged.save(d / "merged.docx")
+    mv, _ = view_of(d / "merged.docx")
+    check("view: a table with cells merged down is not offered for rows and columns",
+          mv and [b for part in mv["parts"] for b in part["blocks"] if b["t"] == "table"][0]["plain"] is False)
+    (d / "edits.json").write_text(json.dumps({"runs": [], "paras": [], "tables": [{"id": "t0", "ops": [{"op": "delRow", "at": 0}]}]}))
+    rc, _, err = run("edit", d / "merged.docx", d / "edits.json", d / "merged_out.docx")
+    check("table: refused in a table with cells merged down", rc == 1 and "merged" in err, err)
+
+    title_id = next(p["id"] for p in paras if any(i.get("text") == "Product: " for i in p["items"]))
+    rc, _, err = edit({"runs": [{"id": runs["Product: "]["id"], "was": "Product: ", "parts": [{**piece("Product: "), "size": 14}]}], "paras": [],
+                       "layout": [{"id": title_id, "align": "center"}]})
+    out = Document(str(d / "ed_out.docx")) if rc == 0 else None
+    check("layout: alignment and letter size written in", out is not None and out.paragraphs[0].alignment == 1
+          and out.paragraphs[0].runs[0].font.size == Pt(14), err)
+    rc, _, err = edit({"runs": [{"id": runs["Product: "]["id"], "was": "Product: ", "parts": [{**piece("Product: "), "size": 500}]}], "paras": []})
+    check("layout: an impossible letter size is refused", rc == 1, err)
+    rc, _, err = edit({"runs": [], "paras": [], "layout": [{"id": title_id, "align": "diagonal"}]})
+    check("layout: an unknown alignment is refused", rc == 1, err)
+
+    # ---- layout check on the PDF (Willem 22/10): letterhead clear, nothing cut off ----
+    from reportlab.lib.pagesizes import A4
+    logo = ENGINE / "assets" / "logo.png"
+    word = Document(); word.add_paragraph("Safety Data Sheet Sodium Benzoate"); word.save(d / "lay.docx")
+
+    def sheet(name, title_y, title="Safety Data Sheet Sodium Benzoate", footer_text="Page 1 of 1"):
+        c = pdfcanvas.Canvas(str(d / name), pagesize=A4)
+        w, h = A4
+        c.drawImage(str(logo), 0, h - 75, width=w, height=75)        # banner at the top
+        c.drawImage(str(logo), 40, 10, width=w - 80, height=40)       # address bar at the bottom
+        c.setFont("Helvetica", 12)
+        if title:
+            c.drawString(60, title_y, title)
+        c.drawString(w / 2 - 30, 25, footer_text)                     # the page number may sit there
+        c.save()
+
+    sheet("ok.pdf", A4[1] - 120)
+    rc, _, err = run("layout", d / "ok.pdf", d / "lay.docx")
+    check("layout: a clean page passes (page number on the address bar is fine)", rc == 0, err)
+    sheet("over.pdf", A4[1] - 40)
+    rc, _, err = run("layout", d / "over.pdf", d / "lay.docx")
+    check("layout: text over the TMC banner is refused", rc == 1 and "letterhead" in err, err)
+    sheet("cut.pdf", A4[1] - 120, title="Safety Data Sheet Sodium")
+    rc, _, err = run("layout", d / "cut.pdf", d / "lay.docx")
+    check("layout: a product name cut off in the PDF is refused", rc == 1 and "benzoate" in err, err)
+    vals = Document(); vals.add_paragraph("Assay 99.6 Loss on drying 0.4"); vals.add_paragraph("Water 0.4")
+    vals.save(d / "vals.docx")
+    sheet("vals.pdf", A4[1] - 120, title="Assay 99.6 Loss on drying 0.4")   # the second 0.4 is cut off
+    rc, _, err = run("layout", d / "vals.pdf", d / "vals.docx")
+    check("layout: a cut-off value is refused, also when the same number is printed elsewhere (review M2)",
+          rc == 1 and "water" in err, err)
+    fld = Document(); fp = fld.add_paragraph("Safety Data Sheet Sodium Benzoate ")
+    fp._p.append(parse_xml(f'<w:fldSimple xmlns:w="{W}" w:instr="NUMPAGES"><w:r><w:t>17</w:t></w:r></w:fldSimple>'))
+    fld.save(d / "fld.docx")
+    rc, _, err = run("layout", d / "ok.pdf", d / "fld.docx")
+    check("layout: a page-number field's old value is not taken for cut-off text", rc == 0, err)
+
+    # rows, columns and alignment never in the TMC header or footer (review M3)
+    hdr = Document(); ht = hdr.sections[0].header.add_table(rows=1, cols=2, width=Pt(300)); ht.cell(0, 0).text = "TMC"
+    hdr.add_paragraph("Body text"); hdr.save(d / "hdr.docx")
+    hv, _ = view_of(d / "hdr.docx")
+    head_tables = [b for part in hv["parts"] if part["kind"] == "header" for b in part["blocks"] if b["t"] == "table"]
+    check("view: a table in the header is not offered for rows and columns", head_tables and head_tables[0]["plain"] is False, str(head_tables)[:200])
+    (d / "edits.json").write_text(json.dumps({"runs": [], "paras": [], "tables": [{"id": head_tables[0]["id"], "ops": [{"op": "delRow", "at": 0}]}]}))
+    rc, _, err = run("edit", d / "hdr.docx", d / "edits.json", d / "hdr_out.docx")
+    check("table: refused in the TMC header", rc == 1 and "header" in err, err)
+    head_p = next(p["id"] for part in hv["parts"] if part["kind"] == "header" for p in flat(part["blocks"], []))
+    (d / "edits.json").write_text(json.dumps({"runs": [], "paras": [], "layout": [{"id": head_p, "align": "right"}]}))
+    rc, _, err = run("edit", d / "hdr.docx", d / "edits.json", d / "hdr_out.docx")
+    check("layout: alignment refused in the TMC header", rc == 1 and "header" in err, err)
+    (d / "edits.json").write_text(json.dumps({"runs": [{"id": 5, "was": "", "parts": []}], "paras": []}))
+    rc, _, err = run("edit", d / "hdr.docx", d / "edits.json", d / "hdr_out.docx")
+    check("edit: an id that is not text is refused without a crash (review L5)", rc == 1 and "Traceback" not in err, err)
+
     (d / "zip.docx").write_bytes(b"PK\x03\x04 not really a zip")
     rc, _, err = run("check", d / "zip.docx", d / "forbid.json")
     check("check: refused when it is not a real Word file", rc == 1, err)

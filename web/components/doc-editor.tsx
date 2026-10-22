@@ -6,13 +6,19 @@
 // Only the changed pieces go back, and the worker writes them into its own Word file, so the
 // TMC layout cannot break. The editor sits behind this one component, so it can be swapped (for
 // example for Word for the web in phase 4) without touching the pages.
-import { memo, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
-import { cleanDocText, type Edits, type Piece } from "@/lib/documents/edits";
+import { createContext, memo, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState, type CSSProperties, type ReactNode, type Ref } from "react";
+import { ALIGNS, cleanDocText, type Edits, type Piece, type TableOp } from "@/lib/documents/edits";
 import {
+  addColPlan,
   allGroups,
+  allTables,
+  applyOp,
+  baseGrid,
+  cellPieces,
   collectEdits,
   dim,
   parseView,
+  pointsOf,
   readGroup,
   safeColor,
   safeFont,
@@ -21,7 +27,9 @@ import {
   startParaPieces,
   startPieces,
   type Block,
+  type Cell,
   type DomLike,
+  type Grid,
   type Item,
   type Para,
   type RunItem,
@@ -85,23 +93,121 @@ export function DocEditor({ src, pending, onState, ref }: Props) {
   }, []);
 
   const groups = useMemo(() => (view ? allGroups(view) : new Map<string, never>()), [view]);
+  const tablesById = useMemo(() => (view ? allTables(view) : new Map<string, Table>()), [view]);
+
+  // Rows and columns (Willem 22/10): the changes are kept here, in order, and drawn by each table.
+  const [tableOps, setTableOps] = useState<Record<string, TableOp[]>>(() =>
+    Object.fromEntries((pending?.tables ?? []).map((t) => [t.id, t.ops])),
+  );
+  const history = useRef<string[]>([]);
+  const nextNew = useRef(
+    1 + Math.max(-1, ...(pending?.tables ?? []).flatMap((t) => t.ops.flatMap((o) => ("ids" in o ? o.ids : []))).map((i) => Number(i?.slice(1) ?? -1))),
+  );
+  const [notice, setNotice] = useState("");
 
   useImperativeHandle(
     ref,
     () => ({
       getEdits: () => {
         const read = new Map<string, ReturnType<typeof readGroup>>();
+        const cells: Edits["cells"] = [];
         host.current?.querySelectorAll<HTMLElement>("[data-g]").forEach((el) => {
           const key = el.dataset.g ?? "";
+          if (key.startsWith("new:")) {
+            const parts = cellPieces(readGroup(el as unknown as DomLike, []));
+            if (parts.length) cells.push({ id: key.slice(4), parts });
+            return;
+          }
           const g = groups.get(key);
           if (g) read.set(key, readGroup(el as unknown as DomLike, g.runs.map((r: RunItem) => r.id!)));
         });
+        const layout: Edits["layout"] = [];
+        host.current?.querySelectorAll<HTMLElement>("[data-p]").forEach((el) => {
+          const now = el.style.textAlign;
+          if (now && now !== (el.dataset.align ?? "") && (ALIGNS as readonly string[]).includes(now)) {
+            layout.push({ id: el.dataset.p!, align: now as (typeof ALIGNS)[number] });
+          }
+        });
+        const tables = Object.entries(tableOps)
+          .filter(([, ops]) => ops.length)
+          .map(([id, ops]) => ({ id, ops }));
         dirty.current = false;
-        return collectEdits(groups, read);
+        return { ...collectEdits(groups, read), layout, tables, cells };
       },
     }),
-    [groups],
+    [groups, tableOps],
   );
+
+  /** The paragraph or table cell the cursor is in. */
+  function at(selector: string): HTMLElement | null {
+    const node = window.getSelection()?.anchorNode;
+    const el = node && (node.nodeType === 1 ? (node as Element) : node.parentElement);
+    const found = el?.closest<HTMLElement>(selector) ?? null;
+    return found && host.current?.contains(found) ? found : null;
+  }
+
+  function align(to: (typeof ALIGNS)[number]) {
+    const p = at("[data-p]");
+    if (!p) return setNotice("Click in a paragraph of the page first (the TMC header and footer keep their layout).");
+    p.style.textAlign = to;
+    dirty.current = true;
+    setNotice("");
+  }
+
+  // Bigger or smaller letters for the selected text, in fixed steps.
+  function resize(step: 1 | -1) {
+    const sel = window.getSelection();
+    const el = at("[data-g]");
+    if (!sel || !el || sel.isCollapsed) return setNotice("Select the text first.");
+    const node = sel.anchorNode!;
+    const now = pointsOf(getComputedStyle(node.nodeType === 1 ? (node as Element) : node.parentElement!).fontSize) ?? 10;
+    const next = step > 0 ? SIZES.find((s) => s > now) : [...SIZES].reverse().find((s) => s < now);
+    if (!next) return;
+    document.execCommand("styleWithCSS", false, "false");
+    document.execCommand("fontSize", false, "7"); // marks the selection; replaced by the real size just below
+    host.current?.querySelectorAll("font[size='7']").forEach((f) => {
+      const span = document.createElement("span");
+      span.style.fontSize = `${next}pt`;
+      while (f.firstChild) span.appendChild(f.firstChild);
+      span.querySelectorAll<HTMLElement>("[style]").forEach((inner) => (inner.style.fontSize = ""));
+      f.replaceWith(span);
+    });
+    dirty.current = true;
+    setNotice("");
+  }
+
+  function table(kind: "rowAbove" | "rowBelow" | "delRow" | "colLeft" | "colRight" | "delCol") {
+    const td = at("td[data-t]");
+    if (!td) return setNotice("Click in a table cell first.");
+    const id = td.dataset.t!;
+    const t = tablesById.get(id);
+    if (!t?.plain) return setNotice("This table has cells merged across rows: change its rows and columns in Word.");
+    const ops = tableOps[id] ?? [];
+    const grid = gridOf(t, ops);
+    const row = Number(td.dataset.row);
+    const col = Number(td.dataset.col);
+    const span = Number(td.dataset.span);
+    const fresh = () => `n${nextNew.current++}`;
+    let op: TableOp;
+    if (kind === "rowAbove" || kind === "rowBelow") {
+      op = { op: "addRow", at: kind === "rowAbove" ? row : row + 1, from: row, ids: grid.rows[row].cells.map(fresh) };
+    } else if (kind === "colLeft" || kind === "colRight") {
+      const pos = kind === "colLeft" ? col : col + span;
+      op = { op: "addCol", at: pos, ids: addColPlan(grid, pos).map((p) => (p === "widen" ? null : fresh())) };
+    } else op = { op: kind, at: kind === "delRow" ? row : col };
+    if (!applyOp(grid, op)) return setNotice("That would leave the table without rows or columns.");
+    history.current.push(id);
+    setTableOps({ ...tableOps, [id]: [...ops, op] });
+    dirty.current = true;
+    setNotice("");
+  }
+
+  function undoTable() {
+    const id = history.current.pop();
+    if (!id) return setNotice("No table change to undo.");
+    setTableOps({ ...tableOps, [id]: (tableOps[id] ?? []).slice(0, -1) });
+    setNotice("");
+  }
 
   // Toolbar commands act on the text the person selected (the browser's own editing commands).
   function command(name: "bold" | "italic" | "underline" | "unmark") {
@@ -171,9 +277,52 @@ export function DocEditor({ src, pending, onState, ref }: Props) {
         <button type="button" className={tool} onMouseDown={keep} onClick={nextYellow}>
           Next yellow part
         </button>
+        <span className="mx-1 h-5 w-px bg-gray-300" aria-hidden />
+        <button type="button" className={tool} onMouseDown={keep} onClick={() => resize(-1)} title="Smaller letters for the selected text">
+          A−
+        </button>
+        <button type="button" className={tool} onMouseDown={keep} onClick={() => resize(1)} title="Bigger letters for the selected text">
+          A+
+        </button>
+        <button type="button" className={tool} onMouseDown={keep} onClick={() => align("left")} title="Align the paragraph left">
+          Left
+        </button>
+        <button type="button" className={tool} onMouseDown={keep} onClick={() => align("center")} title="Centre the paragraph">
+          Centre
+        </button>
+        <button type="button" className={tool} onMouseDown={keep} onClick={() => align("right")} title="Align the paragraph right">
+          Right
+        </button>
+        <span className="mx-1 h-5 w-px bg-gray-300" aria-hidden />
+        <button type="button" className={tool} onMouseDown={keep} onClick={() => table("rowAbove")}>
+          + Row above
+        </button>
+        <button type="button" className={tool} onMouseDown={keep} onClick={() => table("rowBelow")}>
+          + Row below
+        </button>
+        <button type="button" className={tool} onMouseDown={keep} onClick={() => table("delRow")}>
+          Delete row
+        </button>
+        <button type="button" className={tool} onMouseDown={keep} onClick={() => table("colLeft")}>
+          + Column left
+        </button>
+        <button type="button" className={tool} onMouseDown={keep} onClick={() => table("colRight")}>
+          + Column right
+        </button>
+        <button type="button" className={tool} onMouseDown={keep} onClick={() => table("delCol")}>
+          Delete column
+        </button>
+        <button type="button" className={tool} onMouseDown={keep} onClick={undoTable}>
+          Undo table change
+        </button>
+        {notice && (
+          <span role="status" className="text-sm text-amber-800">
+            {notice}
+          </span>
+        )}
       </div>
       <div ref={host} className="h-[75vh] overflow-auto bg-gray-100 p-3">
-        {view && <Page key={pendingKey} view={view} pending={pending} />}
+        <TablesContext value={tableOps}>{view && <Page key={pendingKey} view={view} pending={pending} />}</TablesContext>
       </div>
     </div>
   );
@@ -200,14 +349,15 @@ const Page = memo(function Page({ view, pending }: { view: View; pending: Edits 
           {part.kind !== "body" && (
             <div className="select-none text-[8pt] text-gray-400">{part.kind === "header" ? "Header" : "Footer"}</div>
           )}
-          <Blocks blocks={part.blocks} ctx={ctx} />
+          <Blocks blocks={part.blocks} ctx={{ ...ctx, body: part.kind === "body" }} />
         </div>
       ))}
     </div>
   );
 });
 
-type Ctx = { media: Record<string, string>; pending: Edits | null };
+/** body = false in the TMC header and footer: their text may change, their layout never (review M3). */
+type Ctx = { media: Record<string, string>; pending: Edits | null; body?: boolean };
 
 function Blocks({ blocks, ctx }: { blocks: Block[]; ctx: Ctx }) {
   return (
@@ -220,10 +370,13 @@ function Blocks({ blocks, ctx }: { blocks: Block[]; ctx: Ctx }) {
 const ALIGN: Record<string, CSSProperties["textAlign"]> = { left: "left", center: "center", right: "right", justify: "justify" };
 
 function Paragraph({ p, ctx }: { p: Para; ctx: Ctx }) {
+  const align = ctx.pending?.layout.find((l) => l.id === p.id)?.align ?? p.align;
   return (
     <div
+      data-p={ctx.body ? p.id : undefined}
+      data-align={p.align ?? ""}
       style={{
-        textAlign: p.align ? ALIGN[p.align] : undefined,
+        textAlign: align ? ALIGN[align] : undefined,
         marginTop: dim(p.before) ? `${dim(p.before)}pt` : undefined,
         marginBottom: dim(p.after) ? `${dim(p.after)}pt` : undefined,
         paddingLeft: dim(p.indent) ? `${dim(p.indent)}mm` : undefined,
@@ -263,7 +416,7 @@ function pieceStyle(run: RunItem | null, pc: Piece): CSSProperties {
     fontStyle: pc.i ? "italic" : "normal",
     textDecorationLine: pc.u ? "underline" : "none",
     backgroundColor: pc.hl ? "#ffff00" : undefined,
-    fontSize: dim(run?.size, 100) ? `${dim(run?.size, 100)}pt` : undefined,
+    fontSize: dim(pc.size ?? run?.size, 100) ? `${dim(pc.size ?? run?.size, 100)}pt` : undefined,
     fontFamily: font ? `"${font}", Arial, sans-serif` : undefined,
     color: safeColor(run?.color),
   };
@@ -362,36 +515,66 @@ function Fixed({ item, ctx }: { item: Item; ctx: Ctx }) {
   );
 }
 
+/** The rows and columns made on screen, per table number. */
+const TablesContext = createContext<Record<string, TableOp[]>>({});
+
+const SIZES = [6, 7, 8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28];
+
+/** A table as it is now: the view, then the person's row and column changes in order. */
+function gridOf(t: Table, ops: TableOp[]): Grid {
+  return ops.reduce<Grid>((g, op) => applyOp(g, op) ?? g, baseGrid(t));
+}
+
 function TableView({ t, ctx }: { t: Table; ctx: Ctx }) {
-  const cols = (Array.isArray(t.cols) ? t.cols : []).map((c) => dim(c) ?? 20);
-  const width = cols.reduce((a, b) => a + b, 0);
+  const ops = useContext(TablesContext)[t.id ?? ""] ?? [];
+  const grid = gridOf(t, ops);
+  const width = grid.cols.reduce((a, b) => a + b, 0);
+  const shade = (cell: Cell | null) => safeColor(cell?.shade);
   return (
     <table style={{ borderCollapse: "collapse", tableLayout: "fixed", width: width ? `${width}mm` : "100%" }}>
       <colgroup>
-        {cols.map((c, k) => (
+        {grid.cols.map((c, k) => (
           <col key={k} style={{ width: `${c}mm` }} />
         ))}
       </colgroup>
       <tbody>
-        {t.rows.map((row, r) => (
-          <tr key={r}>
-            {row.map((cell, c) => (
-              <td
-                key={c}
-                colSpan={dim(cell.span, 64)}
-                rowSpan={dim(cell.rowspan, 1000)}
-                style={{
-                  border: t.lines ? "1px solid #444" : "1px dotted #d1d5db",
-                  background: safeColor(cell.shade),
-                  verticalAlign: "top",
-                  padding: "1px 4px",
-                }}
-              >
-                <Blocks blocks={cell.blocks} ctx={ctx} />
-              </td>
-            ))}
-          </tr>
-        ))}
+        {grid.rows.map((row, r) => {
+          let col = 0;
+          return (
+            <tr key={row.key}>
+              {row.cells.map((cell) => {
+                const start = col;
+                col += cell.span;
+                return (
+                  <td
+                    key={cell.key}
+                    data-t={t.id ?? undefined}
+                    data-row={r}
+                    data-col={start}
+                    data-span={cell.span}
+                    colSpan={dim(cell.span, 64)}
+                    rowSpan={ops.length ? undefined : dim(cell.orig?.rowspan, 1000)}
+                    style={{ border: t.lines ? "1px solid #444" : "1px dotted #d1d5db", background: shade(cell.orig), verticalAlign: "top", padding: "1px 4px" }}
+                  >
+                    {cell.orig ? (
+                      <Blocks blocks={cell.orig.blocks} ctx={ctx} />
+                    ) : (
+                      <div style={{ whiteSpace: "pre-wrap", minHeight: "1.2em" }}>
+                        <Group id={`new:${cell.newId}`} empty>
+                          {(ctx.pending?.cells.find((x) => x.id === cell.newId)?.parts ?? []).map((pc, n) => (
+                            <span key={n} style={pieceStyle(null, pc)}>
+                              {pc.text}
+                            </span>
+                          ))}
+                        </Group>
+                      </div>
+                    )}
+                  </td>
+                );
+              })}
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
