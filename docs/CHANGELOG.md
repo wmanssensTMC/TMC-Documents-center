@@ -1,6 +1,6 @@
 # Changelog
 
-## 22/10/2026 · MSDS round 3 (branch `phase-2k-msds3`)
+## 22/10/2026 · MSDS round 3 (branch `phase-2k-msds3`, merged 22/10; security gate 90/100, fixes applied)
 - No page limit on an MSDS (Willem 22/10: we cannot choose what suppliers send). Much faster: overprinted letters are compared with their neighbours only, each page is cleaned once, and the PDF is parsed once for the reader and the gate. The real 426-page MSDS: from about 17 minutes to 3.5 minutes on the laptop (without the PDF step), supplier removed, gate passed. The worker's 10-minute limit stays.
 - French MSDS (Butanox) now goes through: a row that wraps in both columns puts each part in its own column; body text that starts high on a page is no longer dropped (two lines were silently lost before; the gate caught it) and is marked yellow for a person; the title printed below the header band is the document's own title, no English default; a colon inside an open bracket is no label separator.
 - The gate also reads the label and value columns through the whole document at the document's own ":" columns, in clean runs only (values that run over a page break). Still only the source's own words, in its own order.
