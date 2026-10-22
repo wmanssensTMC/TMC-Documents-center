@@ -1,5 +1,13 @@
 # Changelog
 
+## 22/10/2026 · Own on-screen editor replaces SuperDoc (branch `phase-2e-own-editor`, not merged; security gate PASS 92/100)
+- Licence question closed: the check-screen editor is our own. SuperDoc is removed; no new outside library (Willem 20/10).
+- The worker makes an editor view of every new draft (`yellow.py view`, stored with the draft, migration 0010). The person changes any text (body, tables, text boxes, headers, footers), sets bold, italic or underline, removes yellow and adds line breaks; "Next yellow part" jumps to each yellow part.
+- Only the changed text goes back; the worker writes it into the engine's own Word file (`yellow.py edit`), so tables, pictures and the TMC layout cannot break. A piece that no longer reads what was shown is refused. All Final checks run as before (no supplier name, no yellow, file-name values printed, warnings for words not in the supplier original, feedback overview).
+- Not on screen: new paragraphs or table rows, moving tables or pictures, font, size or colour. The DRAFT PDF stays for the exact look. Drafts made before this change: run the supplier document again.
+- Security review fixes (first score 82): the editor view, like the DRAFT preview, is only served while the draft waits for a check (H1); browser, server and worker refuse the same invisible characters that could split a supplier name (M1, L4); tighter browser connection rule (L2); sizes from the view checked (L3). Open, Low: look-alike letters from other alphabets (L1, existed before).
+- Tests: `web/worker/test_yellow.py` (view and edit), `web/components/doc-editor-model.test.ts`, edited mode in `check.test.ts` and `worker.test.ts`. Tried in the browser on a sample draft (test data).
+
 ## 20/10/2026 · On-screen document editor (branch `phase-2e-editor`, not merged; security gate PASS 90/100)
 - Check screen, "Edit the document": the draft opens as the real Word document in the browser, supplier original on the left. Any text and formatting can be changed (Willem 19/10, option A).
 - Save and finalise: the worker runs every Final check on the edited file (no macros or outside links, no supplier name, file-name values printed, no yellow left). Changes that bring in words or numbers not found in the supplier original come back as warnings; the person ticks "I checked these changes" and goes on. Every change is kept in the feedback overview ("Edited on screen") and CSV.

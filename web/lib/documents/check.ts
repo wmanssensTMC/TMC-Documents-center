@@ -14,7 +14,7 @@ import { detectType, MAX_FILE_BYTES, parseUploadKey, cleanFilename } from "../fi
 import { countOpenJobs, MAX_OPEN_JOBS_PER_USER, wakeWorker } from "../jobs";
 import { fileStem, plainName } from "../naming";
 import { pendingEdit } from "./changes-pending";
-import { editsInput, sameEdits } from "./edits";
+import { editsInput, SAFE_DOC_TEXT, sameEdits } from "./edits";
 import type { Storage } from "../storage";
 
 export class CheckError extends Error {}
@@ -24,8 +24,9 @@ export class ReplaceConfirmError extends CheckError {}
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 // Control characters, invisible format characters (bidi overrides, zero-width) and line
-// separators are refused (review I1).
-const SAFE = (s: string) => !/[\u0000-\u001f\u007f\u2028\u2029\p{Cf}]/u.test(s);
+// separators are refused (review I1), and so is every other character that shows nothing,
+// the same rule as the on-screen editor (review L4); here tabs and line breaks too.
+const SAFE = (s: string) => !/[\t\n]/.test(s) && SAFE_DOC_TEXT(s);
 
 const clean = (max: number) => z.string().trim().max(max).refine(SAFE, "contains control characters");
 
