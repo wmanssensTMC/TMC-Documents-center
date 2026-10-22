@@ -1,6 +1,19 @@
 # Changelog
 
-## 22/10/2026 · Own on-screen editor replaces SuperDoc (branch `phase-2e-own-editor`, not merged; security gate PASS 92/100)
+## 22/10/2026 · MSDS round 2 on the real MSDS (branch `phase-2i-msds2`, merged 22/10; security gate PASS 90/100)
+- Section numbers written with a space ("1 .3") are found; the whole of 1.4 becomes TMC's emergency number: only lines with a phone number or e-mail go, other lines stay; no 1.4 found = refused for a person; a long 1.4 is kept and marked yellow.
+- The supplier's company name is taken without its label ("Company name X"), so it is also found in the disclaimer.
+- A line repeated at the same place on most pages is a running header: kept once (issue date, version), repeats left out and listed in the log.
+- A table value at the bottom of a page is never joined with the next page's sentence.
+- A long product name in the MSDS page header shrinks (16 to 11 pt) and gets room instead of being cut off (Willem).
+- Measured on the real MSDS: Mane (2 MSDS) and Siegfried now go through; French two-column layout and the 426-page MSDS stay open.
+
+## 22/10/2026 · Simpler menu (branch `phase-2h-menu`)
+- Five tabs in the order of the work (Willem 22/10): Neutralise, To check (with the number of drafts waiting), Labels, Library, Settings (admins).
+- Jobs is folded into Neutralise: the last 15 jobs show under the form, updating themselves while running; "All jobs" keeps the full list.
+- Upload is a button in the Library: "Add an existing TMC document".
+
+## 22/10/2026 · Own on-screen editor replaces SuperDoc (branch `phase-2e-own-editor`, merged 22/10; security gate PASS 92/100)
 - Licence question closed: the check-screen editor is our own. SuperDoc is removed; no new outside library (Willem 20/10).
 - The worker makes an editor view of every new draft (`yellow.py view`, stored with the draft, migration 0010). The person changes any text (body, tables, text boxes, headers, footers), sets bold, italic or underline, removes yellow and adds line breaks; "Next yellow part" jumps to each yellow part.
 - Only the changed text goes back; the worker writes it into the engine's own Word file (`yellow.py edit`), so tables, pictures and the TMC layout cannot break. A piece that no longer reads what was shown is refused. All Final checks run as before (no supplier name, no yellow, file-name values printed, warnings for words not in the supplier original, feedback overview).

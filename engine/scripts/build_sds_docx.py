@@ -144,15 +144,37 @@ def _is_band(row):
     return len(filled) == 1 and bool(_BAND.match(filled[0].strip()))
 
 
+PT_CM = 2.54 / 72          # one point in cm
+HEADER_WIDTH_CM = 17.4     # the header text width, under the logo
+BOLD_CHAR_EM = 0.6         # average width of a bold character, in em (on the safe side)
+
+
+def _header_name_fit(name, largest=16.0, smallest=11.0):
+    """-> (font size, number of lines) for the product name in the page header."""
+    def per_line(size):
+        return max(1, int(HEADER_WIDTH_CM / (size * BOLD_CHAR_EM * PT_CM)))
+    size = largest
+    while size > smallest and len(name) > per_line(size):
+        size -= 0.5
+    return size, max(1, -(-len(name) // per_line(size)))
+
+
 def _set_header_footer(doc, meta):
     sec = doc.sections[0]
     sec.different_first_page_header_footer = False
     hdr = sec.header
 
+    # A long product name must never be cut off under the logo (22/10/2026, Willem): the font
+    # shrinks from 16 pt to at least 11 pt, and a name that still needs more lines gets room by
+    # moving the page text down.
+    name = meta.get("product_name", "") or ""
+    size, lines = _header_name_fit(name)
+    if lines > 1:
+        sec.top_margin = sec.top_margin + Cm((lines - 1) * size * 1.25 * PT_CM)
     p = hdr.add_paragraph()
     p.paragraph_format.space_before = Pt(2)
     p.paragraph_format.space_after = Pt(0)
-    _style(p.add_run(meta.get("product_name", "")), 16, True, TMC_BLUE)
+    _style(p.add_run(name), size, True, TMC_BLUE)
 
     p2 = hdr.add_paragraph()
     p2.paragraph_format.space_before = Pt(0)
@@ -237,7 +259,11 @@ def build(els, meta, template, output):
                 p.paragraph_format.keep_with_next = True
 
         elif kind == "para":
-            _para(doc, e["text"], 8, indent=(0.6 if e.get("indent") else None))
+            p = _para(doc, e["text"], 8, indent=(0.6 if e.get("indent") else None))
+            if e.get("yellow"):                 # a person checks this line (22/10/2026)
+                from tmc_common import mark_yellow
+                for r in p.runs:
+                    mark_yellow(r)
 
         elif kind == "image" and e.get("col_groups"):
             groups = e["col_groups"]

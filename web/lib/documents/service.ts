@@ -196,3 +196,9 @@ export async function getAuditTrail(db: Db, documentIds: string[]) {
 export async function recordDownload(db: Db, actor: Actor, documentId: string, kind: FileKind) {
   await logAudit(db, actor, "document.downloaded", documentId, { file: kind });
 }
+
+/** How many drafts wait for a person (the number on the "To check" tab). */
+export async function countToCheck(db: Db) {
+  const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(documents).where(eq(documents.status, "To check"));
+  return n;
+}
