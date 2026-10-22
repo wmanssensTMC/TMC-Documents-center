@@ -101,8 +101,8 @@ export default async function CheckPage({ params }: PageProps<"/documents/[id]/c
         edit={{
           documentId: doc.id,
           sourceUrl: doc.sourceKey ? file("source") : null,
-          draftUrl: `/api/files/${doc.id}/docx`,
-          pending: pending && { ...pending, url: `/api/files/${doc.id}/docx?edited=1` },
+          viewUrl: doc.viewKey ? `/api/files/${doc.id}/view` : null,
+          pending,
         }}
       />
     </PageShell>

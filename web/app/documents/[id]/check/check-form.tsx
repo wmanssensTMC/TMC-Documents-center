@@ -104,9 +104,7 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
 
       <EditSection
         {...edit}
-        uploadMode={uploadMode}
         metadata={metadata}
-        name={name}
         confirmReplace={replace}
         disabled={disabled}
         act={act}

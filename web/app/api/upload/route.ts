@@ -3,7 +3,7 @@
 // login, the storage key and the allowed file types/size for that slot.
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { apiUser } from "@/lib/auth";
-import { ALLOWED_TYPES, MAX_FILE_BYTES, parseUploadKey } from "@/lib/files";
+import { ALLOWED_TYPES, MAX_FILE_BYTES, parseUploadKey, USER_UPLOAD_KINDS } from "@/lib/files";
 
 export async function POST(request: Request) {
   let body: HandleUploadBody;
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
         const user = await apiUser();
         if (!user) throw new Error("not logged in");
         const ref = parseUploadKey(pathname);
-        if (!ref) throw new Error("invalid upload key");
+        if (!ref || !USER_UPLOAD_KINDS.includes(ref.kind)) throw new Error("invalid upload key");
         return {
           allowedContentTypes: ALLOWED_TYPES[ref.kind],
           maximumSizeInBytes: MAX_FILE_BYTES,

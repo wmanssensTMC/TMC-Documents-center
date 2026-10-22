@@ -71,6 +71,13 @@
       "when": 1792442353006,
       "tag": "0009_feedback_edited",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792498040364,
+      "tag": "0010_document_view",
+      "breakpoints": true
     }
   ]
 }

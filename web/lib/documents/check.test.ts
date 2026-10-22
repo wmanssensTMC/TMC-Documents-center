@@ -5,6 +5,7 @@ import { createPgliteDb, type Db } from "../db";
 import { documents, feedback, jobs } from "../db/schema";
 import { newUploadKey } from "../files";
 import type { Storage } from "../storage";
+import { CHANGES_MARK } from "./changes";
 import { approveDraft, CheckError, finalName, makeFinal, rejectDraft, ReplaceConfirmError, requestFinalise, shownValues } from "./check";
 
 const kars: Actor = { email: "kars@transmare.com", name: "Kars", role: "user" };
@@ -90,17 +91,40 @@ describe("finalise request (on-screen editor)", () => {
     ).rejects.toThrow(CheckError);
   });
 
-  it("edited on screen: queued with the edited Word file; feedback only once it is Final (Willem 19/10)", async () => {
-    const d = await draft();
+  it("edited on screen: queued with the changed pieces; feedback only once it is Final (Willem 19/10, own editor 20/10)", async () => {
+    const piece = (text: string) => ({ text, b: false, i: false, u: false, hl: false });
+    const edits = { runs: [{ id: "r3", was: "PRODUCTNAME", parts: [piece("Sodium Benzoate")] }], paras: [] };
+    const old = await draft({ name: "TMC_COA_840.S0999_Sodium_Benzoate_SB-2", batch: "SB-2" });
     await expect(
-      requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, docx: { key: newUploadKey("pdf"), filename: "x" } }),
-    ).rejects.toThrow(/save the edited document/);
-    const key = newUploadKey("docx");
-    files.set(key, DOCX);
-    await requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, acceptChanges: true, docx: { key, filename: "e.docx" } });
-    // no warnings were shown for this version, so the tick does not count (review F5)
-    expect((await db.select().from(jobs))[0].payload).toMatchObject({ mode: "edited", acceptChanges: false, docx: { key } });
+      requestFinalise(db, storage, kars, old.id, { mode: "edited", metadata: { ...meta, batch: "SB-2" }, edits }),
+    ).rejects.toThrow(/no on-screen editor/);
+
+    const d = await draft({ viewKey: newUploadKey("view") });
+    await expect(requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta })).rejects.toThrow(/save the edited document/);
+    const bad = { runs: [{ id: "r3", was: "PRODUCTNAME", parts: [piece("Sodium\u202eBenzoate")] }], paras: [] };
+    await expect(requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, edits: bad })).rejects.toThrow(CheckError);
+    const twice = { runs: [edits.runs[0], edits.runs[0]], paras: [] };
+    await expect(requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, edits: twice })).rejects.toThrow(/twice/);
+
+    await requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, acceptChanges: true, edits });
+    // no warnings were shown for these changes, so the tick does not count (review F5)
+    const [first] = await db.select().from(jobs);
+    expect(first.payload).toMatchObject({ mode: "edited", acceptChanges: false, edits });
     expect(await db.select().from(feedback)).toHaveLength(0); // the worker records the changes when it is Final
+
+    // the worker stopped it with a warning: the tick counts for exactly those changes, not for others
+    const warned = `${CHANGES_MARK}${JSON.stringify([{ before: "PRODUCTNAME", after: "Sodium Benzoate", unknown: ["Sodium"] }])}`;
+    await db.update(jobs).set({ state: "failed", log: warned }).where(eq(jobs.id, first.id));
+    const other = { runs: [{ id: "r3", was: "PRODUCTNAME", parts: [piece("Potassium Sorbate")] }], paras: [] };
+    await requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, acceptChanges: true, edits: other });
+    const second = (await db.select().from(jobs)).find((j) => j.id !== first.id)!;
+    expect(second.payload).toMatchObject({ acceptChanges: false });
+    await db.update(jobs).set({ state: "failed", log: warned, payload: first.payload }).where(eq(jobs.id, second.id));
+    // the same changes, keys in another order (as the database gives them back)
+    const reordered = { paras: [], runs: [{ parts: [{ hl: false, u: false, i: false, b: false, text: "Sodium Benzoate" }], was: "PRODUCTNAME", id: "r3" }] };
+    await requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, acceptChanges: true, edits: reordered });
+    const third = (await db.select().from(jobs)).find((j) => j.id !== first.id && j.id !== second.id)!;
+    expect(third.payload).toMatchObject({ acceptChanges: true });
   });
 
   it("Word upload: only a real Word file under its own key", async () => {
@@ -146,7 +170,7 @@ describe("finalise rules from the security review", () => {
   it("invisible characters are refused (I1)", async () => {
     const d = await draft({ yellowParts: [{ id: "y0", text: "a", context: "" }] });
     await expect(
-      requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: meta, fixes: { y0: { value: "a‮b", confirmed: true } } }),
+      requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: meta, fixes: { y0: { value: "a\u202eb", confirmed: true } } }),
     ).rejects.toThrow(CheckError);
   });
 

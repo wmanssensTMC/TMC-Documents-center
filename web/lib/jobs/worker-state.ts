@@ -59,6 +59,8 @@ export type Draft = {
   yellow: boolean;
   yellowParts: YellowPart[];
   previewKey: string | null;
+  /** The on-screen editor's view (yellow.py view); null when it could not be made. */
+  viewKey?: string | null;
   /** The batch the engine made this document for (one document per batch). */
   batch?: string | null;
 };
@@ -96,6 +98,7 @@ export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: nu
           sourceFilename: d.sourceFilename,
           yellowParts: d.yellowParts,
           previewKey: d.previewKey,
+          viewKey: d.viewKey ?? null,
           createdBy: job.createdBy,
           jobId: job.id,
         })

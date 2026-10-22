@@ -2,7 +2,6 @@
 import { logAudit } from "@/lib/audit";
 import { apiUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
-import { pendingEdit } from "@/lib/documents/changes-pending";
 import { getDocument } from "@/lib/documents/service";
 import { detectType, DOCUMENT_FILE_KINDS, EXTENSION } from "@/lib/files";
 import { getStorage } from "@/lib/storage";
@@ -17,9 +16,7 @@ export async function GET(req: Request, ctx: RouteContext<"/api/files/[id]/[kind
 
   const db = await getDb();
   const doc = await getDocument(db, id);
-  // ?edited=1: the version edited on screen that waits for its warnings to be confirmed
-  const edited = kind === "docx" && new URL(req.url).searchParams.get("edited") === "1";
-  const key = doc && (edited ? (await pendingEdit(db, doc))?.key : { pdf: doc.pdfKey, docx: doc.docxKey, source: doc.sourceKey, preview: doc.previewKey }[kind]);
+  const key = doc && { pdf: doc.pdfKey, docx: doc.docxKey, source: doc.sourceKey, preview: doc.previewKey, view: doc.viewKey }[kind];
   if (!doc || !key) return new Response("Not found", { status: 404 });
 
   const storage = getStorage();
@@ -29,11 +26,12 @@ export async function GET(req: Request, ctx: RouteContext<"/api/files/[id]/[kind
   if (!type || !file) return new Response("File missing", { status: 404 });
 
   // The DRAFT preview is for the check screen only: always shown, never a download.
-  const inline = kind === "preview" || (new URL(req.url).searchParams.get("inline") === "1" && type === "application/pdf");
+  // The editor's view is read by the check screen itself: counted as viewed, never shown as a page.
+  const inline = kind === "preview" || kind === "view" || (new URL(req.url).searchParams.get("inline") === "1" && type === "application/pdf");
   const filename =
     kind === "source"
       ? (doc.sourceFilename ?? `source${EXTENSION[type]}`)
-      : `${doc.name}${kind === "preview" ? "_DRAFT_PREVIEW" : ""}${EXTENSION[type]}`;
+      : `${doc.name}${kind === "preview" ? "_DRAFT_PREVIEW" : kind === "view" ? "_EDITOR_VIEW" : ""}${EXTENSION[type]}`;
   await logAudit(db, user, inline ? "document.viewed" : "document.downloaded", doc.id, { file: kind });
 
   const headers = new Headers({
@@ -44,7 +42,7 @@ export async function GET(req: Request, ctx: RouteContext<"/api/files/[id]/[kind
   });
   // Downloads never run as a page of this site. (Not on inline PDFs: browsers refuse to show
   // a PDF under a sandbox policy; inline is limited to real PDFs above.)
-  if (!inline) headers.set("Content-Security-Policy", "sandbox; default-src 'none'");
+  if (!inline || kind === "view") headers.set("Content-Security-Policy", "sandbox; default-src 'none'");
   if (file.size) headers.set("Content-Length", String(file.size));
   return new Response(file.stream, { headers });
 }

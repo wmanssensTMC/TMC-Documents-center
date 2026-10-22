@@ -14,6 +14,7 @@ import { detectType, MAX_FILE_BYTES, parseUploadKey, cleanFilename } from "../fi
 import { countOpenJobs, MAX_OPEN_JOBS_PER_USER, wakeWorker } from "../jobs";
 import { fileStem, plainName } from "../naming";
 import { pendingEdit } from "./changes-pending";
+import { editsInput, sameEdits } from "./edits";
 import type { Storage } from "../storage";
 
 export class CheckError extends Error {}
@@ -99,6 +100,7 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
       mode: z.enum(["editor", "upload", "edited"]),
       fixes: fixesInput.optional(),
       docx: z.object({ key: z.string().max(200), filename: z.string().max(300) }).optional(),
+      edits: editsInput.optional(),
       confirmReplace: z.boolean().optional(),
       acceptChanges: z.boolean().optional(),
     })
@@ -132,23 +134,24 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
       });
     }
     payload = { mode: "editor", fixes, metadata: input.metadata };
+  } else if (input.mode === "edited") {
+    // edited on screen: the worker writes the changes into the draft and records every change
+    // when it becomes Final (Willem 19/10, own editor 20/10)
+    if (!input.edits) throw new CheckError("save the edited document first");
+    if (!doc.docxKey || !doc.viewKey) throw new CheckError("this draft has no on-screen editor; run the supplier document again");
+    // a confirmation only counts for the very changes whose warnings were shown (review F5)
+    const shown = input.acceptChanges === true ? await pendingEdit(db, doc) : null;
+    const acceptChanges = !!shown && shown.warnings.length > 0 && sameEdits(shown.edits, input.edits);
+    payload = { mode: "edited", edits: input.edits, metadata: input.metadata, acceptChanges };
   } else {
     const ref = input.docx;
     const parsed = ref && parseUploadKey(ref.key);
-    if (!ref || !parsed || parsed.kind !== "docx") throw new CheckError(input.mode === "edited" ? "save the edited document first" : "upload the checked Word file");
+    if (!ref || !parsed || parsed.kind !== "docx") throw new CheckError("upload the checked Word file");
     const head = await storage.head(ref.key, 8);
     if (!head || head.size > MAX_FILE_BYTES || !detectType("docx", head.bytes)) throw new CheckError("the file is not a Word document");
     const filename = cleanFilename(ref.filename);
-    if (input.mode === "edited") {
-      // edited on screen: the worker records every change when it becomes Final
-      // a confirmation only counts for the saved version whose warnings were shown (review F5)
-      const shown = input.acceptChanges === true ? await pendingEdit(db, doc) : null;
-      const acceptChanges = !!shown && shown.key === ref.key && shown.warnings.length > 0;
-      payload = { mode: "edited", docx: { key: ref.key, filename }, metadata: input.metadata, acceptChanges };
-    } else {
-      notes.push({ actor: actor.email, documentId: doc.id, kind: "word_upload", after: filename });
-      payload = { mode: "upload", docx: { key: ref.key, filename }, metadata: input.metadata };
-    }
+    notes.push({ actor: actor.email, documentId: doc.id, kind: "word_upload", after: filename });
+    payload = { mode: "upload", docx: { key: ref.key, filename }, metadata: input.metadata };
   }
   await queueFinalise(db, actor, doc, { ...payload, replaces }, notes);
 }

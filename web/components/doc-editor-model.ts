@@ -1,0 +1,242 @@
+// The model behind our own on-screen editor (Willem 20/10): the worker's view of the draft
+// (web/worker/yellow.py view), how it is cut into editable pieces, and how the edited pieces
+// are read back into the short list of changes the worker writes into the Word file.
+// No browser APIs here, so it can be tested on its own.
+import type { Edits, Piece } from "@/lib/documents/edits";
+
+export type Fmt = { b: boolean; i: boolean; u: boolean; hl: boolean; size?: number; font?: string; color?: string };
+export type RunItem = { t: "r"; id: string | null; text: string } & Fmt;
+export type Item = RunItem | { t: "img"; m: string | null; w?: number; h?: number } | { t: "box"; blocks: Block[] };
+export type Para = { t: "p"; id: string; items: Item[]; align?: string; before?: number; after?: number; indent?: number; empty?: boolean };
+export type Cell = { blocks: Block[]; span?: number; rowspan?: number; shade?: string };
+export type Table = { t: "table"; cols: number[]; lines: boolean; rows: Cell[][] };
+export type Block = Para | Table;
+export type View = {
+  v: 1;
+  page: { width: number; left: number; right: number; top: number; bottom: number };
+  parts: { kind: "header" | "body" | "footer"; blocks: Block[] }[];
+  media: Record<string, string>;
+};
+
+/** The worker's view, lightly checked (it comes from our own worker through our own server). */
+export function parseView(raw: unknown): View {
+  const v = raw as View;
+  if (!v || v.v !== 1 || !Array.isArray(v.parts) || typeof v.page !== "object" || typeof v.media !== "object") {
+    throw new Error("not an editor view");
+  }
+  return v;
+}
+
+/** Only pictures as data of a plain image type are shown. */
+export function safeImage(src: unknown): string | null {
+  return typeof src === "string" && /^data:image\/(png|jpeg|gif);base64,[A-Za-z0-9+/=]+$/.test(src) ? src : null;
+}
+
+export const safeColor = (c?: string) => (c && /^#[0-9a-fA-F]{6}$/.test(c) ? c : undefined);
+export const safeFont = (f?: string) => (f && /^[A-Za-z0-9 ._-]{1,40}$/.test(f) ? f : undefined);
+
+/**
+ * A paragraph is cut into editable groups (runs of text next to each other) and fixed items
+ * (pictures, text boxes, text that cannot be retyped). A fixed item is never inside an editable
+ * group, so it cannot be deleted by accident. A paragraph without text of its own gets one
+ * empty group at its end, where typed text is added.
+ */
+export type Segment = { kind: "group"; key: string; runs: RunItem[]; para: string | null } | { kind: "fixed"; item: Item };
+
+export function segments(p: Para): Segment[] {
+  const out: Segment[] = [];
+  let group: RunItem[] = [];
+  const flush = () => {
+    if (group.length) out.push({ kind: "group", key: `${p.id}:${out.length}`, runs: group, para: null });
+    group = [];
+  };
+  for (const item of p.items) {
+    if (item.t === "r" && item.id) group.push(item);
+    else {
+      flush();
+      out.push({ kind: "fixed", item });
+    }
+  }
+  flush();
+  if (!out.some((s) => s.kind === "group")) out.push({ kind: "group", key: `${p.id}:${out.length}`, runs: [], para: p.id });
+  return out;
+}
+
+/** Every editable group of the view, by key. */
+export function allGroups(view: View): Map<string, Extract<Segment, { kind: "group" }>> {
+  const map = new Map<string, Extract<Segment, { kind: "group" }>>();
+  const walk = (blocks: Block[]) => {
+    for (const b of blocks) {
+      if (b.t === "p") {
+        for (const s of segments(b)) {
+          if (s.kind === "group") map.set(s.key, s);
+          else if (s.item.t === "box") walk(s.item.blocks);
+        }
+      } else b.rows.forEach((row) => row.forEach((cell) => walk(cell.blocks)));
+    }
+  };
+  view.parts.forEach((part) => walk(part.blocks));
+  return map;
+}
+
+const fmtOf = (r: Fmt) => ({ b: r.b, i: r.i, u: r.u, hl: r.hl });
+
+/** What a run shows when the editor opens: the draft, or the person's last edit that did not become Final. */
+export function startPieces(run: RunItem, pending: Edits | null): Piece[] {
+  const edit = pending?.runs.find((e) => e.id === run.id && e.was === run.text);
+  return edit ? edit.parts : [{ text: run.text, ...fmtOf(run) }];
+}
+
+export function startParaPieces(para: string, pending: Edits | null): Piece[] {
+  return pending?.paras.find((e) => e.id === para)?.parts ?? [];
+}
+
+// ---- reading an edited group back ----------------------------------------------------------
+
+/** The small part of a DOM node the reader needs (a real DOM node fits; so does a test double). */
+export type DomLike = {
+  nodeType: number;
+  nodeName: string;
+  nodeValue: string | null;
+  childNodes: ArrayLike<DomLike>;
+  parentNode: DomLike | null;
+  getAttribute?: (name: string) => string | null;
+  style?: { fontWeight?: string; fontStyle?: string; textDecoration?: string; textDecorationLine?: string; backgroundColor?: string };
+};
+
+type Rule = (el: DomLike) => boolean | null;
+const tag = (el: DomLike) => el.nodeName.toUpperCase();
+const RULES: Record<"b" | "i" | "u" | "hl", Rule> = {
+  b: (el) => {
+    if (tag(el) === "B" || tag(el) === "STRONG") return true;
+    const w = el.style?.fontWeight;
+    if (!w) return null;
+    return w === "bold" || w === "bolder" || Number(w) >= 600;
+  },
+  i: (el) => {
+    if (tag(el) === "I" || tag(el) === "EM") return true;
+    const s = el.style?.fontStyle;
+    return s ? s === "italic" || s === "oblique" : null;
+  },
+  u: (el) => {
+    if (tag(el) === "U") return true;
+    const d = el.style?.textDecorationLine || el.style?.textDecoration;
+    return d ? d.includes("underline") : null;
+  },
+  hl: (el) => {
+    if (tag(el) === "MARK") return true;
+    const c = (el.style?.backgroundColor ?? "").replace(/\s/g, "").toLowerCase();
+    if (!c) return null;
+    return !["transparent", "rgba(0,0,0,0)", "white", "#fff", "#ffffff", "rgb(255,255,255)", "inherit", "initial", "unset"].includes(c);
+  },
+};
+
+/** The nearest setting wins, up to the group itself (the browser's own bold/italic/underline/colour commands). */
+function formatAt(node: DomLike, root: DomLike) {
+  const out = { b: false, i: false, u: false, hl: false };
+  for (const key of Object.keys(RULES) as (keyof typeof RULES)[]) {
+    for (let el: DomLike | null = node.nodeType === 3 ? node.parentNode : node; el; el = el.parentNode) {
+      const v = RULES[key](el);
+      if (v !== null) {
+        out[key] = v;
+        break;
+      }
+      if (el === root) break;
+    }
+  }
+  return out;
+}
+
+function ownerAt(node: DomLike, root: DomLike): string | null {
+  for (let el: DomLike | null = node.parentNode; el && el !== root; el = el.parentNode) {
+    const id = el.getAttribute?.("data-r");
+    if (id) return id;
+  }
+  return null;
+}
+
+const clean = (s: string) => s.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f\u2028\u2029\p{Cf}]/gu, "");
+
+/**
+ * The text of one edited group, piece by piece, with the run each piece belongs to. Text the
+ * browser put outside every run goes to the run before it (or after it, at the start).
+ */
+export function readGroup(root: DomLike, runIds: string[]): { owner: string | null; piece: Piece }[] {
+  const known = new Set(runIds);
+  const flat: { owner: string | null; text: string; fmt: Omit<Piece, "text"> }[] = [];
+  const add = (c: DomLike, text: string) => {
+    const owner = ownerAt(c, root);
+    flat.push({ owner: owner && known.has(owner) ? owner : null, text, fmt: formatAt(c, root) });
+  };
+  const walk = (n: DomLike) => {
+    for (let k = 0; k < n.childNodes.length; k++) {
+      const c = n.childNodes[k];
+      if (c.nodeType === 3) add(c, c.nodeValue ?? "");
+      else if (c.nodeType === 1 && tag(c) === "BR") add(c, "\n");
+      else if (c.nodeType === 1) walk(c);
+    }
+  };
+  walk(root);
+  // a line break element at the very end is the browser's placeholder of an empty line, not text
+  const leaf = lastLeaf(root);
+  if (flat.length && flat[flat.length - 1].text === "\n" && leaf && tag(leaf) === "BR") flat.pop();
+  let prev: string | null = null;
+  for (const f of flat) prev = f.owner = f.owner ?? prev;
+  const first = flat.find((f) => f.owner)?.owner ?? null;
+  return flat.map((f) => ({ owner: f.owner ?? first, piece: { text: clean(f.text), ...f.fmt } })).filter((f) => f.piece.text);
+}
+
+function lastLeaf(n: DomLike): DomLike | null {
+  let cur: DomLike = n;
+  while (cur.childNodes.length) cur = cur.childNodes[cur.childNodes.length - 1];
+  return cur === n ? null : cur;
+}
+
+/** Neighbouring pieces with the same formatting become one. */
+function merge(pieces: Piece[]): Piece[] {
+  const out: Piece[] = [];
+  for (const p of pieces) {
+    const last = out[out.length - 1];
+    if (last && last.b === p.b && last.i === p.i && last.u === p.u && last.hl === p.hl) last.text += p.text;
+    else out.push({ ...p });
+  }
+  return out;
+}
+
+const samePieces = (a: Piece[], b: Piece[]) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * After Enter at the end of a stretch the browser adds one extra line break so the new line
+ * shows; it is not the person's text (unless the draft itself ended with a line break).
+ */
+function dropPlaceholder(parts: Piece[], original: string): Piece[] {
+  const last = parts[parts.length - 1];
+  if (!last || !last.text.endsWith("\n") || original.endsWith("\n")) return parts;
+  const text = last.text.slice(0, -1);
+  return text ? [...parts.slice(0, -1), { ...last, text }] : parts.slice(0, -1);
+}
+
+/**
+ * The changes to send: every run whose text or formatting differs from the draft, and text
+ * typed into a paragraph that had none. A run whose text was all deleted becomes empty.
+ */
+export function collectEdits(groups: Map<string, Extract<Segment, { kind: "group" }>>, read: Map<string, { owner: string | null; piece: Piece }[]>): Edits {
+  const edits: Edits = { runs: [], paras: [] };
+  for (const [key, g] of groups) {
+    const got = read.get(key) ?? [];
+    if (g.para) {
+      const parts = dropPlaceholder(merge(got.map((x) => x.piece)), "");
+      if (parts.length) edits.paras.push({ id: g.para, parts });
+      continue;
+    }
+    for (const [n, run] of g.runs.entries()) {
+      const id = run.id!;
+      const original: Piece[] = [{ text: run.text, ...fmtOf(run) }];
+      let parts = merge(got.filter((x) => x.owner === id).map((x) => x.piece));
+      if (n === g.runs.length - 1) parts = dropPlaceholder(parts, run.text);
+      if (!parts.length) parts = [{ text: "", ...fmtOf(run) }];
+      if (!samePieces(parts, original)) edits.runs.push({ id, was: run.text, parts });
+    }
+  }
+  return edits;
+}
