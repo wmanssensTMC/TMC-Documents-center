@@ -8,6 +8,7 @@ import type { DocType, Entity } from "@/lib/constants";
 import { MAX_FILE_BYTES } from "@/lib/files";
 import { fileStem } from "@/lib/naming";
 import { approve, finaliseDraft, reject, type CheckResult } from "./actions";
+import { EditSection, type EditProps } from "./edit-section";
 
 const input =
   "block w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-tmc focus:outline-none focus:ring-1 focus:ring-tmc";
@@ -21,9 +22,10 @@ type Props = {
   uploadMode: "blob" | "local";
   initial: { productName: string; fileNr: string; batch: string };
   naming: { type: DocType; entity: Entity; batchLocked: boolean; language: string; currentName: string };
+  edit: EditProps;
 };
 
-export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial, naming }: Props) {
+export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial, naming, edit }: Props) {
   const router = useRouter();
   const ready = useSyncExternalStore(noSubscribe, () => true, () => false);
   const [meta, setMetaState] = useState(initial);
@@ -116,10 +118,18 @@ export function CheckForm({ documentId, parts, hasPdf, busy, uploadMode, initial
         )}
       </section>
 
+      <EditSection
+        {...edit}
+        metadata={metadata}
+        confirmReplace={replace}
+        disabled={disabled}
+        act={act}
+      />
+
       {parts.length > 0 && (
         <section className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-black/5">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="font-semibold">Yellow parts</h2>
+            <h2 className="font-semibold">Or: quick check of the yellow parts only</h2>
             <span className={`text-sm ${left ? "text-amber-700" : "text-green-700"}`}>
               {left ? `${left} of ${parts.length} still to confirm` : "All confirmed"}
             </span>

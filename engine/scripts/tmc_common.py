@@ -162,8 +162,36 @@ def iter_highlighted(doc):
             p_els = r_el.xpath("ancestor::w:p[1]")
             p = Paragraph(p_els[0], parent) if p_els else None
             r = Run(r_el, p if p is not None else parent)
-            if r.font.highlight_color not in (None, WD_COLOR_INDEX.AUTO) and r.text.strip():
+            if is_marked(r) and r.text.strip():
                 yield r, p
+
+
+# Yellow shading on a run counts as a yellow mark too (20/10/2026, security review F1): an
+# editor or a person may colour text yellow that way instead of with the highlighter.
+YELLOW_FILLS = {"FFFF00", "FFFF66", "FFFF99", "FFF200"}
+
+
+def _yellow_shading(run):
+    rPr = run._r.rPr
+    shd = rPr.find(qn("w:shd")) if rPr is not None else None
+    return shd is not None and (shd.get(qn("w:fill")) or "").upper() in YELLOW_FILLS
+
+
+def is_marked(run):
+    """A run a person still has to check: highlighted (any colour) or shaded yellow."""
+    return r_highlight(run) or _yellow_shading(run)
+
+
+def r_highlight(run):
+    return run.font.highlight_color not in (None, WD_COLOR_INDEX.AUTO)
+
+
+def clear_mark(run):
+    """Removes the highlight and any yellow shading of a run a person confirmed."""
+    run.font.highlight_color = None
+    rPr = run._r.rPr
+    if rPr is not None and _yellow_shading(run):
+        rPr.remove(rPr.find(qn("w:shd")))
 
 
 def yellow_runs(docx_path):

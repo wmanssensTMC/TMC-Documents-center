@@ -5,6 +5,8 @@ import { createPgliteDb, type Db } from "../db";
 import { documents, feedback, jobs } from "../db/schema";
 import { newUploadKey } from "../files";
 import type { Storage } from "../storage";
+import { CHANGES_MARK } from "./changes";
+import { cleanDocText, SAFE_DOC_TEXT } from "./edits";
 import { approveDraft, CheckError, finalName, makeFinal, rejectDraft, ReplaceConfirmError, requestFinalise, shownValues } from "./check";
 
 const kars: Actor = { email: "kars@transmare.com", name: "Kars", role: "user" };
@@ -90,6 +92,42 @@ describe("finalise request (on-screen editor)", () => {
     ).rejects.toThrow(CheckError);
   });
 
+  it("edited on screen: queued with the changed pieces; feedback only once it is Final (Willem 19/10, own editor 20/10)", async () => {
+    const piece = (text: string) => ({ text, b: false, i: false, u: false, hl: false });
+    const edits = { runs: [{ id: "r3", was: "PRODUCTNAME", parts: [piece("Sodium Benzoate")] }], paras: [] };
+    const old = await draft({ name: "TMC_COA_840.S0999_Sodium_Benzoate_SB-2", batch: "SB-2" });
+    await expect(
+      requestFinalise(db, storage, kars, old.id, { mode: "edited", metadata: { ...meta, batch: "SB-2" }, edits }),
+    ).rejects.toThrow(/no on-screen editor/);
+
+    const d = await draft({ viewKey: newUploadKey("view") });
+    await expect(requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta })).rejects.toThrow(/save the edited document/);
+    const bad = { runs: [{ id: "r3", was: "PRODUCTNAME", parts: [piece("Sodium\u202eBenzoate")] }], paras: [] };
+    await expect(requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, edits: bad })).rejects.toThrow(CheckError);
+    const twice = { runs: [edits.runs[0], edits.runs[0]], paras: [] };
+    await expect(requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, edits: twice })).rejects.toThrow(/twice/);
+
+    await requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, acceptChanges: true, edits });
+    // no warnings were shown for these changes, so the tick does not count (review F5)
+    const [first] = await db.select().from(jobs);
+    expect(first.payload).toMatchObject({ mode: "edited", acceptChanges: false, edits });
+    expect(await db.select().from(feedback)).toHaveLength(0); // the worker records the changes when it is Final
+
+    // the worker stopped it with a warning: the tick counts for exactly those changes, not for others
+    const warned = `${CHANGES_MARK}${JSON.stringify([{ before: "PRODUCTNAME", after: "Sodium Benzoate", unknown: ["Sodium"] }])}`;
+    await db.update(jobs).set({ state: "failed", log: warned }).where(eq(jobs.id, first.id));
+    const other = { runs: [{ id: "r3", was: "PRODUCTNAME", parts: [piece("Potassium Sorbate")] }], paras: [] };
+    await requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, acceptChanges: true, edits: other });
+    const second = (await db.select().from(jobs)).find((j) => j.id !== first.id)!;
+    expect(second.payload).toMatchObject({ acceptChanges: false });
+    await db.update(jobs).set({ state: "failed", log: warned, payload: first.payload }).where(eq(jobs.id, second.id));
+    // the same changes, keys in another order (as the database gives them back)
+    const reordered = { paras: [], runs: [{ parts: [{ hl: false, u: false, i: false, b: false, text: "Sodium Benzoate" }], was: "PRODUCTNAME", id: "r3" }] };
+    await requestFinalise(db, storage, kars, d.id, { mode: "edited", metadata: meta, acceptChanges: true, edits: reordered });
+    const third = (await db.select().from(jobs)).find((j) => j.id !== first.id && j.id !== second.id)!;
+    expect(third.payload).toMatchObject({ acceptChanges: true });
+  });
+
   it("Word upload: only a real Word file under its own key", async () => {
     const d = await draft();
     const bad = newUploadKey("docx");
@@ -133,7 +171,7 @@ describe("finalise rules from the security review", () => {
   it("invisible characters are refused (I1)", async () => {
     const d = await draft({ yellowParts: [{ id: "y0", text: "a", context: "" }] });
     await expect(
-      requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: meta, fixes: { y0: { value: "a‮b", confirmed: true } } }),
+      requestFinalise(db, storage, kars, d.id, { mode: "editor", metadata: meta, fixes: { y0: { value: "a\u202eb", confirmed: true } } }),
     ).rejects.toThrow(CheckError);
   });
 
@@ -181,6 +219,22 @@ describe("file name follows the details (Willem 19/10)", () => {
     const files = { pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf", docxKey: newUploadKey("docx"), docxFilename: "x.docx" };
     await db.transaction(async (tx) => makeFinal(tx, kars, d, files, meta));
     expect((await db.select().from(documents))[0].name).toBe("TMC_COA_840.S0999_Sodium_Benzoate_SB-1");
+  });
+
+  it("the editor view of the draft is no longer served once it is Final or rejected (review H1)", async () => {
+    const d = await draft({ yellowParts: [], viewKey: newUploadKey("view"), previewKey: newUploadKey("preview") });
+    const files = { pdfKey: newUploadKey("pdf"), pdfFilename: "x.pdf", docxKey: newUploadKey("docx"), docxFilename: "x.docx" };
+    await db.transaction(async (tx) => makeFinal(tx, kars, d, files, meta));
+    expect((await db.select().from(documents))[0]).toMatchObject({ viewKey: null, previewKey: null });
+    const r = await draft({ name: "TMC_COA_840.S0999_Sodium_Benzoate_SB-2", batch: "SB-2", viewKey: newUploadKey("view") });
+    await rejectDraft(db, kars, r.id, "wrong supplier document");
+    expect((await db.select().from(documents).where(eq(documents.id, r.id)))[0].viewKey).toBeNull();
+  });
+
+  it("the editor's text check refuses invisible characters that could split a supplier name (review M1)", () => {
+    for (const bad of ["BA\ufe0fSF", "BA\u0085SF", "BA\u202eSF", "BA\u200bSF", "BA\u3164SF", "BA\u{e0100}SF"]) expect(SAFE_DOC_TEXT(bad)).toBe(false);
+    expect(SAFE_DOC_TEXT("Assay\t99.6 %\nsecond line")).toBe(true);
+    expect(cleanDocText("BA\ufe0fSF\r\nnext")).toBe("BASF\nnext");
   });
 
   it("the values in the name must be printed: COA all three, MSDS/TDS the product", () => {

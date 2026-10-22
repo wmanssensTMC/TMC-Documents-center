@@ -29,7 +29,7 @@ export default async function FeedbackPage({ searchParams }: PageProps<"/setting
   const [summary, top, corrections, rejections, failed] = await Promise.all([
     feedbackSummary(db, period),
     topCorrections(db, period),
-    feedbackLines(db, period, ["corrected", "word_upload"]),
+    feedbackLines(db, period, ["corrected", "edited", "word_upload"]),
     feedbackLines(db, period, ["rejected"]),
     failedJobs(db, period),
   ]);
@@ -136,7 +136,7 @@ export default async function FeedbackPage({ searchParams }: PageProps<"/setting
                       "—"
                     )}
                   </td>
-                  <td className={`${cell} text-xs text-gray-600`}>{c.kind === "word_upload" ? "Checked in Word" : c.context}</td>
+                  <td className={`${cell} text-xs text-gray-600`}>{c.kind === "word_upload" ? "Checked in Word" : c.kind === "edited" ? `Edited on screen${c.context ? `; ${c.context}` : ""}` : c.context}</td>
                   <td className={`${cell} font-mono text-xs`}>
                     {c.kind === "word_upload" ? (
                       c.after

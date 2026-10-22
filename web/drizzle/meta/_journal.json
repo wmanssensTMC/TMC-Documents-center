@@ -71,6 +71,13 @@
       "when": 1792492024052,
       "tag": "0009_phase3_labels",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792660999111,
+      "tag": "0010_editor_edited_and_view",
+      "breakpoints": true
     }
   ]
 }

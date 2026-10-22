@@ -14,6 +14,8 @@ import { detectType, MAX_FILE_BYTES, parseUploadKey, cleanFilename } from "../fi
 import { countOpenJobs, MAX_OPEN_JOBS_PER_USER, wakeWorker } from "../jobs";
 import { assertLabelApprovable } from "../labels";
 import { fileStem, plainName } from "../naming";
+import { pendingEdit } from "./changes-pending";
+import { editsInput, SAFE_DOC_TEXT, sameEdits } from "./edits";
 import type { Storage } from "../storage";
 
 export class CheckError extends Error {}
@@ -23,8 +25,9 @@ export class ReplaceConfirmError extends CheckError {}
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 // Control characters, invisible format characters (bidi overrides, zero-width) and line
-// separators are refused (review I1).
-const SAFE = (s: string) => !/[\u0000-\u001f\u007f\u2028\u2029\p{Cf}]/u.test(s);
+// separators are refused (review I1), and so is every other character that shows nothing,
+// the same rule as the on-screen editor (review L4); here tabs and line breaks too.
+const SAFE = (s: string) => !/[\t\n]/.test(s) && SAFE_DOC_TEXT(s);
 
 const clean = (max: number) => z.string().trim().max(max).refine(SAFE, "contains control characters");
 
@@ -105,10 +108,12 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
   const r = z
     .object({
       metadata: metadataInput,
-      mode: z.enum(["editor", "upload"]),
+      mode: z.enum(["editor", "upload", "edited"]),
       fixes: fixesInput.optional(),
       docx: z.object({ key: z.string().max(200), filename: z.string().max(300) }).optional(),
+      edits: editsInput.optional(),
       confirmReplace: z.boolean().optional(),
+      acceptChanges: z.boolean().optional(),
     })
     .safeParse(raw);
   if (!r.success) throw new CheckError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
@@ -143,6 +148,15 @@ export async function requestFinalise(db: Db, storage: Storage, actor: Actor, do
       });
     }
     payload = { mode: "editor", fixes, metadata: input.metadata };
+  } else if (input.mode === "edited") {
+    // edited on screen: the worker writes the changes into the draft and records every change
+    // when it becomes Final (Willem 19/10, own editor 20/10)
+    if (!input.edits) throw new CheckError("save the edited document first");
+    if (!doc.docxKey || !doc.viewKey) throw new CheckError("this draft has no on-screen editor; run the supplier document again");
+    // a confirmation only counts for the very changes whose warnings were shown (review F5)
+    const shown = input.acceptChanges === true ? await pendingEdit(db, doc) : null;
+    const acceptChanges = !!shown && shown.warnings.length > 0 && sameEdits(shown.edits, input.edits);
+    payload = { mode: "edited", edits: input.edits, metadata: input.metadata, acceptChanges };
   } else {
     const ref = input.docx;
     const parsed = ref && parseUploadKey(ref.key);
@@ -241,7 +255,8 @@ export async function makeFinal(
       approvedBy: actor.email,
       approvedAt: now,
       yellowParts: [],
-      previewKey: null, // the DRAFT preview is no longer shown (review L6)
+      previewKey: null, // the DRAFT preview and the editor view are no longer shown (review L6, H1)
+      viewKey: null,
     })
     .where(and(eq(documents.id, doc.id), eq(documents.status, "To check")))
     .returning({ id: documents.id });
@@ -290,7 +305,7 @@ export async function rejectDraft(db: Db, actor: Actor, documentId: string, rawR
   if (await openFinaliseJob(db, documentId)) throw new CheckError("this document is being finalised");
   await db.transaction(async (tx) => {
     const doc = await loadDraft(tx, documentId);
-    await tx.update(documents).set({ status: "Rejected", rejectedReason: reason.data, previewKey: null }).where(eq(documents.id, doc.id));
+    await tx.update(documents).set({ status: "Rejected", rejectedReason: reason.data, previewKey: null, viewKey: null }).where(eq(documents.id, doc.id));
     await tx.insert(feedback).values({ actor: actor.email, documentId: doc.id, kind: "rejected", reason: reason.data });
     await logAudit(tx, actor, "document.rejected", doc.id, { reason: reason.data });
     await closeNeutraliseJobIfDone(tx, doc.jobId);

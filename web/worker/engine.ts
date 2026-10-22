@@ -132,7 +132,7 @@ export function cleanLog(log: string, workDir: string) {
   return out.length > LOG_MAX ? `…${out.slice(-LOG_MAX)}` : out;
 }
 
-/** web/worker/yellow.py (list / apply / preview), which reuses the engine's own helpers. */
-export function yellowArgv(command: "list" | "apply" | "preview" | "check", ...paths: string[]): string[] {
+/** web/worker/yellow.py (list / apply / preview / check / changes / view / edit), which reuses the engine's own helpers. */
+export function yellowArgv(command: "list" | "apply" | "preview" | "check" | "changes" | "view" | "edit", ...paths: string[]): string[] {
   return ["-I", path.join(__dirname, "yellow.py"), `--engine=${ENGINE_DIR}`, command, ...paths];
 }

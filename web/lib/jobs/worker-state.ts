@@ -4,7 +4,7 @@ import "server-only";
 import { and, eq, lt, sql } from "drizzle-orm";
 import { logAudit } from "../audit";
 import type { Db } from "../db";
-import { documents, jobs, type DocType, type Entity, type Job, type YellowPart } from "../db/schema";
+import { documents, feedback, jobs, type DocType, type Entity, type Job, type YellowPart } from "../db/schema";
 import { CheckError, makeFinal } from "../documents/check";
 
 /** A job left "running" this long is treated as crashed. */
@@ -59,6 +59,8 @@ export type Draft = {
   yellow: boolean;
   yellowParts: YellowPart[];
   previewKey: string | null;
+  /** The on-screen editor's view (yellow.py view); null when it could not be made. */
+  viewKey?: string | null;
   /** The batch the engine made this document for (one document per batch). */
   batch?: string | null;
   language?: string;
@@ -104,6 +106,7 @@ export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: nu
           sourceFilename: d.sourceFilename,
           yellowParts: d.yellowParts,
           previewKey: d.previewKey,
+          viewKey: d.viewKey ?? null,
           createdBy: job.createdBy,
           jobId: job.id,
         })
@@ -125,6 +128,8 @@ export async function saveFinal(
   job: Job,
   files: { pdfKey: string; pdfFilename: string; docxKey: string; docxFilename: string },
   log: string,
+  /** changes made on screen, kept for the feedback overview */
+  edits: Pick<typeof feedback.$inferInsert, "kind" | "before" | "after" | "context">[] = [],
 ) {
   if (!job.documentId || !job.payload) throw new Error("finalise job without document");
   const documentId = job.documentId;
@@ -140,5 +145,6 @@ export async function saveFinal(
     if (!doc) throw new CheckError("document not found");
     // The person who confirmed the yellow parts is the approver (anyone may, Willem 17/10).
     await makeFinal(tx, { email: job.createdBy }, doc, files, metadata, job.payload?.replaces ?? null);
+    if (edits.length) await tx.insert(feedback).values(edits.map((e) => ({ ...e, actor: job.createdBy, documentId })));
   });
 }

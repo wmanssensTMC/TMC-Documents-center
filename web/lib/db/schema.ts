@@ -17,6 +17,7 @@ import {
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
+import type { Edits } from "../documents/edits";
 import { DOC_TYPES, ENTITIES, JOB_KINDS, JOB_STATES, ROLES, ROUTES, STATUSES } from "../constants";
 
 export { DOC_TYPES, ENTITIES, JOB_KINDS, JOB_STATES, ROLES, ROUTES, STATUSES };
@@ -58,6 +59,10 @@ export type FinalisePayload = {
   | { mode: "upload"; docx: JobFile }
   // a draft without yellow: the worker checks name and content agree, then it is Final
   | { mode: "approve" }
+  // edited on screen (Willem 19/10, own editor 20/10): the changed pieces of text, written into
+  // the draft by the worker; changes not found in the supplier original are a warning;
+  // acceptChanges = the person saw the warnings and goes on
+  | { mode: "edited"; edits: Edits; acceptChanges?: boolean }
 );
 /** label jobs: the template (an id from lib/labels, never a path) and the other form values.
  * Product name, file nr and batch sit in the job's own columns, like a neutralise job. */
@@ -162,6 +167,8 @@ export const documents = pgTable(
     // Engine drafts: the yellow parts to check, and a preview PDF stamped DRAFT (view only).
     yellowParts: jsonb("yellow_parts").$type<YellowPart[]>(),
     previewKey: text("preview_key"),
+    // The on-screen editor's view of the draft (web/worker/yellow.py view), made with the draft.
+    viewKey: text("view_key"),
   },
   (t) => [
     // Never two Final versions of the same document. Drafts may sit next to the Final one.
@@ -172,6 +179,7 @@ export const documents = pgTable(
     uniqueIndex("documents_docx_key").on(t.docxKey),
     uniqueIndex("documents_source_key").on(t.sourceKey),
     uniqueIndex("documents_preview_key").on(t.previewKey),
+    uniqueIndex("documents_view_key").on(t.viewKey),
     index("documents_created_at").on(t.createdAt),
     // A Final document always has its PDF, a version number and a product name (BRIEF 7.2, 7.6).
     check(
@@ -199,7 +207,7 @@ export const auditLog = pgTable(
 
 // What people corrected or decided at the check: the feedback overview for the admin, to
 // improve the engine's reading rules. Never used to change a document automatically.
-export const FEEDBACK_KINDS = ["corrected", "confirmed", "rejected", "word_upload"] as const;
+export const FEEDBACK_KINDS = ["corrected", "confirmed", "rejected", "word_upload", "edited"] as const;
 export const feedbackKind = pgEnum("feedback_kind", FEEDBACK_KINDS);
 export const feedback = pgTable(
   "feedback",

@@ -5,6 +5,13 @@
 - Jobs is folded into Neutralise: the last 15 jobs show under the form, updating themselves while running; "All jobs" keeps the full list.
 - Upload is a button in the Library: "Add an existing TMC document".
 
+## 22/10/2026 · Own on-screen editor replaces SuperDoc (branch `phase-2e-own-editor`, not merged; security gate PASS 92/100)
+- Licence question closed: the check-screen editor is our own. SuperDoc is removed; no new outside library (Willem 20/10).
+- The worker makes an editor view of every new draft (`yellow.py view`, stored with the draft, migration 0010). The person changes any text (body, tables, text boxes, headers, footers), sets bold, italic or underline, removes yellow and adds line breaks; "Next yellow part" jumps to each yellow part.
+- Only the changed text goes back; the worker writes it into the engine's own Word file (`yellow.py edit`), so tables, pictures and the TMC layout cannot break. A piece that no longer reads what was shown is refused. All Final checks run as before (no supplier name, no yellow, file-name values printed, warnings for words not in the supplier original, feedback overview).
+- Not on screen: new paragraphs or table rows, moving tables or pictures, font, size or colour. The DRAFT PDF stays for the exact look. Drafts made before this change: run the supplier document again.
+- Security review fixes (first score 82): the editor view, like the DRAFT preview, is only served while the draft waits for a check (H1); browser, server and worker refuse the same invisible characters that could split a supplier name (M1, L4); tighter browser connection rule (L2); sizes from the view checked (L3). Open, Low: look-alike letters from other alphabets (L1, existed before).
+- Tests: `web/worker/test_yellow.py` (view and edit), `web/components/doc-editor-model.test.ts`, edited mode in `check.test.ts` and `worker.test.ts`. Tried in the browser on a sample draft (test data).
 
 ## 20/10/2026 · Phase 3 started early: label frame with a SAMPLE template (branch `phase-3-labels`, merged 21/10; security 83/100, fixes applied)
 - New label screen: choose a template, language (EN/FR) and entity, fill in the form (or start from a Final COA: product, dossier, batch and the dates it holds), send. The worker makes Word + PDF with the engine (`engine/scripts/make_label.py`); nothing heavy runs on Vercel.
@@ -34,6 +41,14 @@
 - Test: `engine/tests/test_real_corpus_rules.py` (synthetic copies of each case).
 - Second round: header words only as whole words, longest wins ("Free Amine" is no "min" column, "Test results" is a result); a row with numbers is never a header; a header shifted by merged cells; an unnamed result column; a "Pesticide" first column; "Nil"/"None" kept as values; date lines kept out of the results; purchase-order items with item code and trade name line ("Lactose Monohydrate Pharmatose 200M"), tariff/ADR lines never part of a name; two order lines that fit a COA equally well give no product name (yellow, never a guess); the same batch in two files gives one document (identical) or is held back (different); "SLED" = expiry date; the analysis date is not taken as production date. The dispatcher uses the same list of COA titles as the COA route ("Quality certificate", "Product analysis report") and knows purchase orders.
 - Measured on the dossiers: Cocamide DEA 55% -> 95% of the values, Lanolin 51% -> 87%; no document stopped by the gate. Open: scans need Tesseract (IT); the MSDS route fails on most real MSDS (section 1.3 not found), next step.
+
+## 20/10/2026 · On-screen document editor (branch `phase-2e-editor`, not merged; security gate PASS 90/100)
+- Check screen, "Edit the document": the draft opens as the real Word document in the browser, supplier original on the left. Any text and formatting can be changed (Willem 19/10, option A).
+- Save and finalise: the worker runs every Final check on the edited file (no macros or outside links, no supplier name, file-name values printed, no yellow left). Changes that bring in words or numbers not found in the supplier original come back as warnings; the person ticks "I checked these changes" and goes on. Every change is kept in the feedback overview ("Edited on screen") and CSV.
+- The last edit that did not become Final can be reopened, so no work is lost.
+- Editor: SuperDoc 2.24.0 (npm), runs in the browser only, its usage reporting switched off. Licence: AGPL-3.0 (free) or a paid commercial licence: decision for Willem before go-live (see BRIEF 11).
+- The quick yellow-parts list and "check in Word yourself" stay as alternatives.
+- Security review fixes (first score 80): yellow shading counts as yellow too, and the editor was shown to keep the yellow highlight when it saves (F1); link addresses are read for the supplier name and a picture added in the editor is a warning (F2); in production the browser may only connect to this app and the file store (F4); a confirmation only counts for the saved version whose warnings were shown (F5); size cap on the comparison (F6); footnotes, endnotes and comments are compared too (F7). A document over 20000 paragraphs gets a warning that only the first part was compared. Open for Willem: F3 (see BRIEF 11).
 
 
 ## 19/10/2026 · COA batches, file-name rule, MSDS pictograms (security gate PASS 92/100)

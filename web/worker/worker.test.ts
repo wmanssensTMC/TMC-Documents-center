@@ -6,12 +6,13 @@ import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Actor } from "../lib/audit";
 import { createPgliteDb, type Db } from "../lib/db";
-import { documents, jobs } from "../lib/db/schema";
+import { documents, feedback, jobs } from "../lib/db/schema";
 import { newUploadKey } from "../lib/files";
 import { createJobs } from "../lib/jobs";
 import { claimNextJob, MAX_ATTEMPTS, requeueStaleJobs } from "../lib/jobs/worker-state";
 import { localStorage, type Storage } from "../lib/storage";
 import { cleanLog, engineArgv } from "./engine";
+import { changeWarnings } from "../lib/documents/changes";
 import { approveDraft, requestFinalise } from "../lib/documents/check";
 import { createLabelJob } from "../lib/labels";
 import { LABEL_TEMPLATES } from "../lib/labels/templates";
@@ -236,6 +237,67 @@ c.save()`;
       pdfFilename: "TMC_COA_840.S0997_Sodium_Benzoate_SB-2026-114.pdf",
       pdfKey: draft.pdfKey, // the engine's own PDF, only the name follows the rule
     });
+  }, 300_000);
+
+  it("edited on screen: a new number not in the original is a warning; once confirmed it is Final and kept as feedback", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "tmc-edit-"));
+    const pdfPath = path.join(dir, "coa.pdf");
+    syntheticCoa(pdfPath);
+    await createJobs(db, storage, willem, [
+      { route: "coa", entity: "TMC", productName: "Sodium Benzoate", fileNr: "840.S0996", supplierFile: await upload(new Uint8Array(readFileSync(pdfPath)), "coa.pdf") },
+    ]);
+    await processNeutraliseJob(db, storage, (await claimNextJob(db))!);
+    const [draft] = await db.select().from(documents);
+
+    expect(draft.viewKey).toBeTruthy(); // the on-screen editor's view is made with the draft
+
+    // the person changes the assay 99.6 into 99.9 in the editor: only that piece is sent
+    const file = await storage.get(draft.viewKey!);
+    const chunks: Uint8Array[] = [];
+    for await (const c of file!.stream as unknown as AsyncIterable<Uint8Array>) chunks.push(c);
+    const view = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    type ViewRun = { t: "r"; id: string | null; text: string; b: boolean; i: boolean; u: boolean; hl: boolean };
+    type ViewBlock = { t: string; items?: { t: string }[]; rows?: { blocks: ViewBlock[] }[][] };
+    const runs: ViewRun[] = [];
+    const walk = (blocks: ViewBlock[]) => {
+      for (const b of blocks) {
+        if (b.t === "p") b.items!.forEach((i) => i.t === "r" && runs.push(i as ViewRun));
+        else b.rows!.forEach((row) => row.forEach((cell) => walk(cell.blocks)));
+      }
+    };
+    view.parts.forEach((p: { blocks: ViewBlock[] }) => walk(p.blocks));
+    const assay = runs.find((r) => r.id && r.text.includes("99.6"));
+    expect(assay, JSON.stringify(runs.map((r) => r.text))).toBeTruthy();
+    const piece = { text: assay!.text.replace("99.6", "99.9"), b: assay!.b, i: assay!.i, u: assay!.u, hl: assay!.hl };
+    const edits = { runs: [{ id: assay!.id!, was: assay!.text, parts: [piece] }], paras: [] };
+    const metadata = { productName: "Sodium Benzoate", fileNr: "840.S0996", batch: "SB-2026-114" };
+
+    // an edit of a piece that no longer reads what was shown is refused; nothing changes
+    await requestFinalise(db, storage, willem, draft.id, { mode: "edited", metadata, edits: { runs: [{ ...edits.runs[0], was: "other" }], paras: [] } });
+    const stale = (await claimNextJob(db))!;
+    await processFinaliseJob(db, storage, stale);
+    const [refused] = await db.select().from(jobs).where(eq(jobs.id, stale.id));
+    expect(refused.state).toBe("failed");
+    expect(refused.log).toMatch(/does not match the draft/);
+
+    await requestFinalise(db, storage, willem, draft.id, { mode: "edited", metadata, edits });
+    const first = (await claimNextJob(db))!;
+    await processFinaliseJob(db, storage, first);
+    const [stopped] = await db.select().from(jobs).where(eq(jobs.id, first.id));
+    expect(stopped.state, stopped.log ?? "").toBe("failed");
+    expect(changeWarnings(stopped.log)?.[0]?.unknown).toContain("99.9");
+    expect((await db.select().from(documents))[0].status).toBe("To check");
+
+    await requestFinalise(db, storage, willem, draft.id, { mode: "edited", metadata, acceptChanges: true, edits });
+    const second = (await claimNextJob(db))!;
+    await processFinaliseJob(db, storage, second);
+    const [done] = await db.select().from(jobs).where(eq(jobs.id, second.id));
+    expect(done.state, done.log ?? "").toBe("done");
+    const [final] = await db.select().from(documents);
+    expect(final.status).toBe("Final");
+    expect(final.docxKey).not.toBe(draft.docxKey); // a new Word file; the draft is never overwritten
+    const fb = await db.select().from(feedback);
+    expect(fb.some((f) => f.kind === "edited" && (f.after ?? "").includes("99.9") && (f.context ?? "").includes("99.9"))).toBe(true);
   }, 300_000);
 
   it("a document the engine does not recognise fails the job and stores nothing", async () => {

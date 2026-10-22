@@ -7,6 +7,7 @@ import type { Db } from "../lib/db";
 import type { DocType, Entity, Job, YellowPart } from "../lib/db/schema";
 import { eq } from "drizzle-orm";
 import { documents } from "../lib/db/schema";
+import { CHANGES_MARK, parseChanges, type Change } from "../lib/documents/changes";
 import { finalName, shownValues } from "../lib/documents/check";
 import { engineEntityJson, getEntity } from "../lib/entities";
 import { MAX_FILE_BYTES, newUploadKey } from "../lib/files";
@@ -20,6 +21,9 @@ export { plainName };
 
 const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const PDF = "application/pdf";
+const JSON_TYPE = "application/json";
+/** A bigger view (pictures included) is not offered: the browser would struggle with it. */
+const MAX_VIEW_BYTES = 12 * 1024 * 1024;
 const SAFE_TEXT = /^[^\u0000-\u001f\u007f\u2028\u2029\p{Cf}]{0,100}$/u;
 
 /** The batch the engine says this document is for (COA route, <stem>.meta.json). */
@@ -139,6 +143,17 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
         } // no preview: the check screen offers the Word download instead
       }
 
+      // The on-screen editor's view of this draft (own editor, Willem 20/10). Without it the
+      // check screen offers the yellow-parts list and the Word download instead.
+      let viewKey: string | null = null;
+      const viewPath = path.join(dir, `${stem}.view.json`);
+      const view = await runPython(yellowArgv("view", docxPath, viewPath), dir);
+      const viewJson = view.code === 0 ? await readFile(viewPath).catch(() => null) : null;
+      if (viewJson && viewJson.length <= MAX_VIEW_BYTES) {
+        viewKey = newUploadKey("view");
+        await storage.put(viewKey, viewJson, JSON_TYPE);
+      }
+
       drafts.push({
         name: stem,
         type: (m[2] === "COA" ? "COA" : m[2] === "MSDS" ? "MSDS" : "TDS") as DocType,
@@ -152,6 +167,7 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
         yellow: !pdf,
         yellowParts,
         previewKey,
+        viewKey,
         batch: await engineBatch(outDir, stem, m[2] === "COA"),
       });
     }
@@ -263,14 +279,25 @@ export async function processFinaliseJob(db: Db, storage: Storage, job: Job) {
     await mkdir(outDir);
     const finalDocx = path.join(outDir, `${name}.docx`);
     let approved: { pdfKey: string; docxKey: string } | null = null;
+    const draft = path.join(dir, "draft.docx");
     if (payload.mode === "editor") {
       if (!doc.docxKey) return failJob(db, job, null, "[worker] the draft has no Word file");
-      const draft = path.join(dir, "draft.docx");
       await download(storage, doc.docxKey, draft);
       const fixes = path.join(dir, "fixes.json");
       await writeFile(fixes, JSON.stringify(payload.fixes), "utf8");
       const applied = await runPython(yellowArgv("apply", draft, fixes, finalDocx), dir);
       if (applied.code !== 0) return failJob(db, job, applied.code, `[worker] the corrections could not be written in\n${applied.log}`);
+    } else if (payload.mode === "edited") {
+      // Own editor (Willem 20/10): only the changed pieces of text come from the browser; they
+      // are written into the engine's own draft, so its layout stays as it is.
+      if (!doc.docxKey) return failJob(db, job, null, "[worker] the draft has no Word file");
+      await download(storage, doc.docxKey, draft);
+      const changes = path.join(dir, "edits.json");
+      await writeFile(changes, JSON.stringify(payload.edits), "utf8");
+      const applied = await runPython(yellowArgv("edit", draft, changes, finalDocx), dir);
+      if (applied.code !== 0) return failJob(db, job, applied.code, `[worker] the changes could not be written in
+${applied.log}
+${stays}`);
     } else if (payload.mode === "approve") {
       if (!doc.docxKey || !doc.pdfKey) return failJob(db, job, null, "[worker] the draft has no Word file or PDF");
       if ((doc.yellowParts ?? []).length) return failJob(db, job, null, `[worker] the draft has yellow parts
@@ -296,6 +323,27 @@ ${stays}`);
     const safe = await runPython(yellowArgv("check", finalDocx, forbid, shown), dir);
     if (safe.code !== 0) return failJob(db, job, safe.code, `${safe.log}\n${stays}`);
 
+    // Edited on screen (Willem 19/10): every change is kept as feedback; a change that brings in
+    // words or numbers not found in the supplier original is a warning the person must see.
+    let edits: Change[] = [];
+    if (payload.mode === "edited") {
+      const listed = await runPython(yellowArgv("list", finalDocx), dir, { keepStdout: true });
+      const left = listed.code === 0 ? parseYellowParts(listed.stdout).length : -1;
+      if (left !== 0) {
+        return failJob(db, job, listed.code, `[worker] ${left > 0 ? left : "some"} yellow part(s) still marked: check each one and remove its highlight\n${stays}`);
+      }
+      if (!doc.sourceKey) return failJob(db, job, null, "[worker] the supplier original is missing");
+      const source = path.join(dir, "source.pdf");
+      await download(storage, doc.sourceKey, source);
+      const compared = await runPython(yellowArgv("changes", draft, finalDocx, source), dir, { keepStdout: true });
+      if (compared.code !== 0) return failJob(db, job, compared.code, `[worker] the changes could not be compared\n${compared.log}`);
+      edits = parseChanges(compared.stdout);
+      const warned = edits.filter((c) => c.unknown.length);
+      if (warned.length && !payload.acceptChanges) {
+        return failJob(db, job, null, [CHANGES_MARK + JSON.stringify(warned.slice(0, 20)), `[worker] ${warned.length} change(s) bring in words or numbers that are not in the supplier original: check them, then confirm to go on`, stays].join("\n"));
+      }
+    }
+
     const files = { pdfFilename: `${name}.pdf`, docxFilename: `${name}.docx` };
     if (approved) {
       // The engine's own PDF of this same Word file: only the file names change.
@@ -315,7 +363,13 @@ ${stays}`);
     }
     const pdfKey = newUploadKey("pdf");
     await storage.put(pdfKey, pdf, PDF);
-    await saveFinal(db, job, { ...files, pdfKey, docxKey }, run.log);
+    const feedbackRows = edits.map((c) => ({
+      kind: "edited" as const,
+      before: c.before,
+      after: c.after,
+      context: c.unknown.length ? `not in the original, accepted after the warning: ${c.unknown.join(" ")}`.slice(0, 300) : null,
+    }));
+    await saveFinal(db, job, { ...files, pdfKey, docxKey }, run.log, feedbackRows);
   } catch (err) {
     await failJob(db, job, null, cleanLog(`[worker] ${err instanceof Error ? err.message : "unexpected error"}`, dir));
   } finally {
