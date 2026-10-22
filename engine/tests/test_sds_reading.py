@@ -111,11 +111,57 @@ strong, _weak = harvest_identity([{"kind": "para", "text": "Company name Example
                                   {"kind": "kv", "label": "Telephone", "value": "+49 000 111-0"}], 0, 2)
 check("the company name is taken without its label, so it is also found in a disclaimer",
       "Example PharmaChemikalien GmbH" in strong, strong)
-lines = [[{"text": "Product X SDS UK", "top": 40}, {"text": f"text {i}", "top": 400}] for i in range(4)]
+lines = [[{"text": "Product X SDS UK", "top": 40, "x0": 40}, {"text": f"text {i}", "top": 400, "x0": 40}] for i in range(4)]
 check("a line repeated at the top of most pages is page furniture", "product x sds uk" in _furniture(lines, [842] * 4))
 check("a table value at the bottom of a page does not continue on the next page",
       not _open_sentence("Marine water 0.01 mg/l"))
 check("an unfinished sentence does", _open_sentence("If exposure limits have not been established and"))
+
+# security review of round 2 (22/10/2026)
+els = [{"kind": "para", "text": "1.3 Supplier"}, {"kind": "para", "text": "Example SA"},
+       {"kind": "para", "text": "1.4 Emergency telephone number"},
+       {"kind": "para", "text": "+32 4 000 00 00 (supplier)"},
+       {"kind": "para", "text": "Available outside office hours."},
+       {"kind": "table", "rows": [["Poison centre", "+44 1235 000 000"]]},
+       {"kind": "section", "text": "SECTION 2: HAZARDS"}]
+out, _m, rep = neutralise(els, {}, json.loads((ROOT / "entity.example.json").read_text(encoding="utf-8")), None, None)
+texts = [e.get("text", "") for e in out]
+check("1.4: lines without a phone number or e-mail stay (review M2)", "Available outside office hours." in texts, texts)
+check("1.4: a phone number in a 1.4 table is removed too (review M3)",
+      not any("1235" in c for e in out if e["kind"] == "table" for r in e["rows"] for c in r), out)
+els = [{"kind": "para", "text": "1.3 Supplier"}, {"kind": "para", "text": "Example SA"},
+       {"kind": "para", "text": "1.4 Emergency telephone number"}] + \
+      [{"kind": "para", "text": f"Country {n}: +1 555 000 00{n:02d}"} for n in range(12)]
+out, _m, rep = neutralise(els, {}, json.loads((ROOT / "entity.example.json").read_text(encoding="utf-8")), None, None)
+check("1.4 with no section 2 after it and many lines: kept and marked yellow, never cleared (review M1)",
+      sum(1 for e in out if e.get("yellow")) == 12, [(e.get("text"), e.get("yellow")) for e in out])
+lines = [[{"text": "Product X SDS UK", "top": 40 + (i * 7 if i % 2 else 0), "x0": 40}, {"text": f"t {i}", "top": 400, "x0": 40}]
+         for i in range(4)]
+check("a repeated line at different places is not page furniture (review M4)", "product x sds uk" not in _furniture(lines, [842] * 4))
+check("'1. 2-Butanone' is left as printed (review L2)", _tidy_number("1. 2-Butanone") == "1. 2-Butanone")
+strong, _weak = harvest_identity([{"kind": "para", "text": "Company name:"}, {"kind": "para", "text": "Name Chemicals Ltd"}], 0, 2)
+check("a label-only line is skipped and the real name is taken, also as written (review L1)",
+      "Name Chemicals Ltd" in strong, strong)
+
+# a long product name is never cut off in the page header (22/10/2026, Willem)
+from build_sds_docx import build  # noqa: E402
+from docx import Document  # noqa: E402
+with tempfile.TemporaryDirectory() as d:
+    tpl = str(ROOT / "assets" / "TMC_SDS_template.docx")
+    base = Document(tpl).sections[0].top_margin
+    short, long_ = Path(d) / "short.docx", Path(d) / "long.docx"
+    build([{"kind": "para", "text": "x"}], {"product_name": "Best Friend"}, tpl, str(short))
+    build([{"kind": "para", "text": "x"}], {"product_name": "TENSAGEX EOC370 / EOC470 / EOC670 / EOC670B / EOC670(MB) / "
+                                            "EOC670N / EOC670N(MB) Lauryl Ether Carboxylic Acid"}, tpl, str(long_))
+    def head(p):
+        sec = Document(str(p)).sections[0]
+        run = next(r for par in sec.header.paragraphs for r in par.runs if r.text.strip())
+        return run.font.size.pt, sec.top_margin
+    s_size, s_margin = head(short)
+    l_size, l_margin = head(long_)
+    check("a short name keeps 16 pt and the page margin", s_size == 16 and s_margin == base, (s_size, s_margin, base))
+    check("a long name shrinks (11 pt at least) and the page text moves down to fit it",
+          11 <= l_size < 16 and l_margin > base, (l_size, l_margin, base))
 
 # review F2: the overprint rule follows the letter size; real repeated letters are never merged
 with tempfile.TemporaryDirectory() as d:

@@ -44,7 +44,9 @@ def _tidy_number(text):
     """A section number at the start of a line as printed: "1 .3 Details" -> "1.3 Details"
     (22/10/2026: a PDF gave its numbers with a space before the dot). Only the leading number
     with a dot in it; the gate reads "1 .3" and "1.3" the same."""
-    return re.sub(r"^(\s*\d{1,2}(?:\s?\.\s?\d{1,2})+)", lambda m: re.sub(r"\s+(?=\.)|(?<=\.)\s+", "", m.group(1)), text)
+    # only a section number: followed by a heading word ("1 .3 Details"), never "1. 2-Butanone" (review L2)
+    return re.sub(r"^(\s*\d{1,2}(?:\s?\.\s?\d{1,2})+)(?=\s+[A-Z\[(]|\s*$)",
+                  lambda m: re.sub(r"\s+(?=\.)|(?<=\.)\s+", "", m.group(1)), text)
 
 
 def dedupe(page):
@@ -200,16 +202,26 @@ def _furn_key(text):
 
 
 def _furniture(pages_lines, heights):
-    """Lines that repeat in the top or bottom band of at least half the pages (and at least 3):
-    a running header or footer, not content."""
+    """Lines that repeat in the top or bottom band of at least half the pages (and at least 3),
+    at the same place on each page (within 3 pt): a running header or footer, not content
+    (review M4: a real line that only happens to repeat somewhere is kept)."""
     n = len(pages_lines)
     if n < 3:
         return set()
     seen = {}
     for lines, h in zip(pages_lines, heights):
-        for k in {_furn_key(ln["text"]) for ln in lines if ln["top"] < 0.18 * h or ln["top"] > 0.85 * h}:
-            seen[k] = seen.get(k, 0) + 1
-    return {k for k, c in seen.items() if c >= max(3, n / 2) and len(k) > 3}
+        here = {}
+        for ln in lines:
+            if ln["top"] < 0.18 * h or ln["top"] > 0.85 * h:
+                here.setdefault(_furn_key(ln["text"]), (ln["top"], ln["x0"]))
+        for k, pos in here.items():
+            seen.setdefault(k, []).append(pos)
+    out = set()
+    for k, pos in seen.items():
+        tops, xs = [p[0] for p in pos], [p[1] for p in pos]
+        if len(pos) >= max(3, n / 2) and len(k) > 3 and max(tops) - min(tops) <= 3 and max(xs) - min(xs) <= 3:
+            out.add(k)
+    return out
 
 
 def extract(path, image_dir=None):
@@ -223,6 +235,7 @@ def extract(path, image_dir=None):
         # ("Theophyllin wfr. Powder SDS UK") are page furniture (22/10/2026, real MSDS)
         pages_lines = [_lines(dedupe(p), meta["pages"]) for p in pdf.pages]
         furniture = _furniture(pages_lines, [p.height for p in pdf.pages])
+        furniture_seen = set()
         for pi, page in enumerate(pdf.pages):
             if hasattr(page, "dedupe_chars"):
                 page = dedupe(page)     # fake bold: letters printed twice, read once
@@ -306,8 +319,16 @@ def extract(path, image_dir=None):
                             els.append({"kind": "table", "rows": rows, "page": pi + 1})
                     continue
                 # a line repeated at the top or bottom of most pages is page furniture
-                if _furn_key(ln["text"]) in furniture:
-                    continue
+                # Kept once, its first time: a running header can hold the issue date and the
+                # version, which an MSDS must show. Only the repeats, and pure "continued on next
+                # page" lines, are left out (22/10/2026, real MSDS).
+                fk = _furn_key(ln["text"])
+                if fk in furniture:
+                    if fk in furniture_seen or re.search(r"continued|suite|fortsetzung|vervolg", fk):
+                        if ln["text"] not in meta.setdefault("furniture", []):
+                            meta["furniture"].append(ln["text"])  # reported, never silent (M4)
+                        continue
+                    furniture_seen.add(fk)
 
                 # "SECTION 2: HAZARDS IDENTIFICATION" is a section heading also when the supplier
                 # did not set it bold or large (20/10/2026, real MSDS)

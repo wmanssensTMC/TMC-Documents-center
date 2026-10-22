@@ -114,9 +114,14 @@ def _source_corpus(pdf_path, scrub_tokens=()):
     """
     import pdfplumber
     from neutralise_sds import scrub_text
-    from extract_sds import LABEL_X, _lines, dedupe
+    from extract_sds import LABEL_X, _furn_key, _furniture, _lines, dedupe
     texts = []
     with pdfplumber.open(pdf_path) as pdf:
+        # 5. the whole text with repeated page headers/footers left out, as the reader joins a
+        # paragraph over a page break (22/10/2026, real MSDS): still only the source's own text
+        pages_lines = [_lines(dedupe(p), len(pdf.pages)) for p in pdf.pages]
+        furniture = _furniture(pages_lines, [p.height for p in pdf.pages])
+        texts.append(" ".join(ln["text"] for lines in pages_lines for ln in lines if _furn_key(ln["text"]) not in furniture))
         for page in pdf.pages:
             texts.append(page.extract_text() or "")
             # 4. the same source as the reader sees it: letters printed twice for bold read
@@ -194,6 +199,10 @@ def main():
         sys.exit("Aborted: neutralisation incomplete.")
     for s, ctx in rep.get("review", []):
         print(f"  !  kept (regulatory context, review): '{s}' in \"{ctx}\"")
+    for t in meta.get("furniture", []):
+        print(f"  i  repeated page header/footer left out after its first time: '{t[:80]}'")
+    for t in rep.get("removed_lines", []):
+        print(f"  i  removed (supplier details): '{t[:80]}'")
 
     if rep.get("product_name_to"):
         print(f"  i  trade name  : '{rep['product_name_from']}' -> "
