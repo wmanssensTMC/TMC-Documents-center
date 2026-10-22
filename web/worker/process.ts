@@ -279,6 +279,7 @@ export async function processFinaliseJob(db: Db, storage: Storage, job: Job) {
     await mkdir(outDir);
     const finalDocx = path.join(outDir, `${name}.docx`);
     let approved: { pdfKey: string; docxKey: string } | null = null;
+    let structural: Change[] = [];
     const draft = path.join(dir, "draft.docx");
     if (payload.mode === "editor") {
       if (!doc.docxKey) return failJob(db, job, null, "[worker] the draft has no Word file");
@@ -294,10 +295,9 @@ export async function processFinaliseJob(db: Db, storage: Storage, job: Job) {
       await download(storage, doc.docxKey, draft);
       const changes = path.join(dir, "edits.json");
       await writeFile(changes, JSON.stringify(payload.edits), "utf8");
-      const applied = await runPython(yellowArgv("edit", draft, changes, finalDocx), dir);
-      if (applied.code !== 0) return failJob(db, job, applied.code, `[worker] the changes could not be written in
-${applied.log}
-${stays}`);
+      const applied = await runPython(yellowArgv("edit", draft, changes, finalDocx), dir, { keepStdout: true });
+      if (applied.code !== 0) return failJob(db, job, applied.code, `[worker] the changes could not be written in\n${applied.log}\n${stays}`);
+      structural = parseChanges(applied.stdout); // rows or columns taken out: always shown as a warning
     } else if (payload.mode === "approve") {
       if (!doc.docxKey || !doc.pdfKey) return failJob(db, job, null, "[worker] the draft has no Word file or PDF");
       if ((doc.yellowParts ?? []).length) return failJob(db, job, null, `[worker] the draft has yellow parts
@@ -337,7 +337,8 @@ ${stays}`);
       await download(storage, doc.sourceKey, source);
       const compared = await runPython(yellowArgv("changes", draft, finalDocx, source), dir, { keepStdout: true });
       if (compared.code !== 0) return failJob(db, job, compared.code, `[worker] the changes could not be compared\n${compared.log}`);
-      edits = parseChanges(compared.stdout);
+      // new words first: deleted rows must never push them out of view (review M1)
+      edits = [...parseChanges(compared.stdout), ...structural];
       const warned = edits.filter((c) => c.unknown.length);
       if (warned.length && !payload.acceptChanges) {
         return failJob(db, job, null, [CHANGES_MARK + JSON.stringify(warned.slice(0, 20)), `[worker] ${warned.length} change(s) bring in words or numbers that are not in the supplier original: check them, then confirm to go on`, stays].join("\n"));
@@ -345,14 +346,25 @@ ${stays}`);
     }
 
     const files = { pdfFilename: `${name}.pdf`, docxFilename: `${name}.docx` };
+    // Layout (Willem 22/10): nothing over the TMC letterhead, nothing cut off; otherwise no Final.
+    const layoutOk = async (pdfPath: string) => {
+      const checked = await runPython(yellowArgv("layout", pdfPath, finalDocx), dir);
+      return checked.code === 0 ? null : `${checked.log}\n${stays}`;
+    };
     if (approved) {
       // The engine's own PDF of this same Word file: only the file names change.
+      const enginePdf = path.join(dir, "engine.pdf");
+      await download(storage, approved.pdfKey, enginePdf);
+      const bad = await layoutOk(enginePdf);
+      if (bad) return failJob(db, job, null, bad);
       await saveFinal(db, job, { ...files, ...approved }, safe.log);
       return;
     }
     const run = await runPython(finaliseArgv(finalDocx), dir);
     const pdf = run.code === 0 ? await readFile(path.join(outDir, files.pdfFilename)).catch(() => null) : null;
     if (!pdf) return failJob(db, job, run.code, `${run.log}\n${stays}`);
+    const bad = await layoutOk(path.join(outDir, files.pdfFilename));
+    if (bad) return failJob(db, job, null, bad);
 
     let docxKey: string;
     if (payload.mode === "upload") {

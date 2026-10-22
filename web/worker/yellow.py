@@ -11,6 +11,7 @@ on the check screen -- never automatically (BRIEF 7.2).
   python yellow.py --engine DIR changes DRAFT EDITED SOURCE.pdf -> JSON list of changes on stdout
   python yellow.py --engine DIR view DOCX OUT.json            -> the on-screen editor's view
   python yellow.py --engine DIR edit DOCX EDITS.json OUT.docx -> the editor's changes written in
+  python yellow.py --engine DIR layout PDF DOCX               -> exit 1 if text covers the letterhead or is cut off
   python yellow.py --engine DIR check DOCX FORBID.json [SHOWN.json]
                                      -> exit 1 if unsafe, names the supplier, or does not
                                         print a value of its file name (SHOWN: [[label, value]])
@@ -338,6 +339,257 @@ def _numbered(doc):
     return runs, paras
 
 
+def _tables(doc):
+    """Every table with its number (t0..) and the part it belongs to (same walk as the runs)."""
+    out = []
+    for _kind, el, parent in _containers(doc):
+        out += [(t, parent) for t in el.xpath('.//w:tbl[not(ancestor::*[local-name()="Fallback"])]')]
+    return out
+
+
+# ---- rows and columns (Willem 22/10) ---------------------------------------------------------
+# A table may get rows and columns only when its grid is plain: every row fills the grid, no
+# cell merged with the row below, no cell inside a content control. A new row or column copies
+# the formatting of its neighbour, without text and without yellow; widths are shared out so
+# the table keeps its width on the TMC page.
+
+def _cells(tr):
+    return tr.xpath("./w:tc")
+
+
+def _span(tc):
+    v = tc.xpath("./w:tcPr/w:gridSpan/@w:val")
+    return int(v[0]) if v and v[0].isdigit() else 1
+
+
+def _set_span(tc, n):
+    from docx.oxml import OxmlElement
+    tcPr = tc.find(f"{W_NS}tcPr")
+    if tcPr is None:
+        tcPr = OxmlElement("w:tcPr")
+        tc.insert(0, tcPr)
+    g = tcPr.find(f"{W_NS}gridSpan")
+    if n == 1:
+        if g is not None:
+            tcPr.remove(g)
+        return
+    if g is None:
+        g = OxmlElement("w:gridSpan")
+        after = tcPr.find(f"{W_NS}tcW")
+        if after is not None:
+            after.addnext(g)
+        else:
+            tcPr.insert(0, g)
+    g.set(f"{W_NS}val", str(n))
+
+
+ALIGNS = {"left": "LEFT", "center": "CENTER", "right": "RIGHT", "justify": "JUSTIFY"}
+
+
+def _removed_text(tbl, op):
+    """The text a row or column change takes out of the table (for the warning), or ''."""
+    rows = tbl.xpath("./w:tr")
+    at = op.get("at")
+    if not isinstance(at, int) or isinstance(at, bool) or at < 0:
+        return ""
+    if op.get("op") == "delRow" and at < len(rows):
+        return " | ".join("".join(t.text or "" for t in tc.iter(f"{W_NS}t")) for tc in _cells(rows[at])).strip(" |")
+    if op.get("op") == "delCol":
+        out = []
+        for tr in rows:
+            col = 0
+            for tc in _cells(tr):
+                if col <= at < col + _span(tc) and _span(tc) == 1:
+                    out.append("".join(t.text or "" for t in tc.iter(f"{W_NS}t")))
+                col += _span(tc)
+        return " | ".join(x for x in out if x)
+    return ""
+
+
+def plain_grid(tbl):
+    """True when rows and columns may be added or removed on screen."""
+    cols = tbl.xpath("./w:tblGrid/w:gridCol")
+    rows = tbl.xpath("./w:tr")
+    if not cols or not rows or tbl.xpath("./w:tr/w:sdt | ./w:tr/w:tc/w:tcPr/w:vMerge"):
+        return False
+    if tbl.xpath("./w:tr/w:trPr/w:gridBefore | ./w:tr/w:trPr/w:gridAfter"):
+        return False
+    allowed = {f"{W_NS}{t}" for t in ("trPr", "tblPrEx", "tc", "bookmarkStart", "bookmarkEnd")}
+    if any(c.tag not in allowed for tr in rows for c in tr):
+        return False                                # cells inside other markup: copied with their text
+    return all(sum(_span(tc) for tc in _cells(tr)) == len(cols) for tr in rows)
+
+
+NOT_COPIED = {f"{W_NS}{t}" for t in ("highlight", "shd", "ins", "del", "rPrChange", "moveFrom", "moveTo",
+                                        "vanish", "specVanish", "webHidden")}
+MAX_TABLE_OPS, MAX_ROWS, MAX_COLS = 500, 500, 40
+
+
+def _sid(e):
+    """The id of one change, only when it is text."""
+    v = e.get("id") if isinstance(e, dict) else None
+    return v if isinstance(v, str) else None
+
+
+def _blank(tc_src, templates):
+    """A copy of a cell without its text, nested tables or yellow; remembers the letter to use."""
+    import copy
+    tc = copy.deepcopy(tc_src)
+    from tmc_common import YELLOW_FILLS
+    for el in tc.xpath("./w:tcPr/w:vMerge | ./w:tcPr/w:tcPrChange | ./w:tcPr/w:cellIns | ./w:tcPr/w:cellDel"):
+        el.getparent().remove(el)
+    for shd in tc.xpath("./w:tcPr/w:shd | ./w:p/w:pPr/w:shd"):
+        if (shd.get(f"{W_NS}fill") or "").upper() in YELLOW_FILLS:
+            shd.getparent().remove(shd)
+    first = tc.find(f"{W_NS}p")
+    rPr = None
+    if first is not None:
+        model = first.xpath(".//w:r[w:t]/w:rPr")
+        rPr = copy.deepcopy(model[0]) if model else None
+    for c in list(tc):
+        if c.tag != f"{W_NS}tcPr" and c is not first:
+            tc.remove(c)
+    if first is None:
+        from docx.oxml import OxmlElement
+        first = OxmlElement("w:p")
+        tc.append(first)
+    for c in list(first):
+        if c.tag != f"{W_NS}pPr":
+            first.remove(c)
+    for el in first.xpath("./w:pPr/w:pPrChange | ./w:pPr/w:rPr"):
+        el.getparent().remove(el)
+    if rPr is not None:
+        for c in list(rPr):
+            if c.tag in NOT_COPIED:
+                rPr.remove(c)
+    templates[tc] = rPr
+    return tc
+
+
+def _widths(tbl):
+    out = []
+    for g in tbl.xpath("./w:tblGrid/w:gridCol"):
+        v = g.get(f"{W_NS}w")
+        out.append(int(v) if v and v.isdigit() else 1000)
+    return out
+
+
+def _set_widths(tbl, widths):
+    """Grid widths, and each cell's width as the sum of the columns it covers."""
+    from docx.oxml import OxmlElement
+    grid = tbl.find(f"{W_NS}tblGrid")
+    for g in list(grid):
+        grid.remove(g)
+    for w in widths:
+        g = OxmlElement("w:gridCol")
+        g.set(f"{W_NS}w", str(w))
+        grid.append(g)
+    for tr in tbl.xpath("./w:tr"):
+        col = 0
+        for tc in _cells(tr):
+            span = _span(tc)
+            tcW = tc.find(f"{W_NS}tcPr/{W_NS}tcW")
+            if tcW is not None:
+                tcW.set(f"{W_NS}w", str(sum(widths[col:col + span])))
+                tcW.set(f"{W_NS}type", "dxa")
+            col += span
+
+
+def table_op(tbl, op, templates, created):
+    """One row or column change on a plain table. Returns nothing; refuses what does not fit."""
+    import copy
+    kind = op.get("op")
+    rows = tbl.xpath("./w:tr")
+    widths = _widths(tbl)
+    n = len(widths)
+
+    def take_ids(count_or_flags):
+        ids = op.get("ids")
+        if not isinstance(ids, list) or len(ids) != len(count_or_flags):
+            sys.exit("refused: the new cells do not match the table; open the editor again")
+        for i, need in zip(ids, count_or_flags):
+            ok = (i is None) if not need else (isinstance(i, str) and re.fullmatch(r"n\d{1,5}", i) and i not in created)
+            if not ok:
+                sys.exit("refused: the new cells do not match the table; open the editor again")
+        return ids
+
+    def index(name, top):
+        v = op.get(name)
+        if not isinstance(v, int) or isinstance(v, bool) or not 0 <= v <= top:
+            sys.exit(f"refused: table change with a wrong {name}")
+        return v
+
+    if kind == "addRow":
+        at, src = index("at", len(rows)), index("from", len(rows) - 1)
+        tr = copy.deepcopy(rows[src])
+        for h in tr.xpath("./w:trPr/w:tblHeader | ./w:trPr/w:ins | ./w:trPr/w:del | ./w:trPr/w:trPrChange"):
+            h.getparent().remove(h)
+        cells = _cells(tr)
+        ids = take_ids([True] * len(cells))
+        for old, i in zip(cells, ids):
+            new = _blank(old, templates)
+            old.addprevious(new)
+            tr.remove(old)
+            created[i] = new
+        (rows[at].addprevious if at < len(rows) else rows[-1].addnext)(tr)
+    elif kind == "delRow":
+        at = index("at", len(rows) - 1)
+        if len(rows) == 1:
+            sys.exit("refused: a table keeps at least one row")
+        tbl.remove(rows[at])
+    elif kind == "addCol":
+        at = index("at", n)
+        src = at - 1 if at > 0 else 0
+        half = max(widths[src] // 2, 200)
+        widths[src] = max(widths[src] - half, 200)
+        widths.insert(at, half)
+        plan = []
+        for tr in rows:
+            col, action = 0, None
+            for tc in _cells(tr):
+                span = _span(tc)
+                if col < at < col + span:
+                    action = ("widen", tc)
+                elif col == at:
+                    action = action or ("before", tc)
+                elif col + span == at:
+                    action = ("after", tc)
+                col += span
+            plan.append(action)
+        ids = take_ids([a[0] != "widen" for a in plan])
+        for (how, tc), i in zip(plan, ids):
+            if how == "widen":
+                _set_span(tc, _span(tc) + 1)
+                continue
+            new = _blank(tc, templates)
+            _set_span(new, 1)
+            (tc.addprevious if how == "before" else tc.addnext)(new)
+            created[i] = new
+        _set_widths(tbl, widths)
+    elif kind == "delCol":
+        at = index("at", n - 1)
+        if n == 1:
+            sys.exit("refused: a table keeps at least one column")
+        for tr in rows:
+            col = 0
+            for tc in _cells(tr):
+                span = _span(tc)
+                if col <= at < col + span:
+                    if span > 1:
+                        _set_span(tc, span - 1)
+                    else:
+                        tr.remove(tc)
+                    break
+                col += span
+            if not _cells(tr):
+                sys.exit("refused: a row would lose its last cell")
+        gone = widths.pop(at)
+        widths[at - 1 if at > 0 else 0] += gone
+        _set_widths(tbl, widths)
+    else:
+        sys.exit("refused: unknown table change")
+
+
 def _editable(r_el):
     if any(c.tag not in TEXT_ONLY for c in r_el):
         return False
@@ -423,6 +675,9 @@ class _View:
         self.rparent = {r: parent for r, parent in self.runs}
         self.pid = {p: f"p{i}" for i, (p, _) in enumerate(self.paras)}
         self.pparent = {p: parent for p, parent in self.paras}
+        self.tid = {t: f"t{i}" for i, (t, _) in enumerate(_tables(doc))}
+        self.tparent = {t: parent for t, parent in _tables(doc)}
+        self.doc = doc
         self.media, self.media_bytes, self.media_ids = {}, 0, {}
         self.styles = doc.styles.element
 
@@ -558,7 +813,8 @@ class _View:
                 row.append(cell)
                 col += span
             rows.append(row)
-        return {"t": "table", "cols": cols, "lines": self.borders(tbl), "rows": rows}
+        plain = self.tparent.get(tbl) is self.doc and plain_grid(tbl)     # never in a header or footer
+        return {"t": "table", "id": self.tid.get(tbl), "plain": plain, "cols": cols, "lines": self.borders(tbl), "rows": rows}
 
     def blocks(self, el):
         out = []
@@ -616,16 +872,30 @@ def _parts(raw, where):
             sys.exit(f"refused: {where}: control or invisible characters")
         if any(not isinstance(p.get(k), bool) for k in ("b", "i", "u", "hl")):
             sys.exit(f"refused: {where}: formatting must be true or false")
+        size = p.get("size")
+        if size is not None and (isinstance(size, bool) or not isinstance(size, (int, float))
+                                 or not 4 <= size <= 96 or size * 2 != int(size * 2)):
+            sys.exit(f"refused: {where}: letter size")
         out.append(p)
     return out
 
 
+def _before(run, para):
+    """A piece's formatting as the view showed it, to change only what the person changed."""
+    from tmc_common import is_marked
+    return {"b": _effective(run, para, "bold"), "i": _effective(run, para, "italic"),
+            "u": _effective(run, para, "underline"), "hl": bool(is_marked(run)), "size": _look(run, para).get("size")}
+
+
 def _restyle(run, para, part, before):
-    """Sets bold, italic, underline and the yellow mark only where the person changed them."""
+    """Sets bold, italic, underline, letter size and the yellow mark only where the person changed them."""
+    from docx.shared import Pt
     from tmc_common import clear_mark, mark_yellow
     for key, attr in (("b", "bold"), ("i", "italic"), ("u", "underline")):
         if part[key] != before[key]:
             setattr(run.font, attr, part[key])
+    if part.get("size") is not None and part["size"] != before.get("size"):
+        run.font.size = Pt(part["size"])
     if part["hl"] != before["hl"]:
         if part["hl"]:
             mark_yellow(run)
@@ -650,7 +920,7 @@ def cmd_edit(docx, edits_path, out):
     total, seen, jobs = 0, set(), []
 
     for e in run_edits:
-        rid = e.get("id") if isinstance(e, dict) else None
+        rid = _sid(e)
         m = re.fullmatch(r"r(\d{1,6})", rid or "")
         if not m or rid in seen or int(m[1]) >= len(runs):
             sys.exit(f"refused: unknown or repeated text piece {rid!r}")
@@ -666,7 +936,7 @@ def cmd_edit(docx, edits_path, out):
         jobs.append(("run", r_el, parent, parts))
 
     for e in para_edits:
-        pid = e.get("id") if isinstance(e, dict) else None
+        pid = _sid(e)
         m = re.fullmatch(r"p(\d{1,6})", pid or "")
         if not m or pid in seen or int(m[1]) >= len(paras):
             sys.exit(f"refused: unknown or repeated paragraph {pid!r}")
@@ -678,14 +948,46 @@ def cmd_edit(docx, edits_path, out):
         parts = _parts(e.get("parts"), pid)
         total += sum(len(p["text"]) for p in parts)
         jobs.append(("para", p_el, parent, parts))
+    layout, tables, cells = data.get("layout", []), data.get("tables", []), data.get("cells", [])
+    if not all(isinstance(x, list) for x in (layout, tables, cells)) or len(layout) + len(tables) + len(cells) > 5000:
+        sys.exit("refused: unreadable changes")
+    aligns = []
+    for e in layout:
+        pid = _sid(e)
+        m = re.fullmatch(r"p(\d{1,6})", pid or "")
+        if not m or int(m[1]) >= len(paras) or e.get("align") not in ALIGNS:
+            sys.exit(f"refused: unknown paragraph or alignment {pid!r}")
+        if paras[int(m[1])][1] is not doc:
+            sys.exit(f"refused: {pid} is in the TMC header or footer; its layout stays as it is")
+        aligns.append((paras[int(m[1])], e["align"]))
+    all_tables, table_jobs = _tables(doc), []
+    if sum(len(e.get("ops", [])) for e in tables if isinstance(e, dict) and isinstance(e.get("ops"), list)) > MAX_TABLE_OPS:
+        sys.exit("refused: too many table changes")
+    for e in tables:
+        tid = _sid(e)
+        m = re.fullmatch(r"t(\d{1,5})", tid or "")
+        if not m or int(m[1]) >= len(all_tables) or not isinstance(e.get("ops"), list) or not 1 <= len(e["ops"]) <= 200:
+            sys.exit(f"refused: unknown table {tid!r}")
+        tbl, parent = all_tables[int(m[1])]
+        if parent is not doc:
+            sys.exit(f"refused: {tid} is in the TMC header or footer; its rows and columns stay as they are")
+        if not plain_grid(tbl):
+            sys.exit(f"refused: {tid} has merged cells; change its rows and columns in Word")
+        table_jobs.append((tbl, e["ops"]))
+    texts = {}
+    for e in cells:
+        cid = _sid(e)
+        if not re.fullmatch(r"n\d{1,5}", cid or "") or cid in texts:
+            sys.exit(f"refused: unknown or repeated new cell {cid!r}")
+        texts[cid] = _parts(e.get("parts"), cid)
+        total += sum(len(p["text"]) for p in texts[cid])
     if total > MAX_TEXT:
         sys.exit("refused: the changes are too long")
 
     for what, el, parent, parts in jobs:
         if what == "run":
             run, para = _run_obj(el, parent)
-            before = {"b": _effective(run, para, "bold"), "i": _effective(run, para, "italic"),
-                      "u": _effective(run, para, "underline"), "hl": bool(is_marked(run))}
+            before = _before(run, para)
             template, prev = copy.deepcopy(el), el
             for k, part in enumerate(parts):
                 r_el = el
@@ -709,10 +1011,141 @@ def cmd_edit(docx, edits_path, out):
                         if c.tag not in (f"{W_NS}highlight", f"{W_NS}shd", f"{W_NS}ins", f"{W_NS}del",
                                          f"{W_NS}rPrChange", f"{W_NS}moveFrom", f"{W_NS}moveTo"):
                             rPr.append(copy.deepcopy(c))
-                before = {"b": _effective(r, para, "bold"), "i": _effective(r, para, "italic"),
-                          "u": _effective(r, para, "underline"), "hl": bool(is_marked(r))}
+                before = _before(r, para)
                 _restyle(r, para, part, before)
+
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.text.paragraph import Paragraph
+    for (p_el, parent), align in aligns:
+        Paragraph(p_el, parent).alignment = getattr(WD_ALIGN_PARAGRAPH, ALIGNS[align])
+
+    # Rows and columns, in the order the person made them. A row or column taken out is reported
+    # with its text: nothing from the supplier original may be left out unnoticed (BRIEF 7.1).
+    notes, templates, created = [], {}, {}
+    for tbl, ops in table_jobs:
+        for op in ops:
+            if not isinstance(op, dict):
+                sys.exit("refused: unknown table change")
+            gone = _removed_text(tbl, op)
+            table_op(tbl, op, templates, created)
+            if len(tbl.xpath("./w:tr")) > MAX_ROWS or len(tbl.xpath("./w:tblGrid/w:gridCol")) > MAX_COLS:
+                sys.exit("refused: the table would get too many rows or columns")
+            if gone:
+                notes.append({"before": gone[:500], "after": "", "unknown": [f"{op['op'] == 'delRow' and 'row' or 'column'} deleted: check nothing from the supplier original is left out"]})
+    for cid, parts in texts.items():
+        tc = created.get(cid)
+        if tc is None:
+            sys.exit(f"refused: unknown new cell {cid!r}")
+        if not tc.xpath("ancestor::w:body | ancestor::w:hdr | ancestor::w:ftr"):
+            continue                                  # its row or column was taken out again
+        p_el = tc.find(f"{W_NS}p")
+        parent = next(parent for t, parent in all_tables if any(t is a for a in tc.iterancestors(f"{W_NS}tbl")))
+        para = Paragraph(p_el, parent)
+        for part in parts:
+            r = para.add_run(part["text"])
+            if templates.get(tc) is not None:
+                r._r.insert(0, copy.deepcopy(templates[tc]))
+            _restyle(r, para, part, _before(r, para))
     doc.save(str(out))
+    json.dump(notes, sys.stdout, ensure_ascii=False)
+
+
+# ---- layout check on the PDF (Willem 22/10: a layout problem blocks Final) -----------------
+# The TMC letterhead (banner at the top, address bar and stamp at the bottom) must stay clear,
+# and every word of the Word file must show in the PDF: a long product name that no longer
+# fits its place is cut off by LibreOffice without any warning.
+PAGE_NO = re.compile(r"^(page\s*)?\d+(\s*(of|/)\s*\d+)?$", re.I)
+
+
+def tokens(text):
+    """Letters and digits only, so a word the PDF breaks at a hyphen still counts."""
+    import unicodedata
+    return [t.lower() for t in re.findall(r"[^\W_]+", unicodedata.normalize("NFKC", text))]
+
+
+def _counts_matter(t):
+    """Words of 3 letters or more and numbers of 2 digits or more (a cut-off value counts too)."""
+    return (len(t) >= 3 and any(ch.isalpha() for ch in t)) or (len(t) >= 2 and t.isdigit())
+
+
+SHOWN_TEXT = ('.//w:t[not(ancestor::*[local-name()="Fallback"]) and not(ancestor::w:fldSimple)'
+              ' and not(ancestor::w:del) and not(ancestor::w:r[w:rPr/w:vanish])]'
+              ' | .//w:fldChar[not(ancestor::*[local-name()="Fallback"])]'
+              ' | .//w:p | .//w:br | .//w:tab')
+
+
+def shown_text(docx):
+    """The text Word prints: body, and the headers and footers that are in use. Field codes and
+    field results (page numbers), hidden and deleted text are left out."""
+    from docx import Document
+    doc = Document(str(docx))
+    roots, seen = [doc.element.body], []
+    even = doc.settings.odd_and_even_pages_header_footer
+    for sec in doc.sections:
+        parts = [sec.header, sec.footer]
+        if sec.different_first_page_header_footer:
+            parts += [sec.first_page_header, sec.first_page_footer]
+        if even:
+            parts += [sec.even_page_header, sec.even_page_footer]
+        for hf in parts:
+            if hf.is_linked_to_previous or any(hf._element is x for x in seen):
+                continue
+            seen.append(hf._element)
+            roots.append(hf._element)
+    out = []
+    for root in roots:
+        field = 0                                   # 0 outside a field, 1 its code, 2 its result
+        for e in root.xpath(SHOWN_TEXT):
+            if e.tag == f"{W_NS}fldChar":
+                field = {"begin": 1, "separate": 2, "end": 0}.get(e.get(f"{W_NS}fldCharType"), field)
+            elif e.tag == f"{W_NS}t":
+                if field == 0:
+                    out.append(e.text or "")
+            else:
+                out.append("\n")
+    return "".join(out)
+
+
+def layout_problems(pdf_path, docx):
+    import pymupdf
+    from collections import Counter
+    problems, shown = [], Counter()
+    with pymupdf.open(pdf_path) as pdf:
+        for n, page in enumerate(pdf, 1):
+            w, h = page.rect.width, page.rect.height
+            sheet = [pymupdf.Rect(i["bbox"]) for i in page.get_image_info()]
+            sheet = [r for r in sheet if r.width >= 0.4 * w and (r.y1 <= 0.25 * h or r.y0 >= 0.75 * h)]
+            for block in page.get_text("dict")["blocks"]:
+                for line in block.get("lines", []):
+                    for span in line["spans"]:
+                        text = span["text"].strip()
+                        if not text:
+                            continue
+                        box = pymupdf.Rect(span["bbox"])
+                        if box.x0 < -1 or box.y0 < -1 or box.x1 > w + 1 or box.y1 > h + 1:
+                            problems.append(f"page {n}: text runs off the page: '{text[:60]}'")
+                        if PAGE_NO.match(text) or not box.get_area():
+                            continue
+                        for r in sheet:
+                            over = box & r
+                            if not over.is_empty and over.get_area() >= 0.5 * box.get_area():
+                                problems.append(f"page {n}: text over the TMC letterhead: '{text[:60]}'")
+                                break
+            shown.update(tokens(page.get_text()))
+    wanted = Counter(tokens(shown_text(docx)))
+    missing = sorted(t for t, n in wanted.items() if n > shown[t] and _counts_matter(t))
+    if missing:
+        problems.append("text that does not show in the PDF (cut off?): " + " ".join(missing[:12]))
+    return problems
+
+
+def cmd_layout(pdf_path, docx):
+    """Exit 1 with the problems when the PDF's layout is not right; nothing is changed."""
+    problems = layout_problems(pdf_path, docx)
+    if problems:
+        for p in problems[:10]:
+            print(f"  {p}", file=sys.stderr)
+        sys.exit("refused: layout problem in the PDF; make the text shorter or the letters smaller, then save again")
 
 
 def cmd_preview(docx, out, engine_scripts):
@@ -748,7 +1181,7 @@ def cmd_preview(docx, out, engine_scripts):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", required=True, help="engine folder (contains scripts/)")
-    ap.add_argument("command", choices=["list", "apply", "preview", "check", "changes", "view", "edit"])
+    ap.add_argument("command", choices=["list", "apply", "preview", "check", "changes", "view", "edit", "layout"])
     ap.add_argument("paths", nargs="+")
     a = ap.parse_args()
     scripts = Path(a.engine) / "scripts"
@@ -761,6 +1194,8 @@ def main():
         cmd_preview(a.paths[0], a.paths[1], scripts)
     elif a.command == "changes" and len(a.paths) == 3:
         cmd_changes(a.paths[0], a.paths[1], a.paths[2])
+    elif a.command == "layout" and len(a.paths) == 2:
+        cmd_layout(a.paths[0], a.paths[1])
     elif a.command == "view" and len(a.paths) == 2:
         cmd_view(a.paths[0], a.paths[1])
     elif a.command == "edit" and len(a.paths) == 3:

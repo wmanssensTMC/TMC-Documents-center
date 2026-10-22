@@ -1,11 +1,21 @@
 # Changelog
 
 ## 22/10/2026 · MSDS round 3 (branch `phase-2k-msds3`)
-- No page limit on an MSDS (Willem 22/10: we cannot choose what suppliers send). Reading is much faster: overprinted letters are compared with their neighbours only (426 pages: from about 7 minutes of reading to TODO).
-- French MSDS (Butanox) now goes through: a row that wraps in both columns puts each part in its own column; body text that starts high on a page is no longer dropped (two lines were silently lost before; the gate caught it); the title printed below the header band is the document's own title, no English default.
-- The gate also reads the label and value columns where the document's own ":" column stands, and through the whole document (values that run over a page break). Still only the source's own words, in its own order.
-- Uploads up to 100 MB (was 25 MB; largest real file so far 4 MB). One setting: `MAX_FILE_MB` in `web/lib/files.ts`.
-- TCCA stays with a person: section 1 has no numbered parts, so there is no supplier block to replace without guessing.
+- No page limit on an MSDS (Willem 22/10: we cannot choose what suppliers send). Reading is much faster: overprinted letters are compared with their neighbours only (426 pages: 305 of 402 seconds of reading went to this step).
+- French MSDS (Butanox) now goes through: a row that wraps in both columns puts each part in its own column; body text that starts high on a page is no longer dropped (two lines were silently lost before; the gate caught it) and is marked yellow for a person; the title printed below the header band is the document's own title, no English default; a colon inside an open bracket is no label separator.
+- The gate also reads the label and value columns through the whole document at the document's own ":" columns, in clean runs only (values that run over a page break). Still only the source's own words, in its own order.
+- Uploads: supplier files up to 100 MB (was 25 MB; largest real file so far 4 MB), TMC Word/PDF files stay at 25 MB. One setting per slot: `MAX_FILE_MB` in `web/lib/files.ts`. The worker streams downloads to disk.
+- Security review (90/100) fixes: the company name is taken from the first line of its row only (H1); gate column reading limited and in clean runs (M1, M2); top-of-page body text yellow (M3); size per slot and streamed download (M4, M5); tests through the gate's own corpus (L1).
+- Stays with a person: TCCA (section 1 has no numbered parts, so no supplier block to replace without guessing), Unipex (supplier name in a disclaimer, refused by the residual check), Sweet Almond Oil FR (an address piece outside 1.3; same on main).
+
+## 22/10/2026 · Editor: tables, letter size, alignment; layout check at Final (branch `phase-2j-editor-layout`, merged 22/10; security gate PASS 90/100)
+- Tables in the on-screen editor (Willem 22/10): add a row above or below, delete a row, add a column left or right, delete a column, undo. A new row or column copies the look of its neighbour (no text, no yellow) and the table keeps its width on the page. Tables with cells merged down over several rows: change them in Word.
+- A deleted row or column always comes back as a warning with its text, so nothing from the supplier original is left out unnoticed.
+- Bigger and smaller letters (A+ and A-) for the selected text; a paragraph can be aligned left, centre or right. The TMC header and footer keep their layout (their text may still change).
+- Layout check at Final, also on Approve: Final is refused when text lies over the TMC letterhead (banner, address bar, stamp), runs off the page, or a word or number of the Word file does not show in the PDF (cut off). Page numbers on the address bar are fine.
+- Long product names on the MSDS: fixed in the engine by MSDS round 2 (name 16 to 11 pt, page text moves down). The TDS title is in the body and wraps.
+- Security review fixes (90/100): new-word warnings come before deleted rows; the cut-off check counts words and numbers; no rows, columns or alignment in the header or footer; new cells copy no yellow, hidden text or tracked changes; limits on table changes. Open, Low: text emptied before its row is deleted gives no extra warning; label templates not yet run through the layout check.
+- Tests: `web/worker/test_yellow.py` (rows, columns, size, alignment, layout), `web/components/doc-editor-model.test.ts` (table grid same as the worker). Tried in the browser on a sample draft (test data).
 
 ## 22/10/2026 · MSDS round 2 on the real MSDS (branch `phase-2i-msds2`, merged 22/10; security gate PASS 90/100)
 - Section numbers written with a space ("1 .3") are found; the whole of 1.4 becomes TMC's emergency number: only lines with a phone number or e-mail go, other lines stay; no 1.4 found = refused for a person; a long 1.4 is kept and marked yellow.
