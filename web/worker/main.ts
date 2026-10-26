@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { getDb } from "../lib/db";
 import { claimNextJob, failJob, requeueStaleJobs } from "../lib/jobs/worker-state";
 import { getStorage } from "../lib/storage";
+import { describe } from "./describe";
 import { processFinaliseJob, processLabelJob, processNeutraliseJob } from "./process";
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -40,7 +41,7 @@ async function drain() {
       }
     } while (again);
   } catch (err) {
-    console.error("worker error:", err instanceof Error ? err.message : err);
+    console.error("worker error:", describe(err));
   } finally {
     draining = false;
   }
