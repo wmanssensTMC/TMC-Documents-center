@@ -28,7 +28,6 @@ type Props = EditProps & {
 };
 
 export function EditSection(p: Props) {
-  const [open, setOpen] = useState(false);
   const [state, setState] = useState<DocEditorState>("loading");
   const [accept, setAccept] = useState(false);
   const editor = useRef<DocEditorHandle>(null);
@@ -40,7 +39,7 @@ export function EditSection(p: Props) {
     finaliseDraft(p.documentId, { mode: "edited", metadata: p.metadata, confirmReplace: p.confirmReplace, acceptChanges, edits });
 
   async function saveAndFinalise(): Promise<CheckResult> {
-    if (!editor.current) return { ok: false, error: "The editor is not open." };
+    if (!editor.current) return { ok: false, error: "The editor is still loading." };
     return finalise(editor.current.getEdits(), false);
   }
 
@@ -58,18 +57,8 @@ export function EditSection(p: Props) {
 
   return (
     <section className="rounded-lg bg-white p-5 shadow-sm ring-1 ring-black/5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="font-semibold">Edit the document</h2>
-        {!open && (
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            className="rounded-md border border-tmc px-3 py-1.5 text-sm font-medium text-tmc hover:bg-tmc-light"
-          >
-            {p.pending ? "Open my last edit" : "Open the editor"}
-          </button>
-        )}
-      </div>
+      {/* Open straight away: checking means editing in place (Willem 26/10, first live run). */}
+      <h2 className="font-semibold">Check and edit the document{p.pending ? " (your last edit)" : ""}</h2>
       <p className="mt-1 text-sm text-gray-600">
         Click in any text to change it; Enter starts a new line. Select text for bold, italic, underline or bigger and
         smaller letters; click in a paragraph to align it; click in a table cell to add or delete rows and columns.
@@ -111,34 +100,30 @@ export function EditSection(p: Props) {
         </div>
       )}
 
-      {open && (
-        <>
-          <div className="mt-4 grid gap-4 lg:grid-cols-2">
-            <div className="min-w-0">
-              <h3 className="mb-1 text-sm font-semibold text-gray-700">Supplier original</h3>
-              {p.sourceUrl ? (
-                <iframe src={p.sourceUrl} title="Supplier original (editor)" className="h-[80vh] w-full rounded border bg-white" />
-              ) : (
-                <p className="rounded border bg-white p-4 text-sm text-gray-600">No original stored.</p>
-              )}
-            </div>
-            <div className="min-w-0">
-              <h3 className="mb-1 text-sm font-semibold text-gray-700">
-                TMC document {state === "loading" ? "(loading…)" : state === "error" ? "(could not be opened)" : ""}
-              </h3>
-              <DocEditor ref={editor} src={p.viewUrl} pending={p.pending?.edits ?? null} onState={setState} />
-            </div>
-          </div>
-          <button
-            type="button"
-            disabled={p.disabled || state !== "ready" || !p.metadata.productName.trim()}
-            onClick={() => p.act(saveAndFinalise)}
-            className="mt-4 rounded-md bg-tmc px-4 py-2 font-medium text-white hover:bg-tmc/90 disabled:opacity-50"
-          >
-            Save and finalise: make Word + PDF
-          </button>
-        </>
-      )}
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div className="min-w-0">
+          <h3 className="mb-1 text-sm font-semibold text-gray-700">Supplier original</h3>
+          {p.sourceUrl ? (
+            <iframe src={p.sourceUrl} title="Supplier original (editor)" className="h-[80vh] w-full rounded border bg-white" />
+          ) : (
+            <p className="rounded border bg-white p-4 text-sm text-gray-600">No original stored.</p>
+          )}
+        </div>
+        <div className="min-w-0">
+          <h3 className="mb-1 text-sm font-semibold text-gray-700">
+            TMC document {state === "loading" ? "(loading…)" : state === "error" ? "(could not be opened)" : ""}
+          </h3>
+          <DocEditor ref={editor} src={p.viewUrl} pending={p.pending?.edits ?? null} onState={setState} />
+        </div>
+      </div>
+      <button
+        type="button"
+        disabled={p.disabled || state !== "ready" || !p.metadata.productName.trim()}
+        onClick={() => p.act(saveAndFinalise)}
+        className="mt-4 rounded-md bg-tmc px-4 py-2 font-medium text-white hover:bg-tmc/90 disabled:opacity-50"
+      >
+        Save and finalise: make Word + PDF
+      </button>
     </section>
   );
 }

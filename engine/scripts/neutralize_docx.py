@@ -977,18 +977,23 @@ def _looks_like_label(value):
     v = (value or "").strip()
     if not v:
         return True
-    # letters glued to a number are a code, not a label: "LOT2504280" (26/10/2026, real COA)
-    if any(re.search(r"[A-Za-z]", t) and len(re.findall(r"\d", t)) >= 3 for t in v.split()):
-        return False
     words = re.findall(r"[A-Za-z]+", v.lower())
     if words and all(w in _LABEL_WORDS for w in words):
         return True
     return False
 
+_DATE_LIKE = re.compile(r"\d{1,4}[./-]\d{1,2}[./-]\d{1,4}")
+
+
 def clean_identifier(value):
     """A lot / batch number: keep only a plausible code, else blank."""
     v = (value or "").strip().strip(":-\u2013 ")
-    if _looks_like_label(v):
+    # one code with letters glued to a number is a batch, not a label: "LOT2504280" (26/10/2026,
+    # real COA). Only a single token, no "Label:value", never a date (security review R1).
+    is_code = (len(v.split()) == 1 and ":" not in v and not _DATE_LIKE.search(v)
+               and not re.match(r"(?i)n[or]\.?\d", v)      # "No.123" is a label with a number
+               and re.search(r"[A-Za-z]", v) and len(re.findall(r"\d", v)) >= 3)
+    if not is_code and _looks_like_label(v):
         return ""
     if len(v) < 3 or len(v) > 40:
         return ""
