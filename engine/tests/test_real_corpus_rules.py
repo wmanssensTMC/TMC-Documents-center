@@ -185,5 +185,27 @@ if canvas:
 else:
     print("  skip unrecognised-file run (no reportlab)")
 
+# 26/10/2026, real COA (first live run): "Batch: LOT2504280" was dropped as if "LOT" were a label
+check("a batch code that starts with LOT is kept", N.clean_identifier("LOT2504280") == "LOT2504280")
+check("a label alone is still no batch", N.clean_identifier("Lot No") == "" and N.clean_identifier("Batch") == "")
+check("the Batch line is read from the text",
+      N.parse_coa_fields({"full_text": "EUXYL PE 9010 Material Number: 967371\nBatch: LOT2504280\n",
+                          "tables": []}).get("batch_lot") == "LOT2504280")
+# ...and the LOT fix lets no label or sentence through as a batch
+check("a label with a short number is still no batch", N.clean_identifier("Lot No 12") == "")
+check("a sentence with a long number is no batch",
+      N.clean_identifier("please see the batch number 2504280 on the label") == "")
+check("a sentence around a LOT code is no batch",
+      N.clean_identifier("see attached certificate LOT2504280 for details") == "")
+check("an over-long LOT code is no batch", N.clean_identifier("LOT" + "1" * 50) == "")
+check("a Batch line holding only a label gives no batch",
+      N.parse_coa_fields({"full_text": "EUXYL PE 9010\nBatch: Lot No\n", "tables": []}).get("batch_lot") in ("", None))
+
+# security review R1: only one code token; a label stuck to a code or a date stays yellow for a person
+check("a label stuck to a date is no batch",
+      N.clean_identifier("Date:28.04.2025") == "" and N.clean_identifier("Expiry2027-01-31") == "")
+check("a label in front of a LOT code is no batch", N.clean_identifier("Lot No. LOT2504280") == "")
+check("'No.123' is a label with a number, no batch", N.clean_identifier("No.123") == "")
+
 print(f"\n{ok} passed, {bad} failed")
 sys.exit(1 if bad else 0)

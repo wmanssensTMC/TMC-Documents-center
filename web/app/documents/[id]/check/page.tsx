@@ -61,7 +61,24 @@ export default async function CheckPage({ params }: PageProps<"/documents/[id]/c
         </details>
       )}
 
-      {/* Screen-by-screen: supplier original left, TMC draft right (Willem 16/10). */}
+      {/* With the on-screen editor the check starts in the editor itself (original left, editable
+          TMC document right, Willem 26/10); the DRAFT PDF stays one click away for the exact look. */}
+      {doc.viewKey ? (
+        <p className="mt-3 text-sm">
+          {doc.previewKey && (
+            <a href={file("preview")} target="_blank" rel="noopener" className="text-tmc underline">
+              See the PDF look of the draft
+            </a>
+          )}
+          {doc.previewKey && doc.docxKey && <span className="text-gray-400"> · </span>}
+          {doc.docxKey && (
+            <a href={`/api/files/${doc.id}/docx`} className="text-tmc underline">
+              Download the Word draft
+            </a>
+          )}
+        </p>
+      ) : (
+      /* Screen-by-screen: supplier original left, TMC draft right (Willem 16/10). */
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <section>
           <h2 className="mb-1 text-sm font-semibold text-gray-700">Supplier original</h2>
@@ -93,6 +110,7 @@ export default async function CheckPage({ params }: PageProps<"/documents/[id]/c
           )}
         </section>
       </div>
+      )}
 
       <CheckForm
         documentId={doc.id}

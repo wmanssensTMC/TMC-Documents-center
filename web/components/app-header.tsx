@@ -14,17 +14,18 @@ export async function AppHeader({ user }: { user: CurrentUser }) {
   return (
     <header className="bg-tmc text-white">
       <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
-        <Link href="/" className="flex items-center gap-3">
+        <Link prefetch={false} href="/" className="flex items-center gap-3">
           <span className="rounded bg-white p-1">
             <Image src="/tmc-logo.png" alt="Transmare Chemie" width={295} height={280} className="h-9 w-auto" />
           </span>
           <span className="font-semibold">Document Center</span>
         </Link>
+        {/* no prefetch: the pages that refresh themselves would load every menu page each time */}
         <nav className="flex flex-wrap items-center gap-1 text-sm">
-          <Link href="/neutralise" className={tab}>
+          <Link prefetch={false} href="/neutralise" className={tab}>
             Neutralise
           </Link>
-          <Link href="/?status=To%20check" className={tab}>
+          <Link prefetch={false} href="/?status=To%20check" className={tab}>
             To check
             {waiting > 0 && (
               <span className="ml-1.5 rounded-full bg-amber-400 px-1.5 py-0.5 text-xs font-semibold text-tmc" aria-label={`${waiting} waiting`}>
@@ -32,18 +33,18 @@ export async function AppHeader({ user }: { user: CurrentUser }) {
               </span>
             )}
           </Link>
-          <Link href="/labels/new" className={tab}>
+          <Link prefetch={false} href="/labels/new" className={tab}>
             Labels
           </Link>
-          <Link href="/" className={tab}>
+          <Link prefetch={false} href="/" className={tab}>
             Library
           </Link>
           {user.role === "admin" && (
-            <Link href="/settings/users" className={tab}>
+            <Link prefetch={false} href="/settings/users" className={tab}>
               Settings
             </Link>
           )}
-          <Link href="/account/password" className={`hidden sm:inline ${tab}`} title="Change password">
+          <Link prefetch={false} href="/account/password" className={`hidden sm:inline ${tab}`} title="Change password">
             {user.name}
           </Link>
           <form action={logout}>

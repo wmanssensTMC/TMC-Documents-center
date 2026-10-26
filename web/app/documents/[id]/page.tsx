@@ -109,6 +109,17 @@ export default async function DocumentPage({ params, searchParams }: PageProps<"
                 Open PDF in a new tab
               </a>
             </>
+          ) : doc.previewKey && doc.status === "To check" ? (
+            // the DRAFT preview, as on the check screen: the real PDF is made at Final (Willem 26/10)
+            <>
+              <iframe src={file("preview", true)} title="TMC draft (preview)" className="h-[70vh] w-full rounded border bg-white" />
+              <p className="mt-1 text-sm text-gray-600">
+                Draft preview. The real PDF is made when the draft is checked and finalised.{" "}
+                <Link href={`/documents/${doc.id}/check`} className="text-tmc underline">
+                  Check this draft
+                </Link>
+              </p>
+            </>
           ) : (
             <p className="rounded border bg-white p-4 text-sm text-gray-700">
               Draft: Word only. The PDF is made when the yellow parts are checked and the document is finalised.

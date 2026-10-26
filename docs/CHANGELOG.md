@@ -1,5 +1,16 @@
 # Changelog
 
+## 26/10/2026 · First live run fixes (branch `phase-2l-live-fixes`; security review 90/100, fixes applied)
+- Engine online on Railway (EU West) and linked to the website: the first real COA (Euxyl PE 9010, Willem's one-off ok) went from upload to a draft to check.
+- COA: a batch code that starts with LOT ("Batch: LOT2504280") was read but dropped as if "LOT" were a label. Now kept when it is one code token (letters glued to 3+ digits), never a date, never "Label:value" or "No.123" (security review R1).
+- Check screen opens straight into the editor: supplier original left, the TMC document to edit right (Willem 26/10). The DRAFT PDF look and the Word draft are links above it. Each visit now loads the original and the editor view (review R4, accepted).
+- Document page shows the DRAFT preview while a draft waits for a check, with a "Check this draft" link (was "Word only").
+- Files: one retry after a short pause when the database or file storage is still waking up (a 500 on the original in the first run); the first failure is logged by error name only (R2).
+- Jobs and check pages refresh every 10 s, every 30 s after 2 minutes, not while the tab is hidden, and stop after 30 minutes; the menu no longer preloads every page on each refresh (saves the free Vercel allowance).
+- Worker log shows the database's own reason behind "Failed query", any address hidden (merged first, `fix-worker-log`).
+- Tests: `web/lib/retry.test.ts`, `web/lib/refresh.test.ts`, `web/app/api/files/[id]/[kind]/route.test.ts`, batch checks in `engine/tests/test_real_corpus_rules.py`.
+- Open for Willem: the Word draft downloads under its final name while it waits for a check; add `_DRAFT` to it (review R6)?
+
 ## 22/10/2026 · MSDS round 3 (branch `phase-2k-msds3`, merged 22/10; security gate 90/100, fixes applied)
 - No page limit on an MSDS (Willem 22/10: we cannot choose what suppliers send). Much faster: overprinted letters are compared with their neighbours only, each page is cleaned once, and the PDF is parsed once for the reader and the gate. The real 426-page MSDS: from about 17 minutes to 3.5 minutes on the laptop (without the PDF step), supplier removed, gate passed. The worker's 10-minute limit stays.
 - French MSDS (Butanox) now goes through: a row that wraps in both columns puts each part in its own column; body text that starts high on a page is no longer dropped (two lines were silently lost before; the gate caught it) and is marked yellow for a person; the title printed below the header band is the document's own title, no English default; a colon inside an open bracket is no label separator.
