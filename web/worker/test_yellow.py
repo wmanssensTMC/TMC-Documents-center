@@ -135,6 +135,12 @@ with tempfile.TemporaryDirectory() as d:
     rc, _, err = run("check", d / "punct.docx", d / "forbid.json")
     check("check: supplier written with punctuation is refused (N2)", rc == 1 and "supplier" in err, err)
 
+    # security review R3 (26/10/2026): "OK as is" removes the yellow but not the neutralizer's note
+    note = Document(); note.add_paragraph("[results table may be incomplete - compare with the original]")
+    note.save(d / "note.docx")
+    rc, _, err = run("check", d / "note.docx", d / "forbid.json")
+    check("check: a neutralizer note left in the text is refused, yellow or not (R3)", rc == 1 and "note" in err, err)
+
     other = Document(); other.add_paragraph("Acme is a common word; chemicals too."); other.save(d / "other.docx")
     rc, _, err = run("check", d / "other.docx", d / "forbid.json")
     check("check: parts of the name alone do not trigger", rc == 0, err)

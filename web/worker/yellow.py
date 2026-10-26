@@ -102,6 +102,15 @@ def xml_text(root):
     return "\n".join(lines)
 
 
+# the engine's own check notes (engine/scripts/neutralize_docx.py): never on a Final document
+ENGINE_MARKERS = (
+    "[not on the source - check]",
+    "[unclear in the scan - check the original]",
+    "[results table may be incomplete - compare with the original]",
+    "[product name not given - check]",
+)
+
+
 def cmd_check(docx, forbid_path, engine_scripts, shown_path=None):
     """Refuses a Word file that is not safe to process, that names the supplier (rule 3), or
     that does not print a value its file name is made of (name and content agree, Willem 19/10)."""
@@ -157,6 +166,13 @@ def cmd_check(docx, forbid_path, engine_scripts, shown_path=None):
             continue
         if f" {n} " in f" {haystack} " or (len(n.replace(' ', '')) >= 6 and n.replace(" ", "") in compact):
             sys.exit("refused: the document still names the supplier")
+
+    # A check note of the neutralizer left in the text is no finished document, also after
+    # "OK as is" removed its yellow (security review R3, 26/10/2026).
+    for marker in ENGINE_MARKERS:
+        if f" {norm(marker)} " in f" {haystack} ":
+            sys.exit(f"refused: the document still holds the neutralizer's note '{marker}'; "
+                     "replace it with the real content first")
 
     for label, value in json.loads(Path(shown_path).read_text(encoding="utf-8")) if shown_path else []:
         n = norm(value)

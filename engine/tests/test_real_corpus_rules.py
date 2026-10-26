@@ -223,6 +223,33 @@ check("numbered tests in the original are counted (1, 2, 3, 4)", N.numbered_test
 check("an address or a date line is no numbered test run",
       N.numbered_tests("12 Main Street\n2025 Production\n1 kg drum") == 0)
 
+# security review of the scorecard round (26/10/2026)
+_m = {"param": 0, "method": 1, "unit": 2, "spec": 3, "result": 4}
+check("R1: a supplier or lab line is never a test row",
+      all(N._build_test_row(c, _m) is None for c in (["Name of manufacturer", "ACME Chemicals Ltd", "", "", ""],
+                                                     ["Test laboratory", "ACME QC Lab, Antwerp", "", "", "Accredited"],
+                                                     ["Reference", "ACME Chemicals Ltd", "", "", ""])))
+check("R1: a real test without digits stays ('Description | White powder | Complies')",
+      N._build_test_row(["Description", "", "", "White powder", "Complies"], _m) is not None)
+check("R2: the batch never takes the next word ('2504/ ACME', '240115- BASF')",
+      all(N.parse_coa_fields({"full_text": t, "tables": []}).get("batch_lot") in ("", None)
+          for t in ("Lot No: 2504/ ACME", "Batch No.: 240115- BASF Antwerp", "Batch No: A123/ Mfg. Date")))
+# R6: the "incomplete" row really is yellow in the Word file and passes the gate
+from tmc_common import yellow_runs  # noqa: E402
+import provenance  # noqa: E402
+with tempfile.TemporaryDirectory() as _d:
+    _p = str(Path(_d) / "inc.docx")
+    N.build_docx({"batch_lot": "L-1", "manufacture_date": "01.2026", "expiry_date": "01.2028",
+                  "results_table": [["Assay", "98.0-102.0", "99.5", "%", ""]], "_incomplete": 4},
+                 {"doc_ref": "840.S0999"}, "Sodium Benzoate", _p)
+    check("R6: the incomplete-table note is yellow in the Word file", N.INCOMPLETE in yellow_runs(_p), yellow_runs(_p))
+    _src = ["Lot L-1 Production date 01.2026 Expiry date 01.2028", "Assay 98.0-102.0 99.5 %"]
+    check("R6: and the provenance gate accepts it",
+          not provenance.check(_p, _src, ["Sodium Benzoate", "840.S0999", "L-1", "Production date", N.INCOMPLETE],
+                               template_path=str(N.TEMPLATE_DOC)),
+          provenance.check(_p, _src, ["Sodium Benzoate", "840.S0999", "L-1", "Production date", N.INCOMPLETE],
+                           template_path=str(N.TEMPLATE_DOC)))
+
 # security review R1: only one code token; a label stuck to a code or a date stays yellow for a person
 check("a label stuck to a date is no batch",
       N.clean_identifier("Date:28.04.2025") == "" and N.clean_identifier("Expiry2027-01-31") == "")

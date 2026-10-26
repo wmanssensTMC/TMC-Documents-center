@@ -369,11 +369,14 @@ def _build_test_row(cells, col_map):
                    "all tests","we hereby")
     if any(p_lower.startswith(s) for s in skip_starts): return None
 
-    # a repeated header row: several cells are header words and no digits. One header word in
-    # the name alone is a real test: "Identification (Flame test)" (26/10/2026, real COA)
-    if _classify_hdr(param) is not None:
-        if (sum(1 for c in cells if c.strip() and _classify_hdr(c) is not None) >= 2
-                and not any(re.search(r'\d', c) for c in cells if c.strip())):
+    # a supplier, lab or address line is never a test row (security review R1, 26/10/2026)
+    if _IDENTITY_PARAM.search(param):
+        return None
+    # a repeated header row: a bare header word, or several header cells, and no digits. A test
+    # whose name only holds a header word stays: "Identification (Flame test)" (26/10/2026, real COA)
+    if _classify_hdr(param) is not None and not any(re.search(r'\d', c) for c in cells if c.strip()):
+        if (param.strip().lower().rstrip(":") in _BARE_HDR_NOT_A_TEST
+                or sum(1 for c in cells if c.strip() and _classify_hdr(c) is not None) >= 2):
             return None
 
     return [param, spec, result, uom, method]
@@ -381,6 +384,11 @@ def _build_test_row(cells, col_map):
 # ═══════════════════════════════════════════════════════════════════════════
 # COA FIELD PARSER
 # ═══════════════════════════════════════════════════════════════════════════
+_IDENTITY_PARAM = re.compile(r"\b(?:manufactur\w*|supplier|producer|vendor|made\s+by|laborator\w*|lab|"
+                             r"address|company|name\s+of|tel|phone|fax|e-?mail|website|www)\b", re.I)
+_BARE_HDR_NOT_A_TEST = {"name", "test", "tests", "item", "items", "analysis", "parameter", "parameters",
+                        "reference", "method", "methods", "result", "results", "standard", "value"}
+
 _DEFAULT_COL_MAP = {"param": 0, "unit": 1, "spec": 2, "result": 3, "method": 4}
 
 _KV_MAP = [
@@ -533,8 +541,10 @@ def _extract_tests_from_text(full_text):
 
     return results
 
-# a lot code; after a "/" or "-" it goes on past one space: "U3/P1/MP/ 1610925" (26/10/2026, real COA)
-_LOT_VALUE = r"([A-Z0-9][A-Z0-9\-\/\.]+(?:(?<=[\/\-])[ \t][A-Z0-9][A-Z0-9\-\/\.]*)?)"
+# a lot code; after a "/" or "-" it goes on past one space, only with a number: "U3/P1/MP/ 1610925"
+# (26/10/2026, real COA). Never a word ("2504/ ACME", security review R2); a lot joined over a
+# space is marked yellow for a person in main().
+_LOT_VALUE = r"([A-Z0-9][A-Z0-9\-\/\.]+(?:(?<=[\/\-])[ \t]\d[A-Z0-9\-\/\.]*)?)"
 
 
 def parse_coa_fields(data):
@@ -1349,6 +1359,8 @@ def main():
                   if not (({"lot": coa_fields.get("batch_lot"),
                             "fabricagedatum": coa_fields.get("manufacture_date"),
                             "vervaldatum": coa_fields.get("expiry_date")}[k]) or "").strip()}
+        if re.search(r"\s", (coa_fields.get("batch_lot") or "").strip()):
+            review.add("lot")    # joined over a space: a person confirms it (security review R2)
         build_docx(coa_fields, best_ref, product_name, docx_path, entity=entity, review=review)
 
         # HARD RULE: nothing in the output may be invented (gate added to the COA
