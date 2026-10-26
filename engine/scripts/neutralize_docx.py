@@ -977,6 +977,9 @@ def _looks_like_label(value):
     v = (value or "").strip()
     if not v:
         return True
+    # letters glued to a number are a code, not a label: "LOT2504280" (26/10/2026, real COA)
+    if any(re.search(r"[A-Za-z]", t) and len(re.findall(r"\d", t)) >= 3 for t in v.split()):
+        return False
     words = re.findall(r"[A-Za-z]+", v.lower())
     if words and all(w in _LABEL_WORDS for w in words):
         return True

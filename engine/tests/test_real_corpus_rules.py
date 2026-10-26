@@ -185,5 +185,12 @@ if canvas:
 else:
     print("  skip unrecognised-file run (no reportlab)")
 
+# 26/10/2026, real COA (first live run): "Batch: LOT2504280" was dropped as if "LOT" were a label
+check("a batch code that starts with LOT is kept", N.clean_identifier("LOT2504280") == "LOT2504280")
+check("a label alone is still no batch", N.clean_identifier("Lot No") == "" and N.clean_identifier("Batch") == "")
+check("the Batch line is read from the text",
+      N.parse_coa_fields({"full_text": "EUXYL PE 9010 Material Number: 967371\nBatch: LOT2504280\n",
+                          "tables": []}).get("batch_lot") == "LOT2504280")
+
 print(f"\n{ok} passed, {bad} failed")
 sys.exit(1 if bad else 0)
