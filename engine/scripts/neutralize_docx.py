@@ -271,7 +271,7 @@ _HDR_SETS = {
     "lim_min": {"min","minimum","min.","lower limit","limit min","lim min","lower","min value","lower bound","min spec"},
     "lim_max": {"max","maximum","max.","upper limit","limit max","lim max","upper","max value","upper bound","max spec"},
     "unit":    {"unit","units","uom","u/m","u.o.m.","eenheid","unité","unity","measure","um","unit of measure"},
-    "method":  {"method","methods","test method","test methods","norm","reference","methode","prüfmethode","méthode","analysis method","standard method","testing method"},
+    "method":  {"method","methods","test method","test methods","method of analysis","methods of analysis","method of test","norm","reference","methode","prüfmethode","méthode","analysis method","standard method","testing method"},
 }
 
 def _classify_hdr(text):
@@ -369,8 +369,11 @@ def _build_test_row(cells, col_map):
                    "all tests","we hereby")
     if any(p_lower.startswith(s) for s in skip_starts): return None
 
+    # a repeated header row: several cells are header words and no digits. One header word in
+    # the name alone is a real test: "Identification (Flame test)" (26/10/2026, real COA)
     if _classify_hdr(param) is not None:
-        if not any(re.search(r'\d', c) for c in cells if c.strip()):
+        if (sum(1 for c in cells if c.strip() and _classify_hdr(c) is not None) >= 2
+                and not any(re.search(r'\d', c) for c in cells if c.strip())):
             return None
 
     return [param, spec, result, uom, method]
@@ -530,6 +533,10 @@ def _extract_tests_from_text(full_text):
 
     return results
 
+# a lot code; after a "/" or "-" it goes on past one space: "U3/P1/MP/ 1610925" (26/10/2026, real COA)
+_LOT_VALUE = r"([A-Z0-9][A-Z0-9\-\/\.]+(?:(?<=[\/\-])[ \t][A-Z0-9][A-Z0-9\-\/\.]*)?)"
+
+
 def parse_coa_fields(data):
     text  = data["full_text"]
     lines = [l.strip() for l in text.split("\n") if l.strip()]
@@ -619,9 +626,9 @@ def parse_coa_fields(data):
         fields["product_name"] = _rex(r"\b(?:product(?:\s+name)?|chemical\s+name)\b\s*[:\-]?\s*(.+)")
     if "batch_lot" not in fields:
         fields["batch_lot"] = (
-            _rex(r"(?:batch|lot)\s+(?:no\.?|number|#|nr\.?)\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-\/\.]+)")
+            _rex(r"(?:batch|lot)\s+(?:no\.?|number|#|nr\.?)\s*[:\-]?\s*" + _LOT_VALUE)
             # "Lot/ Batchnumber : 101143" (20/10/2026, real COA)
-            or _rex(r"(?:batch|lot)\s*(?:number|no\.?|nr\.?)?\s*[:\-#]\s*([A-Z0-9][A-Z0-9\-\/\.]+)"))
+            or _rex(r"(?:batch|lot)\s*(?:number|no\.?|nr\.?)?\s*[:\-#]\s*" + _LOT_VALUE))
     fields["batch_lot"] = clean_identifier(fields.get("batch_lot"))
     if "manufacture_date" not in fields:
         fields["manufacture_date"] = _rex(
@@ -841,6 +848,23 @@ def split_coa_by_batch(data):
 # coa_consensus wired in). A value the scan readings do not agree on is never
 # chosen: it is printed as DOUBT and marked yellow for a person.
 DOUBT = "[unclear in the scan - check the original]"
+
+# Missing rows are not caught by the provenance gate (it checks what is printed, not what is
+# left out). When the original numbers its tests ("1 Description", "2 Solubility" ...) and fewer
+# rows were read, the table gets a yellow line for a person (26/10/2026, real scanned COA).
+INCOMPLETE = "[results table may be incomplete - compare with the original]"
+_NUMBERED_TEST = re.compile(r"^\s{0,12}(\d{1,2})\.?\s+[A-Za-z]")
+
+
+def numbered_tests(layout_text):
+    """The number of numbered test lines in the original: the run 1, 2, 3 ... in reading order.
+    0 when there is no run of at least 3 (most COAs do not number their tests)."""
+    seen = 0
+    for line in (layout_text or "").split("\n"):
+        m = _NUMBERED_TEST.match(line)
+        if m and int(m.group(1)) == seen + 1:
+            seen += 1
+    return seen if seen >= 3 else 0
 _DATE_MADE = re.compile(r"manufactur\w*\s*date|production\s*date|prod\.?\s*date|mfg\.?\s*date"
                         r"|date\s*of\s*manufactur", re.I)
 _DATE_EXP = re.compile(r"expir\w*|best\s*before|use\s*(by|before)", re.I)
@@ -997,6 +1021,8 @@ def clean_identifier(value):
         return ""
     if len(v) < 3 or len(v) > 40:
         return ""
+    if re.search(r"[\/\-]$", value.strip()):   # cut off: "U3/P1/MP/" is no complete batch; yellow
+        return ""
     if not re.search(r"\d", v):          # every real lot we have seen carries a digit
         return ""
     if len(re.findall(r"[A-Za-z]+", v)) > 3:   # a sentence, not a code
@@ -1129,6 +1155,8 @@ def build_docx(coa_fields, ref_fields, product_name, output_path, entity=None, r
 
     if not test_data:
         clone_row(tbl1, template_row)
+    if coa_fields.get("_incomplete"):
+        _yellow_cell(clone_row(tbl1, template_row).cells[0], INCOMPLETE)
 
     if entity:
         apply_entity_footer(doc, entity)
@@ -1313,6 +1341,10 @@ def main():
         pdf_path  = str(newp.with_suffix(".pdf"))
 
         no_product = not (product_name or "").strip()
+        src = coa_data_map.get(coa_fields.get("_source")) or {}
+        expected = numbered_tests(src.get("layout_text"))
+        if expected > test_count:
+            coa_fields = dict(coa_fields); coa_fields["_incomplete"] = expected
         review = {k for k, _ in REQUIRED
                   if not (({"lot": coa_fields.get("batch_lot"),
                             "fabricagedatum": coa_fields.get("manufacture_date"),
@@ -1321,7 +1353,6 @@ def main():
 
         # HARD RULE: nothing in the output may be invented (gate added to the COA
         # route in v0.6.0; the SDS route had it since 14/09).
-        src = coa_data_map.get(coa_fields.get("_source")) or {}
         rows = [row for t in (src.get("tables") or []) for row in (t.get("rows") or []) if row]
         src_texts = [src.get("full_text", "")] + [p.get("text", "") for p in src.get("pages", [])]
         # the layout reading of the same file: test rows are read from it (20/10/2026)
@@ -1331,7 +1362,7 @@ def main():
         src_texts += readings.get((coa_fields.get("_source"), coa_fields.get("_lot")), [])
         src_texts += [close_hyphens(t) for t in src_texts]
         allowed = [product_name or "", best_ref.get("doc_ref") or "", coa_fields.get("batch_lot") or "",
-                   "Production date", "[not on the source - check]", NO_PRODUCT, DOUBT]
+                   "Production date", "[not on the source - check]", NO_PRODUCT, DOUBT, INCOMPLETE]
         allowed += list(entity.values())
         # product names from the commercial documents (each entry is {name, quantity}: 20/10/2026,
         # a real order confirmation crashed the gate with the whole entry)
@@ -1351,9 +1382,11 @@ def main():
             continue
         print(f"  ok  DOCX -> {Path(docx_path).name}  ({test_count} test row(s))")
         unsure = coa_fields.get("_yellow_results") or ()
-        if review or no_product or unsure:
+        incomplete = coa_fields.get("_incomplete")
+        if review or no_product or unsure or incomplete:
             names = (["Product name"] if no_product else []) + [lbl for k, lbl in REQUIRED if k in review]
             names += [f"{len(unsure)} unclear scan value(s)"] if unsure else []
+            names += [f"results table may be incomplete ({test_count} of {incomplete} numbered tests read)"] if incomplete else []
             print(f"  !  REVIEW: marked yellow, PDF held back until checked: {', '.join(names)}")
             drafts.append(Path(docx_path).name)
             continue

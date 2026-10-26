@@ -6,7 +6,7 @@ by hand. Real supplier documents never go into git, GitHub or Vercel (Willem 20/
 Each dossier folder holds "COA - EXTERN" (supplier COAs), "COA - INTERN" (TMC versions) and the
 commercial document. Output and report.json go to the output folder only.
 """
-import json, re, subprocess, sys
+import json, re, subprocess, sys, unicodedata
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parent.parent
@@ -45,14 +45,20 @@ def fields(text):
     return out
 
 
+LAYOUT_WORDS = {"page", "of"}
+
+
 def results_tokens(text):
+    """Words and numbers of the results part, split at every punctuation mark, so "PC-V-011" (Word)
+    and "PC - V - 011" (read back from a PDF) count the same (26/10/2026)."""
     i = text.find("Parameter test results")
-    body = text[i:] if i >= 0 else text
-    return {t.lower() for t in TOKEN.findall(body)}
+    body = unicodedata.normalize("NFKC", text[i:] if i >= 0 else text)
+    return {t.lower() for t in re.findall(r"[^\W_]+", body)} - LAYOUT_WORDS
 
 
 def norm_name(s):
-    return re.sub(r"[^a-z0-9]", "", s.lower())
+    # NFKC: a superscript "ᵀᴴ" in a colleague's Word file is the same "TH" (13ᵀᴴ AUGUST = 13TH AUGUST)
+    return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKC", s).lower())
 
 
 def main(root, out_root):
@@ -79,20 +85,30 @@ def main(root, out_root):
                  "engine": [p.stem for p in made], "tmc": [p.name for p in humans], "pairs": []}
         if run.returncode not in (0, 1, 2) or (run.returncode == 1 and not made):
             entry["error"] = (run.stdout + run.stderr)[-1500:]
+        # colleagues' file names often lack the batch: pair on the batch printed in their document
+        # first, then on the file name and product words (26/10/2026)
+        human_docs = []
+        for h in humans:
+            try:
+                ht = text_of(h)
+            except Exception:                      # an unreadable file is left out, not fatal
+                continue
+            human_docs.append((h, ht, fields(ht)))
         for m in made:
             mt = text_of(m)
             mf = fields(mt)
             best, score = None, -1
-            for h in humans:
+            lot = norm_name(mf["lot"])
+            for h, ht, hf in human_docs:
                 hs = norm_name(h.stem)
-                s = (3 if mf["lot"] and norm_name(mf["lot"]) in hs else 0) + sum(
-                    1 for w in re.findall(r"[a-z]{4,}", m.stem.lower()) if w in hs)
+                s = ((5 if lot and (lot in norm_name(hf["lot"]) or norm_name(hf["lot"]) in lot) and hf["lot"] else 0)
+                     + (3 if lot and lot in hs else 0)
+                     + sum(1 for w in re.findall(r"[a-z]{4,}", m.stem.lower()) if w in hs))
                 if s > score:
-                    best, score = h, s
+                    best, score, best_text, best_fields = h, s, ht, hf
             pair = {"engine": m.stem, "engine_fields": mf}
             if best is not None and score > 0:
-                ht = text_of(best)
-                hf = fields(ht)
+                ht, hf = best_text, best_fields
                 he, me = results_tokens(ht), results_tokens(mt)
                 pair.update({
                     "tmc": best.name, "tmc_fields": hf,
@@ -115,6 +131,13 @@ def main(root, out_root):
                 print(f"     results found: {p['results_recall']}  field differences: {diff or 'none'}")
                 if p["missing_in_engine"]:
                     print(f"     missing in engine: {p['missing_in_engine'][:12]}")
+    pairs = [p for e in report for p in e.get("pairs", []) if p.get("results_recall") is not None]
+    drafts = sum(len(e.get("engine", [])) for e in report)
+    if pairs:
+        same = {k: sum(1 for p in pairs if p["same_fields"].get(k)) for k in ("lot", "production", "expiry", "file_nr")}
+        avg = sum(p["results_recall"] for p in pairs) / len(pairs)
+        print(f"\nSUMMARY: {drafts} draft(s), {len(pairs)} paired with a TMC version; "
+              f"results found {avg:.0%} on average; fields equal (of {len(pairs)}): {same}")
 
 
 if __name__ == "__main__":

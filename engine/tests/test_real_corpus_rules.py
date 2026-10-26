@@ -201,6 +201,28 @@ check("an over-long LOT code is no batch", N.clean_identifier("LOT" + "1" * 50) 
 check("a Batch line holding only a label gives no batch",
       N.parse_coa_fields({"full_text": "EUXYL PE 9010\nBatch: Lot No\n", "tables": []}).get("batch_lot") in ("", None))
 
+# 26/10/2026 scorecard (real COA): "Method of analysis" is the method column, not a second name column
+_, cols = N._find_test_header_row([["Characteristic", "Method of analysis", "Unit", "Specification", "Results"]])
+check("'Method of analysis' is the method column", cols.get("method") == 1 and cols.get("param") == 0, cols)
+check("a test whose name holds a header word is kept: 'Identification (Flame test)'",
+      N._build_test_row(["Identification (Flame test)", "D: USP-NF", "", "Pass", "Pass"], cols) is not None)
+check("a repeated header row is still skipped",
+      N._build_test_row(["Characteristic", "Method of analysis", "Unit", "Specification", "Results"], cols) is None)
+
+# 26/10/2026 scorecard (real scanned COA): "Batch No U3/P1/MP/ 1610925" was cut at the space
+check("a batch that goes on after a slash and a space is read whole",
+      N.parse_coa_fields({"full_text": "Batch No       U3/P1/MP/ 1610925\nPack Size 148", "tables": []}).get("batch_lot")
+      == "U3/P1/MP/ 1610925")
+check("a batch cut off after a slash is no batch (yellow), never printed half",
+      N.parse_coa_fields({"full_text": "Batch No U3/P1/MP/\nPack Size", "tables": []}).get("batch_lot") in ("", None))
+# ...and missing rows are flagged: the gate catches invented text, not text left out
+lay = "\n".join(["Sr. TESTS   SPECIFICATIONS   OBSERVATIONS", "1   Description   White powder   Complies",
+                 "    crystals.", "2   Solubility   Slightly soluble   Complies", "3   Identification",
+                 "4   Color of solution   clear   Complies", "Remarks: meets USP"])
+check("numbered tests in the original are counted (1, 2, 3, 4)", N.numbered_tests(lay) == 4, N.numbered_tests(lay))
+check("an address or a date line is no numbered test run",
+      N.numbered_tests("12 Main Street\n2025 Production\n1 kg drum") == 0)
+
 # security review R1: only one code token; a label stuck to a code or a date stays yellow for a person
 check("a label stuck to a date is no batch",
       N.clean_identifier("Date:28.04.2025") == "" and N.clean_identifier("Expiry2027-01-31") == "")
