@@ -1,6 +1,6 @@
 # Changelog
 
-## 26/10/2026 · First live run fixes (branch `phase-2l-live-fixes`; security review 90/100, fixes applied)
+## 26/10/2026 · First live run fixes (branch `phase-2l-live-fixes`, merged 26/10; security review 90/100, fixes applied)
 - Engine online on Railway (EU West) and linked to the website: the first real COA (Euxyl PE 9010, Willem's one-off ok) went from upload to a draft to check.
 - COA: a batch code that starts with LOT ("Batch: LOT2504280") was read but dropped as if "LOT" were a label. Now kept when it is one code token (letters glued to 3+ digits), never a date, never "Label:value" or "No.123" (security review R1).
 - Check screen opens straight into the editor: supplier original left, the TMC document to edit right (Willem 26/10). The DRAFT PDF look and the Word draft are links above it. Each visit now loads the original and the editor view (review R4, accepted).
