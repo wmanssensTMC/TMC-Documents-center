@@ -11,3 +11,4 @@ out/
 .venv/
 .pytest_cache/
 .claude/settings.local.json
+test-samples/
