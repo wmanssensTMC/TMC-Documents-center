@@ -37,6 +37,47 @@ describe("AI reader environment for the engine (27/10)", () => {
     await logAudit(db, { email: job.createdBy }, AI_USED, null, { calls: 2 });
     expect(await aiEngineEnv(db, { ...on, AI_READER_DAILY_CALLS: "30" })).toEqual({});
   });
+
+  it("reads the switch case- and space-insensitively; a key of spaces is no key", async () => {
+    expect((await aiEngineEnv(db, { ...on, AI_READER: " ON " })).AI_READER_MAX_CALLS).toBe("3");
+    expect(await aiEngineEnv(db, { AI_READER: "on", ANTHROPIC_API_KEY: "   " })).toEqual({});
+    expect(await aiEngineEnv(db, { AI_READER: "yes", ANTHROPIC_API_KEY: on.ANTHROPIC_API_KEY })).toEqual({});
+  });
+
+  it("ignores unknown and empty variables, and never passes the daily limit itself", async () => {
+    const env = await aiEngineEnv(db, {
+      ...on,
+      AI_READER_EXTRA: "x",
+      AI_READER_DAILY_CALLS: "30",
+      AI_READER_MODEL: "",
+      ANTHROPIC_AUTH_TOKEN: "t",
+      ANTHROPIC_BASE_URL: "http://evil",
+      HTTPS_PROXY: "http://proxy",
+    });
+    expect(Object.keys(env).sort()).toEqual(["AI_READER", "AI_READER_MAX_CALLS", "ANTHROPIC_API_KEY"]);
+  });
+
+  it("keeps a per-run limit under the daily limit; a broken per-run value falls back to 3", async () => {
+    expect((await aiEngineEnv(db, { ...on, AI_READER_MAX_CALLS: "5" })).AI_READER_MAX_CALLS).toBe("5");
+    expect((await aiEngineEnv(db, { ...on, AI_READER_MAX_CALLS: "abc" })).AI_READER_MAX_CALLS).toBe("3");
+    expect((await aiEngineEnv(db, { ...on, AI_READER_MAX_CALLS: "-4" })).AI_READER_MAX_CALLS).toBe("0");
+    expect((await aiEngineEnv(db, { ...on, AI_READER_MAX_CALLS: "50", AI_READER_DAILY_CALLS: "7" })).AI_READER_MAX_CALLS).toBe("7");
+  });
+
+  it("a daily limit of 0 switches the AI reader off; a broken one falls back to 30", async () => {
+    expect(await aiEngineEnv(db, { ...on, AI_READER_DAILY_CALLS: "0" })).toEqual({});
+    await logAudit(db, { email: job.createdBy }, AI_USED, null, { calls: 29 });
+    expect((await aiEngineEnv(db, { ...on, AI_READER_DAILY_CALLS: "lots" })).AI_READER_MAX_CALLS).toBe("1");
+    expect((await aiEngineEnv(db, { ...on, AI_READER_DAILY_CALLS: "-1" })).AI_READER_MAX_CALLS).toBe("1");
+  });
+
+  it("counts only today's AI calls, and only AI audit rows", async () => {
+    const yesterday = new Date(Date.now() - 36 * 3600 * 1000);
+    await db.insert(auditLog).values({ actor: job.createdBy, action: AI_USED, at: yesterday, details: { calls: 25 } });
+    await logAudit(db, { email: job.createdBy }, "document.approved", null, { calls: 25 });
+    await logAudit(db, { email: job.createdBy }, AI_USED, null, { calls: 4 });
+    expect(await callsToday(db)).toBe(4);
+  });
 });
 
 describe("AI usage from the engine", () => {
@@ -78,6 +119,39 @@ describe("AI usage from the engine", () => {
     writeFileSync(path.join(dir, "E.meta.json"), JSON.stringify({ batch: "L-1" }));
     expect(await engineAi(dir, "E")).toBeNull();
   });
+
+  it("caps what it reads from ai_usage.json: at most 20 runs; an object instead of a list gives none", async () => {
+    const dir = tmp();
+    const u = { model: "claude-opus-5-5", input_tokens: 1, output_tokens: 1, usd: 0, accepted: 0, dropped: 0 };
+    writeFileSync(path.join(dir, "ai_usage.json"), JSON.stringify(Array.from({ length: 500 }, () => u)));
+    expect(await readAiUsage(dir)).toHaveLength(20);
+    const obj = tmp();
+    writeFileSync(path.join(obj, "ai_usage.json"), JSON.stringify({ calls: 999 }));
+    expect(await readAiUsage(obj)).toEqual([]);
+  });
+
+  it("a run with an unpriced model has no cost in the audit row, never a partial sum", async () => {
+    const u = { model: "claude-opus-5-5", input_tokens: 10, output_tokens: 1, usd: 0.01, accepted: 0, dropped: 0 };
+    await logAiUsage(db, job, [u, { ...u, model: "unknown", usd: null }]);
+    const [row] = await db.select().from(auditLog).where(eq(auditLog.action, AI_USED));
+    expect(row.details).toMatchObject({ calls: 2, usd: null });
+  });
+
+  it("drops overlong AI values and caps the rows; a broken meta.json gives nothing", async () => {
+    const dir = tmp();
+    const rows = Array.from({ length: 100 }, (_, i) => `Test ${i}`);
+    writeFileSync(
+      path.join(dir, "D.meta.json"),
+      JSON.stringify({ ai: { fields: { lot: "L".repeat(201), vervaldatum: "01.09.2029" }, rows: ["x".repeat(201), ...rows] } }),
+    );
+    const got = await engineAi(dir, "D");
+    expect(got?.fields).toEqual({ vervaldatum: "01.09.2029" });
+    expect(got?.rows).toHaveLength(60);
+    expect(got?.rows[0]).toBe("Test 0");
+    writeFileSync(path.join(dir, "B.meta.json"), "{broken");
+    expect(await engineAi(dir, "B")).toBeNull();
+    expect(await engineAi(dir, "missing")).toBeNull();
+  });
 });
 
 describe("worker log", () => {
@@ -86,6 +160,9 @@ describe("worker log", () => {
     process.env.ANTHROPIC_API_KEY = on.ANTHROPIC_API_KEY;
     try {
       expect(cleanLog(`failed with ${on.ANTHROPIC_API_KEY}`, "/nowhere")).toBe("failed with <key>");
+      expect(cleanLog(`${on.ANTHROPIC_API_KEY} and again ${on.ANTHROPIC_API_KEY}x`, "/nowhere")).toBe("<key> and again <key>x");
+      delete process.env.ANTHROPIC_API_KEY;
+      expect(cleanLog("nothing secret here", "/nowhere")).toBe("nothing secret here");
     } finally {
       if (old === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = old;
