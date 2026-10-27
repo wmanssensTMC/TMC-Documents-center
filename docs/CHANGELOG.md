@@ -1,5 +1,13 @@
 # Changelog
 
+## 27/10/2026 · AI reader v1, COA route (branch `phase-2n-ai-reader`)
+- Off by default. With `AI_READER=on` and a key, the engine asks Claude (claude-opus-5-5) only where the rules are unsure: an empty batch or date, a table with too few rows. Only the supplier COA is sent; never the commercial documents or entity data.
+- Every proposed value must be printed in the original on the line it was quoted from, with the right label and shape; e-mails, web addresses, control characters and the typed supplier name are refused. Accepted values are yellow with one AI note; they never go into the batch lock or the file name; the provenance gate checks everything as before (an invented value deletes the output). A refusal, timeout or broken answer leaves the rules output exactly as it was.
+- Worker: only the AI reader's own variables reach the engine, only on the neutralise run; daily limit (`AI_READER_DAILY_CALLS`, start 30) counted from `ai.used` audit rows; usage (tokens and cost, no document text) per run; the key is hidden in every log; the AI note blocks Final until a person removes it.
+- Start values for the measurement (Willem 27/10): effort medium, 3 calls per run, 120 s, max 10 pages. Not in v1: unrecognised files, side-by-side batches, MSDS, TDS.
+- Laptop scorecard: `compare_real_corpus.py ... --ai` runs every dossier with the AI reader off and on and reports fields gained or lost, AI values that differ from the TMC version, calls, tokens and cost.
+- Tests: `engine/tests/test_ai_reader.py` (fake Claude, no network), `web/worker/ai.test.ts`, AI note case in `test_yellow.py`.
+
 ## 26/10/2026 · COA scorecard round (branch `phase-2m-coa-rows`, merged 27/10; security review 85/100, fixes applied)
 - Scorecard on Willem's real dossiers (laptop only): 23 drafts paired with the colleagues' TMC version. Batch 22/23 (the 23rd only "LOT2504280" vs "2504280"), production date 21/23 (the 2 others yellow), expiry and file nr 23/23; Primojel results from 70% to 94%.
 - "Method of analysis" is read as the Method column (it was dropped). A test whose name holds a header word ("Identification (Flame test)") is kept; supplier, lab and address lines never become test rows (review R1).

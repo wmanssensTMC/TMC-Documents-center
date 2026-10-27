@@ -2,11 +2,13 @@
 by hand. Real supplier documents never go into git, GitHub or Vercel (Willem 20/10/2026).
 
   python tests/compare_real_corpus.py "<OneDrive>/03 COA-SDS-Neutralizer/COA's/1. COA's" <temp output folder>
+  python tests/compare_real_corpus.py "<...>/1. COA's" <temp output folder> --ai   (AI reader off vs on;
+      needs AI_READER=on and ANTHROPIC_API_KEY in the environment, and costs real money)
 
 Each dossier folder holds "COA - EXTERN" (supplier COAs), "COA - INTERN" (TMC versions) and the
 commercial document. Output and report.json go to the output folder only.
 """
-import json, re, subprocess, sys, unicodedata
+import json, os, re, subprocess, sys, unicodedata
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parent.parent
@@ -61,8 +63,9 @@ def norm_name(s):
     return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKC", s).lower())
 
 
-def main(root, out_root):
+def main(root, out_root, env=None, quiet=False):
     root, out_root = Path(root), Path(out_root)
+    out_root.mkdir(parents=True, exist_ok=True)
     report = []
     for dossier in sorted(p for p in root.iterdir() if p.is_dir()):
         subs = {p.name.lower(): p for p in dossier.iterdir() if p.is_dir()}
@@ -77,7 +80,7 @@ def main(root, out_root):
         out.mkdir(parents=True, exist_ok=True)
         run = subprocess.run([PY, "-I", str(ENGINE / "scripts" / "neutralize_docx.py"), *map(str, inputs),
                               *map(str, commercial), "--output-dir", str(out)],
-                             capture_output=True, text=True, encoding="utf-8", errors="replace")
+                             env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
         (out / "_engine.log").write_text(run.stdout + run.stderr, encoding="utf-8")
         made = sorted(out.glob("*.docx"))
         humans = sorted(p for p in (intern.rglob("*") if intern else []) if p.suffix.lower() in (".pdf", ".docx"))
@@ -120,6 +123,8 @@ def main(root, out_root):
             entry["pairs"].append(pair)
         report.append(entry)
     (out_root / "report.json").write_text(json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8")
+    if quiet:
+        return report
     for e in report:
         print(f"\n== {e['dossier']}  exit {e.get('exit')}  engine {len(e.get('engine', []))} doc(s), tmc {len(e.get('tmc', []))}")
         if e.get("error"):
@@ -138,7 +143,52 @@ def main(root, out_root):
         avg = sum(p["results_recall"] for p in pairs) / len(pairs)
         print(f"\nSUMMARY: {drafts} draft(s), {len(pairs)} paired with a TMC version; "
               f"results found {avg:.0%} on average; fields equal (of {len(pairs)}): {same}")
+    return report
+
+
+def compare_ai(root, out_root):
+    """--ai (27/10/2026): every dossier twice, AI reader off (out/rules) and on (out/ai), against the
+    TMC versions. Needs AI_READER=on and ANTHROPIC_API_KEY in the laptop's environment; it spends
+    real money (counted below). The key is never printed."""
+    env = dict(os.environ)
+    if (env.get("AI_READER") or "").strip().lower() != "on" or not (env.get("ANTHROPIC_API_KEY") or "").strip():
+        sys.exit("set AI_READER=on and ANTHROPIC_API_KEY first (the AI run costs real money)")
+    out_root = Path(out_root)
+    rules = main(root, out_root / "rules", dict(env, AI_READER="off"), quiet=True)
+    ai = main(root, out_root / "ai", env, quiet=True)
+    keys = ("lot", "production", "expiry")
+    gained = lost = differs = paired = 0
+    for r_entry, a_entry in zip(rules, ai):
+        r_pairs = {p["engine"]: p for p in r_entry.get("pairs", [])}
+        for a in a_entry.get("pairs", []):
+            r = r_pairs.get(a["engine"])
+            if not r or "same_fields" not in a or "same_fields" not in r:
+                continue
+            paired += 1
+            for k in keys:
+                filled = a["engine_fields"][k] != r["engine_fields"][k]     # the AI reader wrote this one
+                if not r["same_fields"][k] and a["same_fields"][k]:
+                    gained += 1
+                if r["same_fields"][k] and not a["same_fields"][k]:
+                    lost += 1
+                if filled and not a["same_fields"][k]:
+                    differs += 1
+                    print(f"   {a_entry['dossier']} / {a['engine']}: AI {k} differs from the TMC version")
+    calls = tokens_in = tokens_out = 0
+    usd = 0.0
+    for f in (out_root / "ai").glob("*/ai_usage.json"):
+        for u in json.loads(f.read_text(encoding="utf-8")):
+            calls += 1
+            tokens_in += u.get("input_tokens", 0)
+            tokens_out += u.get("output_tokens", 0)
+            usd += u.get("usd") or 0
+    print(f"\nAI SUMMARY: {paired} paired draft(s); fields gained {gained}, lost {lost}; "
+          f"AI value differs from the TMC version {differs}; {calls} call(s), {tokens_in} in / {tokens_out} out tokens, "
+          f"~${usd:.2f}" + (f" (~${usd / calls:.3f} per call)" if calls else ""))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    if "--ai" in sys.argv:
+        compare_ai(*[a for a in sys.argv[1:] if a != "--ai"][:2])
+    else:
+        main(sys.argv[1], sys.argv[2])
