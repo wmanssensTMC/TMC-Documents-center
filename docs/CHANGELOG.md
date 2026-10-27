@@ -1,5 +1,13 @@
 # Changelog
 
+## 26/10/2026 · COA scorecard round (branch `phase-2m-coa-rows`; security review 85/100, fixes applied)
+- Scorecard on Willem's real dossiers (laptop only): 23 drafts paired with the colleagues' TMC version. Batch 22/23 (the 23rd only "LOT2504280" vs "2504280"), production date 21/23 (the 2 others yellow), expiry and file nr 23/23; Primojel results from 70% to 94%.
+- "Method of analysis" is read as the Method column (it was dropped). A test whose name holds a header word ("Identification (Flame test)") is kept; supplier, lab and address lines never become test rows (review R1).
+- Batch "U3/P1/MP/ 1610925" is read whole and marked yellow for a person; a following word is never taken in ("2504/ ACME", review R2); a cut-off batch ("U3/P1/MP/") is yellow, never printed half.
+- New safety net: when the original numbers its tests and fewer rows were read, a yellow row "[results table may be incomplete - compare with the original]" is added and the PDF waits. The worker refuses Final while any neutralizer note is still in the text, also after "OK as is" (review R3).
+- `compare_real_corpus.py`: pairs on the batch printed in the TMC version, compares words split at punctuation, reads superscripts as normal letters, prints a summary.
+- Open: numbered free-text tables (scanned Methyl Paraben) are flagged, not yet read; candidate for the AI reader. Review R4 (engine notes as exact matches in the gate) and R5 (count per table) for a next round.
+
 ## 26/10/2026 · First live run fixes (branch `phase-2l-live-fixes`, merged 26/10; security review 90/100, fixes applied)
 - Engine online on Railway (EU West) and linked to the website: the first real COA (Euxyl PE 9010, Willem's one-off ok) went from upload to a draft to check.
 - COA: a batch code that starts with LOT ("Batch: LOT2504280") was read but dropped as if "LOT" were a label. Now kept when it is one code token (letters glued to 3+ digits), never a date, never "Label:value" or "No.123" (security review R1).
