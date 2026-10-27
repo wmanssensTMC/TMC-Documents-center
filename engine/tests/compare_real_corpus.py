@@ -2,7 +2,7 @@
 by hand. Real supplier documents never go into git, GitHub or Vercel (Willem 20/10/2026).
 
   python tests/compare_real_corpus.py "<OneDrive>/03 COA-SDS-Neutralizer/COA's/1. COA's" <temp output folder>
-  python tests/compare_real_corpus.py "<...>/1. COA's" <temp output folder> --ai   (AI reader off vs on;
+  python tests/compare_real_corpus.py "<...>/1. COA's" <temp output folder> --ai [--max-calls 30]   (AI off vs on;
       needs AI_READER=on and ANTHROPIC_API_KEY in the environment, and costs real money)
 
 Each dossier folder holds "COA - EXTERN" (supplier COAs), "COA - INTERN" (TMC versions) and the
@@ -63,10 +63,29 @@ def norm_name(s):
     return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKC", s).lower())
 
 
-def main(root, out_root, env=None, quiet=False):
+# what the engine needs from the laptop's environment for an --ai run; nothing else goes along
+# (no ANTHROPIC_BASE_URL or other settings that could send the key elsewhere; security review F11)
+_BASE_ENV = ("PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE",
+             "APPDATA", "LOCALAPPDATA", "PYTHONIOENCODING", "LANG", "LC_ALL", "TESSDATA_PREFIX")
+_AI_ENV = ("AI_READER", "ANTHROPIC_API_KEY", "AI_READER_MODEL", "AI_READER_EFFORT", "AI_READER_MAX_CALLS",
+           "AI_READER_TIMEOUT_S", "AI_READER_RUN_DEADLINE_S")
+
+
+def ai_env(env, on):
+    keep = _BASE_ENV + (_AI_ENV if on else ())
+    out = {k: env[k] for k in keep if env.get(k)}
+    if not on:
+        out["AI_READER"] = "off"
+    return out
+
+
+def main(root, out_root, env=None, quiet=False, max_calls=None):
+    """`max_calls`: the AI reader's calls for the whole run together (--ai); each dossier may ask
+    at most what is left, and only its supplier COAs (EXTERN) are named as files the AI may read."""
     root, out_root = Path(root), Path(out_root)
     out_root.mkdir(parents=True, exist_ok=True)
     report = []
+    left = max_calls
     for dossier in sorted(p for p in root.iterdir() if p.is_dir()):
         subs = {p.name.lower(): p for p in dossier.iterdir() if p.is_dir()}
         ext = next((p for n, p in subs.items() if "extern" in n), None)
@@ -78,10 +97,20 @@ def main(root, out_root, env=None, quiet=False):
         inputs = sorted(p for p in ext.rglob("*") if p.suffix.lower() == ".pdf")
         out = out_root / dossier.name
         out.mkdir(parents=True, exist_ok=True)
+        run_env = env
+        if env is not None and left is not None:
+            # only the supplier COAs may go to the AI, never the PFI or order confirmation (F1)
+            run_env = dict(env, AI_READER_SOURCES=os.pathsep.join(map(str, inputs)),
+                           AI_READER_MAX_CALLS=str(max(0, min(left, int(env.get("AI_READER_MAX_CALLS") or 3)))))
         run = subprocess.run([PY, "-I", str(ENGINE / "scripts" / "neutralize_docx.py"), *map(str, inputs),
                               *map(str, commercial), "--output-dir", str(out)],
-                             env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                             env=run_env, capture_output=True, text=True, encoding="utf-8", errors="replace")
         (out / "_engine.log").write_text(run.stdout + run.stderr, encoding="utf-8")
+        if left is not None and (out / "ai_usage.json").exists():
+            try:
+                left -= len(json.loads((out / "ai_usage.json").read_text(encoding="utf-8")))
+            except ValueError:
+                left = 0                               # unreadable count: stop asking
         made = sorted(out.glob("*.docx"))
         humans = sorted(p for p in (intern.rglob("*") if intern else []) if p.suffix.lower() in (".pdf", ".docx"))
         entry = {"dossier": dossier.name, "inputs": [p.name for p in inputs], "exit": run.returncode,
@@ -146,16 +175,17 @@ def main(root, out_root, env=None, quiet=False):
     return report
 
 
-def compare_ai(root, out_root):
+def compare_ai(root, out_root, max_calls=30):
     """--ai (27/10/2026): every dossier twice, AI reader off (out/rules) and on (out/ai), against the
     TMC versions. Needs AI_READER=on and ANTHROPIC_API_KEY in the laptop's environment; it spends
-    real money (counted below). The key is never printed."""
+    real money (counted below), at most `max_calls` calls for the whole run (--max-calls, default 30).
+    The key is never printed."""
     env = dict(os.environ)
     if (env.get("AI_READER") or "").strip().lower() != "on" or not (env.get("ANTHROPIC_API_KEY") or "").strip():
         sys.exit("set AI_READER=on and ANTHROPIC_API_KEY first (the AI run costs real money)")
     out_root = Path(out_root)
-    rules = main(root, out_root / "rules", dict(env, AI_READER="off"), quiet=True)
-    ai = main(root, out_root / "ai", env, quiet=True)
+    rules = main(root, out_root / "rules", ai_env(env, on=False), quiet=True)
+    ai = main(root, out_root / "ai", ai_env(env, on=True), quiet=True, max_calls=max_calls)
     keys = ("lot", "production", "expiry")
     gained = lost = differs = paired = 0
     for r_entry, a_entry in zip(rules, ai):
@@ -189,6 +219,12 @@ def compare_ai(root, out_root):
 
 if __name__ == "__main__":
     if "--ai" in sys.argv:
-        compare_ai(*[a for a in sys.argv[1:] if a != "--ai"][:2])
+        rest = [a for a in sys.argv[1:] if a != "--ai"]
+        cap = 30
+        if "--max-calls" in rest:
+            i = rest.index("--max-calls")
+            cap = max(0, int(rest[i + 1]))
+            del rest[i:i + 2]
+        compare_ai(*rest[:2], max_calls=cap)
     else:
         main(sys.argv[1], sys.argv[2])
