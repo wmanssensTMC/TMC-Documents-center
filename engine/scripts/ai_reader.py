@@ -239,7 +239,7 @@ def verify(data, needs, src_texts, rules_rows, forbid=(), helpers=None):
         v = clean(f.get("value"), f.get("quote"))
         ok = v is not None and _LABEL[key].search(f.get("quote") or "") is not None and re.search(r"\d", v)
         if ok and key == "lot":
-            ok = h.clean_identifier(v) == v
+            ok = h.clean_identifier(v) == v and not h._DATE_LIKE.search(v)     # a date is no batch
         elif ok:
             ok = len(v) <= 40 and h._clean_date(v) == v
         if ok:
@@ -258,7 +258,9 @@ def verify(data, needs, src_texts, rules_rows, forbid=(), helpers=None):
             param, result = cells[0].strip(), cells[2].strip()
             good = bool(param and result) and _safe(quote, MAX_QUOTE) and provenance.traced(norm(quote), corpus)
             good = good and not h._IDENTITY_PARAM.search(param)
-            good = good and all(not c.strip() or (clean(c, quote) is not None) for c in cells)
+            # a cell of signs only ("%") has nothing to look up, as in the gate; it must still be clean
+            good = good and all(not c.strip() or (_safe(c, MAX_VALUE) and (not norm(c) or clean(c, quote) is not None))
+                                for c in cells)
             if not good:
                 dropped += 1
                 continue

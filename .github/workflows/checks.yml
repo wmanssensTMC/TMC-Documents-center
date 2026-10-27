@@ -82,6 +82,15 @@ jobs:
           cat rules.log
           [ $status -eq 0 ] || echo "::error title=Real-dossier rules::$(grep -E 'XX|Traceback|Error' rules.log | head -5 | tr '\n' ' ')"
           exit $status
+      - name: AI reader (fake Claude, no network) - only unsure parts, checked against the source, yellow
+        shell: bash
+        run: |
+          set +e
+          python tests/test_ai_reader.py > ai.log 2>&1
+          status=$?
+          cat ai.log
+          [ $status -eq 0 ] || echo "::error title=AI reader::$(grep -E 'XX|Traceback|Error' ai.log | head -5 | tr '\n' ' ')"
+          exit $status
       - name: COA batches side by side, duplicate lots, page markers, batch guard
         shell: bash
         run: |
