@@ -1234,6 +1234,9 @@ def main():
     ap.add_argument("--finalise", action="store_true",
                     help="FILES are checked .docx drafts: render their PDF once no yellow is left.")
     args = ap.parse_args()
+    # the AI reader's key leaves the environment before any OCR or LibreOffice program starts
+    # (security review F6); it is only kept for the provider
+    ai_key = ai_reader.take_key()
 
     if args.finalise:
         bad = [f for f in args.files if not finalise(f)]
@@ -1374,12 +1377,22 @@ def main():
     pdf_failures = []
     drafts = []
     # AI reader (27/10/2026): off unless AI_READER=on; asked only where the rules are unsure
-    ai_provider = ai_reader.provider_from_env()
+    ai_provider = ai_reader.provider_from_env(key=ai_key)
     ai_budget   = ai_reader.Budget.from_env()
     ai_forbid   = ai_reader.forbid_from_env()
     ai_usage    = []
-    if (os.environ.get("AI_READER") or "").strip().lower() == "on" and ai_provider is None:
-        print("  i  AI reader: on, but no API key is set; not used")
+    ai_off      = ai_reader.why_off(key=ai_key)
+    if ai_off not in (None, "off"):
+        print(f"  i  AI reader: {ai_off}")
+
+    def note_ai_usage(record):
+        """Every attempt is written down at once, also when the call fails or the run is stopped
+        later, so the platform's daily count never misses a call (security review F3)."""
+        if not any(r is record for r in ai_usage):
+            ai_usage.append(record)
+        if out_dir:
+            import json
+            (out_dir / "ai_usage.json").write_text(json.dumps(ai_usage), encoding="utf-8")
 
     for coa_fields, best_ref, product_name, test_count in jobs:
         stem  = make_output_stem(best_ref.get("doc_ref",""), product_name,
@@ -1415,11 +1428,10 @@ def main():
                                      "vervaldatum": coa_fields.get("expiry_date")})
         if ai_provider is not None and needs and coa_fields.get("_source"):
             ai = ai_reader.propose(coa_fields["_source"], needs, src_texts, coa_fields.get("results_table") or [],
-                                   ai_provider, ai_budget, ai_forbid, helpers=sys.modules[__name__])
+                                   ai_provider, ai_budget, ai_forbid, helpers=sys.modules[__name__],
+                                   on_usage=note_ai_usage)
             if ai.log:
                 print(ai.log)
-            if ai.usage:
-                ai_usage.append(ai.usage)
             ai = ai or None
         build_docx(coa_fields, best_ref, product_name, docx_path, entity=entity, review=review, ai=ai)
 
@@ -1479,11 +1491,6 @@ def main():
         elif not any(f[0] == Path(docx_path).name for f in pdf_failures):
             pdf_failures.append((Path(docx_path).name, "PDF missing or empty after conversion"))
             print("  x  FAIL  PDF missing or empty after conversion")
-
-    # what the AI reader cost, for the platform's count and Willem's evaluation (counts only)
-    if ai_usage and out_dir:
-        import json
-        (out_dir / "ai_usage.json").write_text(json.dumps(ai_usage), encoding="utf-8")
 
     # always reported, also when the run fails further down
     if unrecognised:

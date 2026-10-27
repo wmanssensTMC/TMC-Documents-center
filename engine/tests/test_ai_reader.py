@@ -26,6 +26,12 @@ import neutralize_docx as N  # noqa: E402
 import provenance  # noqa: E402
 from tmc_common import yellow_runs  # noqa: E402
 
+
+def propose(path, *a, **k):
+    """A.propose with the file named as the supplier upload, as the worker does (security review F1)."""
+    k.setdefault("env", {"AI_READER_SOURCES": str(path)})
+    return A.propose(path, *a, **k)
+
 ok = bad = 0
 def check(name, cond, info=""):
     global ok, bad
@@ -114,24 +120,24 @@ with tempfile.TemporaryDirectory() as d:
     pdf = Path(d) / "coa.pdf"
     c = canvas.Canvas(str(pdf), pagesize=A4); c.drawString(40, 700, "CERTIFICATE OF ANALYSIS"); c.save()
     fake = Fake(answer(production=("02.09.2026", "Manufactured on 02.09.2026")))
-    p = A.propose(str(pdf), ALL, SRC, [], fake, A.Budget(3))
+    p = propose(str(pdf), ALL, SRC, [], fake, A.Budget(3))
     check("a good answer gives a proposal with usage and cost", p.fields == {"fabricagedatum": "02.09.2026"}
           and p.usage and p.usage["usd"] == round(5000 * 4 / 1e6 + 800 * 20 / 1e6, 4), (p.fields, p.usage))
     check("the log holds counts and cost, no document text", "02.09.2026" not in p.log and "tokens" in p.log
           and "~$" in p.log, p.log)
-    p = A.propose(str(pdf), ALL, SRC, [], Fake(stop="refusal", category="cyber"), A.Budget(3))
+    p = propose(str(pdf), ALL, SRC, [], Fake(stop="refusal", category="cyber"), A.Budget(3))
     check("a refusal: empty proposal, reason logged", not p and "refusal (cyber)" in p.log, p.log)
-    p = A.propose(str(pdf), ALL, SRC, [], Fake(stop="max_tokens"), A.Budget(3))
+    p = propose(str(pdf), ALL, SRC, [], Fake(stop="max_tokens"), A.Budget(3))
     check("a cut-off answer: empty proposal", not p and "max_tokens" in p.log, p.log)
-    p = A.propose(str(pdf), ALL, SRC, [], Fake(raise_=TimeoutError("sk-ant-SECRET at https://x")), A.Budget(3))
+    p = propose(str(pdf), ALL, SRC, [], Fake(raise_=TimeoutError("sk-ant-SECRET at https://x")), A.Budget(3))
     check("a timeout: empty proposal, only the error's name in the log",
           not p and "TimeoutError" in p.log and "SECRET" not in p.log and "https" not in p.log, p.log)
     budget, f1, f2 = A.Budget(1), Fake(answer()), Fake(answer())
-    A.propose(str(pdf), ALL, SRC, [], f1, budget)
-    p = A.propose(str(pdf), ALL, SRC, [], f2, budget)
+    propose(str(pdf), ALL, SRC, [], f1, budget)
+    p = propose(str(pdf), ALL, SRC, [], f2, budget)
     check("the limit of calls per run holds", f1.calls == 1 and f2.calls == 0 and "limit" in p.log, p.log)
     fake = Fake(answer())
-    p = A.propose(str(pdf), frozenset(), SRC, [], fake, A.Budget(3))
+    p = propose(str(pdf), frozenset(), SRC, [], fake, A.Budget(3))
     check("nothing asked: no call at all", fake.calls == 0 and not p)
     check("usage line format", A.usage_line(A.Reply({}, "end_turn", "unknown-model", 1, 1), 0, 0).endswith(
         "cost unknown; 0 value(s) accepted, 0 dropped"))
@@ -157,9 +163,10 @@ def make_coa(path):
 
 def run(pdf, out, provider, env=None):
     real = A.provider_from_env
-    A.provider_from_env = lambda env=os.environ: provider
+    A.provider_from_env = lambda env=os.environ, key=None: provider
     old_argv, old_env = sys.argv, dict(os.environ)
     os.environ.update(env or {})
+    os.environ.setdefault("AI_READER_SOURCES", str(pdf))      # the file is the supplier upload
     sys.argv = ["neutralize_docx.py", str(pdf), "--output-dir", str(out), "--product-name", "Sodium Benzoate",
                 "--file-nr", "840.S0997"]
     try:
@@ -244,6 +251,7 @@ def run_env(pdf, out, env):
     for k in [k for k in os.environ if k.startswith(("AI_READER", "ANTHROPIC"))]:
         del os.environ[k]
     os.environ.update(env)
+    os.environ.setdefault("AI_READER_SOURCES", str(pdf))      # the file is the supplier upload
     sys.argv = ["neutralize_docx.py", str(pdf), "--output-dir", str(out), "--product-name", "Sodium Benzoate",
                 "--file-nr", "840.S0997"]
     buf = io.StringIO()
@@ -416,7 +424,7 @@ with tempfile.TemporaryDirectory() as d:
     pdf = Path(d) / "coa.pdf"
     c = canvas.Canvas(str(pdf), pagesize=A4); c.drawString(40, 700, "CERTIFICATE OF ANALYSIS"); c.save()
     stub = StubClient(resp(json.dumps(answer(production=("02.09.2026", "Manufactured on 02.09.2026")))))
-    p = A.propose(str(pdf), frozenset({"fabricagedatum"}), SRC, [], claude(stub), A.Budget(3))
+    p = propose(str(pdf), frozenset({"fabricagedatum"}), SRC, [], claude(stub), A.Budget(3))
     sent = stub.sent[0] if stub.sent else {}
     blocks = (sent.get("messages") or [{}])[0].get("content", [])
     docs = [b for b in blocks if b.get("type") == "document"]
@@ -432,22 +440,24 @@ with tempfile.TemporaryDirectory() as d:
     check("a good answer through the real provider is checked and accepted",
           p.fields == {"fabricagedatum": "02.09.2026"}, (p.fields, p.log))
 
-    p = A.propose(str(pdf), ALL, SRC, [], claude(StubClient(resp("{not json Batch: SB-2026-114"))), A.Budget(3))
-    check("invalid JSON from Claude: empty proposal, one log line with the error's name only",
-          not p and "JSONDecodeError" in p.log and "\n" not in p.log and "SB-2026" not in p.log, p.log)
-    p = A.propose(str(pdf), ALL, SRC, [], claude(StubClient(resp(stop="refusal", category="cyber"))), A.Budget(3))
+    p = propose(str(pdf), ALL, SRC, [], claude(StubClient(resp("{not json Batch: SB-2026-114"))), A.Budget(3))
+    # since review F3 the tokens of an unreadable answer are counted too: a usage line, then the error
+    check("invalid JSON from Claude: empty proposal, the error's name and the tokens, no document text",
+          not p and "JSONDecodeError" in p.log and p.usage and "SB-2026" not in p.log, p.log)
+    p = propose(str(pdf), ALL, SRC, [], claude(StubClient(resp(stop="refusal", category="cyber"))), A.Budget(3))
     check("a refusal through the real provider: empty proposal, category logged, usage kept",
           not p and "refusal (cyber)" in p.log and p.usage and p.usage["input_tokens"] == 1200, p.log)
-    p = A.propose(str(pdf), ALL, SRC, [], claude(StubClient(resp('{"fields":', stop="max_tokens"))), A.Budget(3))
+    p = propose(str(pdf), ALL, SRC, [], claude(StubClient(resp('{"fields":', stop="max_tokens"))), A.Budget(3))
     check("max_tokens: the cut-off text is never parsed", not p and "max_tokens" in p.log, p.log)
     err = RuntimeError("401 invalid x-api-key sk-ant-api03-SECRETKEY for Batch: SB-2026-114")
     err.status_code = 401
-    p = A.propose(str(pdf), ALL, SRC, [], claude(StubClient(raise_=err)), A.Budget(3))
+    p = propose(str(pdf), ALL, SRC, [], claude(StubClient(raise_=err)), A.Budget(3))
     check("an API error: one line, the error's name and status only, never the key or document text",
           not p and "\n" not in p.log and "RuntimeError 401" in p.log and "SECRETKEY" not in p.log
           and "SB-2026" not in p.log, p.log)
-    p = A.propose(str(pdf), ALL, SRC, [], Fake(answer(production=(20260902, "x"))), A.Budget(3))
-    check("a value of the wrong type: empty proposal, no crash", not p and "not checked" in p.log, p.log)
+    p = propose(str(pdf), ALL, SRC, [], Fake(answer(production=(20260902, "x"))), A.Budget(3))
+    # since the testing review a bad value is dropped on its own; the others would stay
+    check("a value of the wrong type: dropped, empty proposal, no crash", not p and p.dropped == 1, (p.log, p.dropped))
 
     big = Path(d) / "big.pdf"
     c = canvas.Canvas(str(big), pagesize=A4)
@@ -455,10 +465,10 @@ with tempfile.TemporaryDirectory() as d:
         c.drawString(40, 700, f"page {i}"); c.showPage()
     c.save()
     fake = Fake(answer())
-    p = A.propose(str(big), ALL, SRC, [], fake, A.Budget(3))
+    p = propose(str(big), ALL, SRC, [], fake, A.Budget(3))
     check(f"more than {A.MAX_PAGES} pages: not sent", fake.calls == 0 and "skipped" in p.log, p.log)
     fake = Fake(answer())
-    p = A.propose(str(Path(d) / "missing.pdf"), ALL, SRC, [], fake, A.Budget(3))
+    p = propose(str(Path(d) / "missing.pdf"), ALL, SRC, [], fake, A.Budget(3))
     check("an unreadable file: not sent, no crash", fake.calls == 0 and not p and "not asked" in p.log, p.log)
 
 # Switches read from the environment
@@ -546,6 +556,131 @@ with tempfile.TemporaryDirectory() as d:
     flagged = {provenance.norm(t) for _, t in provenance.check(path, GATE_SRC, [])}
     expected = {provenance.norm(s) for s in in_doc if not provenance.traced(provenance.norm(s), corpus)}
     check("the gate flags exactly what traced() cannot find", flagged == expected and expected, (flagged, expected))
+
+# ---- security review (85/100) and testing review fixes, 27/10/2026 ----
+import time  # noqa: E402
+with tempfile.TemporaryDirectory() as d:
+    d = Path(d)
+    supplier, pfi = d / "supplier.pdf", d / "pfi.pdf"
+    make_coa(supplier)
+    c = canvas.Canvas(str(pfi), pagesize=A4)
+    for i, t in enumerate(("TRANSMARE CHEMIE NV", "Italielei 124, Antwerpen", "PRO FORMA INVOICE",
+                           "Client: Example Trading LLC", "Documents required: Certificate of Analysis",
+                           "Price per kg: 2.40 EUR")):
+        c.drawString(40, 780 - 16 * i, t)
+    c.save()
+    only_supplier = {"AI_READER_SOURCES": str(supplier)}
+    fake = Fake(answer(production=("02.09.2026", "Manufactured on 02.09.2026")))
+    p = A.propose(str(pfi), ALL, SRC, [], fake, A.Budget(3), env=only_supplier)
+    check("F1: a commercial PDF that mentions a certificate of analysis is never sent",
+          fake.calls == 0 and not p and "not the supplier upload" in p.log, (fake.calls, p.log))
+    p = A.propose(str(supplier), ALL, SRC, [], fake, A.Budget(3), env=only_supplier)
+    check("F1: the supplier upload is sent", fake.calls == 1 and p.fields, (fake.calls, p.fields))
+    p = A.propose(str(supplier), ALL, SRC, [], fake, A.Budget(3), env={})
+    check("F1: no supplier upload named: nothing is sent (fails closed)", fake.calls == 1 and not p, p.log)
+    fake = Fake(answer(production=("02.09.2026", "Manufactured on 02.09.2026")))
+    run(pfi, d / "pfi_out", fake, env={"AI_READER": "on", "AI_READER_SOURCES": str(supplier)})
+    check("F1: through the engine, a PFI read as a COA never reaches the AI", fake.calls == 0, fake.calls)
+
+    # F2: a time limit for all calls of a run, and clamped waits
+    b = A.Budget(3, deadline_s=-1.0)
+    check("F2: past the run's time limit no call is made", b.take() is False)
+    lim = A.Budget.from_env({"AI_READER_RUN_DEADLINE_S": "5"}).deadline - time.monotonic()
+    check("F2: the run's time limit is at least 30 s and at most 300 s", 29 < lim <= 30
+          and A.Budget.from_env({"AI_READER_RUN_DEADLINE_S": "9999"}).deadline - time.monotonic() <= 300, lim)
+    t = lambda v: A.provider_from_env({"AI_READER": "on", "ANTHROPIC_API_KEY": "k", "AI_READER_TIMEOUT_S": v}).timeout_s
+    check("F2: the wait per call is kept between 10 and 180 s", (t("1"), t("999"), t("60")) == (10.0, 180.0, 60.0))
+    check("F2: the client never retries (each attempt counted, within the worker's time limit)",
+          A.AnthropicProvider("k")._client().max_retries == 0)
+
+    # F3: every attempt is counted before it is made, also when it fails
+    seen = []
+    p = A.propose(str(supplier), ALL, SRC, [], Fake(raise_=TimeoutError()), A.Budget(3), env=only_supplier,
+                  on_usage=lambda u: seen.append(dict(u)))
+    check("F3: an attempt is noted before the call and again after a failure",
+          [u["stop_reason"] for u in seen] == ["attempt", "error"] and p.usage, seen)
+    seen = []
+    junk = A.Reply(None, "end_turn", "claude-opus-5-5", 3000, 200, None, "{not json")
+    p = A.propose(str(supplier), ALL, SRC, [], type("J", (), {"read": lambda self, b, n: junk, "model": "claude-opus-5-5"})(),
+                  A.Budget(3), env=only_supplier, on_usage=lambda u: seen.append(dict(u)))
+    check("F3: an answer that is not JSON still counts its tokens", not p and p.usage
+          and p.usage["input_tokens"] == 3000 and "not readable" in p.log, (p.usage, p.log))
+    out = d / "usage_out"
+    run(supplier, out, Fake(raise_=TimeoutError()), env={"AI_READER": "on"})
+    rec = json.loads((out / "ai_usage.json").read_text(encoding="utf-8")) if (out / "ai_usage.json").exists() else None
+    check("F3: a failed call is written to ai_usage.json, so the daily count includes it",
+          rec and len(rec) == 1 and rec[0]["stop_reason"] == "error", rec)
+
+    # F6: the key leaves the environment before OCR or LibreOffice start
+    env = {"ANTHROPIC_API_KEY": " sk-ant-test ", "AI_READER": "on"}
+    check("F6: take_key() returns the key and removes it from the environment",
+          A.take_key(env) == "sk-ant-test" and "ANTHROPIC_API_KEY" not in env)
+    during = []
+    real_read = A.AnthropicProvider.read
+    A.AnthropicProvider.read = lambda self, b, n: (during.append("ANTHROPIC_API_KEY" in os.environ)
+                                                   or A.Reply(None, "refusal", "claude-opus-5-5", 1, 1))
+    old_argv, old_env = sys.argv, dict(os.environ)
+    os.environ.update({"AI_READER": "on", "ANTHROPIC_API_KEY": "sk-ant-test", "AI_READER_SOURCES": str(supplier)})
+    sys.argv = ["neutralize_docx.py", str(supplier), "--output-dir", str(d / "key_out"), "--file-nr", "840.S0997"]
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            N.main()
+    except SystemExit:
+        pass
+    finally:
+        A.AnthropicProvider.read, sys.argv = real_read, old_argv
+        os.environ.clear(); os.environ.update(old_env)
+    check("F6: during the engine run the key is no longer in the environment, yet the AI is asked",
+          during == [False], during)
+
+# F6: the dispatcher gives the AI settings and key to the COA route only
+import neutralize as D  # noqa: E402
+import subprocess  # noqa: E402
+got, real_run = [], subprocess.run
+subprocess.run = lambda cmd, env=None, **k: (got.append(env), type("R", (), {"returncode": 0})())[1]
+old_env = dict(os.environ)
+os.environ.update({"AI_READER": "on", "ANTHROPIC_API_KEY": "sk-ant-test"})
+try:
+    D.run(["py", "neutralize_sds_docx.py"]); D.run(["py", "neutralize_docx.py"], ai=True)
+finally:
+    subprocess.run = real_run
+    os.environ.clear(); os.environ.update(old_env)
+check("F6: SDS and TDS runs never see the AI settings or key; the COA run inherits them",
+      got[0] is not None and not any(k.startswith(("AI_READER", "ANTHROPIC_")) for k in got[0]) and got[1] is None,
+      [sorted(k for k in (e or {}) if k.startswith(("AI_", "ANTH"))) for e in got])
+
+# F8: the block list is a list of names, nothing else
+with tempfile.TemporaryDirectory() as d:
+    res = []
+    for content in ('"Acme"', "42", "null", '{"a": 1}', '["Acme", 3, null, " "]'):
+        f = Path(d) / f"f{len(res)}.json"
+        f.write_text(content, encoding="utf-8")
+        res.append(A.forbid_from_env({"AI_READER_FORBID": str(f)}))
+    check("F8: only a JSON list of names is a block list; anything else is empty, no crash",
+          res == [[], [], [], [], ["Acme"]], res)
+
+# F10: settings are checked, so none can send the key somewhere else
+base = {"AI_READER": "on", "ANTHROPIC_API_KEY": "k"}
+for name, extra in (("a model that is not Claude", {"AI_READER_MODEL": "gpt-x"}),
+                    ("an unknown effort", {"AI_READER_EFFORT": "turbo"}),
+                    ("an unknown provider", {"AI_READER_PROVIDER": "other"}),
+                    ("a Foundry resource that is a web address", {"AI_READER_PROVIDER": "foundry",
+                                                                  "AI_READER_FOUNDRY_RESOURCE": "x.evil/#"})):
+    check(f"F10: {name}: AI off with a reason", A.provider_from_env(base | extra) is None
+          and A.why_off(base | extra).startswith("on, but"), A.why_off(base | extra))
+check("F10: a valid Foundry resource is accepted",
+      isinstance(A.provider_from_env(base | {"AI_READER_PROVIDER": "foundry", "AI_READER_FOUNDRY_RESOURCE": "tmc-ai-eu"}),
+                 A.AnthropicProvider))
+
+# testing review #1 and #4
+check("hidden characters (right-to-left override, zero-width space) are dropped",
+      A.verify(answer(production=("‮02.09.2026", "Manufactured on 02.09.2026")), ALL, SRC, []) == ({}, [], 1)
+      and A.verify(answer(batch=("SB-2026​-114", "Batch: SB-2026​-114")), ALL, SRC, [])[0] == {})
+f, r, n = A.verify({"fields": {"batch": {"value": 123, "quote": "Batch: SB-2026-114", "page": 1},
+                               "production_date": {"value": "02.09.2026", "quote": "Manufactured on 02.09.2026", "page": 1},
+                               "expiry_date": {"value": "", "quote": "", "page": 1}}, "rows": []}, ALL, SRC, [])
+check("one bad value drops only that value; the good ones stay", f == {"fabricagedatum": "02.09.2026"} and n == 1, (f, n))
 
 print(f"\n{ok} passed, {bad} failed")
 sys.exit(1 if bad else 0)

@@ -17,6 +17,8 @@ AI_READER_PROVIDER (BRIEF 27/10/2026). Nothing of the document and never the key
 import json
 import os
 import re
+import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -64,8 +66,13 @@ _KEY = {"lot": "batch", "fabricagedatum": "production_date", "vervaldatum": "exp
 _LABEL = {"lot": re.compile(r"\b(?:batch|lot|charge|chargen?)\b", re.I),
           "fabricagedatum": re.compile(r"manufactur|\bmfg\b|\bmfd\b|production|\bprod\b|\bmade\b|date\s+of\s+manufactur", re.I),
           "vervaldatum": re.compile(r"expir|\bexp\b|best\s*before|use\s*(?:by|before)|retest|re-test|\bsled\b|shelf", re.I)}
-_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _CONTACT = re.compile(r"@|\bwww\b|https?:|\.(?:com|net|org|de|be|nl|fr|cn|in)\b", re.I)
+# control, format (zero-width, right-to-left override), private-use and surrogate characters:
+# invisible or reordering, so what a person sees would differ from what is stored (testing review)
+_HIDDEN = {"Cc", "Cf", "Co", "Cs"}
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+_MODEL_RE = re.compile(r"^claude-[a-z0-9-]{1,40}$")
+_RESOURCE_RE = re.compile(r"^[a-z0-9-]{2,64}$")
 
 
 @dataclass(frozen=True)
@@ -76,6 +83,7 @@ class Reply:
     input_tokens: int = 0
     output_tokens: int = 0
     category: str | None = None
+    text: str | None = None      # the raw answer; parsed in propose(), after usage is counted
 
 
 @dataclass
@@ -104,10 +112,12 @@ class AnthropicProvider:
 
     def _client(self):
         import anthropic            # loaded only when the AI reader is on
+        # no retries: each attempt is counted and the run stays within the worker's time limit
+        # (security review F2)
         if self.provider == "foundry":
             return anthropic.AnthropicFoundry(api_key=self.api_key, resource=self.foundry_resource,
-                                              max_retries=1, timeout=self.timeout_s)
-        return anthropic.Anthropic(api_key=self.api_key, max_retries=1, timeout=self.timeout_s)
+                                              max_retries=0, timeout=self.timeout_s)
+        return anthropic.Anthropic(api_key=self.api_key, max_retries=0, timeout=self.timeout_s)
 
     def read(self, pdf, needs):
         import base64
@@ -122,25 +132,59 @@ class AnthropicProvider:
             output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": SCHEMA}})
         usage = getattr(resp, "usage", None)
         details = getattr(resp, "stop_details", None)
-        data = None
+        text = None
         if resp.stop_reason == "end_turn":
             text = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "")
-            data = json.loads(text)
-        return Reply(data, resp.stop_reason or "", getattr(resp, "model", self.model) or self.model,
+        return Reply(None, resp.stop_reason or "", getattr(resp, "model", self.model) or self.model,
                      getattr(usage, "input_tokens", 0) or 0, getattr(usage, "output_tokens", 0) or 0,
-                     getattr(details, "category", None) if details else None)
+                     getattr(details, "category", None) if details else None, text)
 
 
-def provider_from_env(env=os.environ):
-    """None unless AI_READER=on and a key is set (off by default)."""
-    if (env.get("AI_READER") or "").strip().lower() != "on" or not (env.get("ANTHROPIC_API_KEY") or "").strip():
-        return None
+def _clamp(env, key, default, low, high):
     try:
-        timeout = float(env.get("AI_READER_TIMEOUT_S") or 120)
+        return min(high, max(low, float(env.get(key) or default)))
     except ValueError:
-        timeout = 120.0
-    return AnthropicProvider(env["ANTHROPIC_API_KEY"].strip(), model=(env.get("AI_READER_MODEL") or DEFAULT_MODEL).strip(),
-                             effort=(env.get("AI_READER_EFFORT") or "medium").strip(), timeout_s=timeout,
+        return float(default)
+
+
+def take_key(env=os.environ):
+    """The API key, taken OUT of the environment at the start of a run, so the OCR, LibreOffice
+    and Ghostscript programs the engine starts never inherit it (security review F6)."""
+    return (env.pop("ANTHROPIC_API_KEY", None) or "").strip()
+
+
+def why_off(env=os.environ, key=None):
+    """None when the AI reader may run, else the reason (one log line; never the key)."""
+    if (env.get("AI_READER") or "").strip().lower() != "on":
+        return "off"
+    key = key if key is not None else (env.get("ANTHROPIC_API_KEY") or "").strip()
+    if not key:
+        return "on, but no API key is set; not used"
+    model = (env.get("AI_READER_MODEL") or DEFAULT_MODEL).strip()
+    effort = (env.get("AI_READER_EFFORT") or "medium").strip().lower()
+    provider = (env.get("AI_READER_PROVIDER") or "anthropic").strip().lower()
+    resource = (env.get("AI_READER_FOUNDRY_RESOURCE") or "").strip()
+    # settings are checked, so no setting can point the key somewhere else (security review F10)
+    if not _MODEL_RE.match(model):
+        return "on, but AI_READER_MODEL is not a Claude model name; not used"
+    if effort not in EFFORTS:
+        return f"on, but AI_READER_EFFORT must be one of {', '.join(EFFORTS)}; not used"
+    if provider not in ("anthropic", "foundry"):
+        return "on, but AI_READER_PROVIDER must be anthropic or foundry; not used"
+    if provider == "foundry" and not _RESOURCE_RE.match(resource):
+        return "on, but AI_READER_FOUNDRY_RESOURCE is not a valid resource name; not used"
+    return None
+
+
+def provider_from_env(env=os.environ, key=None):
+    """None unless AI_READER=on, a key is set and the settings are valid (off by default).
+    `key`: the key take_key() removed from the environment at the start of the run."""
+    key = key if key is not None else (env.get("ANTHROPIC_API_KEY") or "").strip()
+    if why_off(env, key) is not None:
+        return None
+    return AnthropicProvider(key, model=(env.get("AI_READER_MODEL") or DEFAULT_MODEL).strip(),
+                             effort=(env.get("AI_READER_EFFORT") or "medium").strip().lower(),
+                             timeout_s=_clamp(env, "AI_READER_TIMEOUT_S", 120, 10, 180),
                              provider=(env.get("AI_READER_PROVIDER") or "anthropic").strip().lower(),
                              foundry_resource=(env.get("AI_READER_FOUNDRY_RESOURCE") or "").strip() or None)
 
@@ -152,29 +196,51 @@ def forbid_from_env(env=os.environ):
         return []
     try:
         names = json.loads(open(path, encoding="utf-8").read())
-        return [str(n) for n in names if isinstance(n, str) and n.strip()]
     except (OSError, ValueError):
         return []
+    if not isinstance(names, list):            # only a list of names (security review F8)
+        return []
+    return [n for n in names if isinstance(n, str) and n.strip()]
+
+
+def source_allowed(pdf_path, env=os.environ):
+    """Only the file the person uploaded as the supplier document is ever sent: the engine's own
+    reading decides what is a COA, so a PFI or order confirmation that mentions a "certificate of
+    analysis" must never reach the AI (security review F1). Fails closed."""
+    for p in (env.get("AI_READER_SOURCES") or "").split(os.pathsep):
+        p = p.strip()
+        if not p:
+            continue
+        try:
+            if os.path.samefile(pdf_path, p):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 class Budget:
-    """Calls this run may still make (AI_READER_MAX_CALLS, default 3)."""
+    """Calls this run may still make (AI_READER_MAX_CALLS, default 3) and a time limit for all
+    calls together (AI_READER_RUN_DEADLINE_S, default 240 s), well within the worker's 10 minutes,
+    so the rules draft is never lost to a slow AI (security review F2)."""
 
-    def __init__(self, max_calls):
+    def __init__(self, max_calls, deadline_s=240.0):
         self.left = max(0, int(max_calls))
+        self.deadline = time.monotonic() + deadline_s
 
     def take(self):
-        if self.left <= 0:
+        if self.left <= 0 or time.monotonic() > self.deadline:
             return False
         self.left -= 1
         return True
 
     @classmethod
     def from_env(cls, env=os.environ):
+        deadline = _clamp(env, "AI_READER_RUN_DEADLINE_S", 240, 30, 300)
         try:
-            return cls(int(env.get("AI_READER_MAX_CALLS") or 3))
+            return cls(int(env.get("AI_READER_MAX_CALLS") or 3), deadline)
         except ValueError:
-            return cls(3)
+            return cls(3, deadline)
 
 
 def needs_for(review, incomplete, n_rows, typed_batch, n_batches, fields=None):
@@ -193,7 +259,8 @@ def needs_for(review, incomplete, n_rows, typed_batch, n_batches, fields=None):
 
 def _safe(text, limit):
     return (isinstance(text, str) and text.strip() and len(text) <= limit
-            and not _CONTROL.search(text) and not _CONTACT.search(text))
+            and not any(ch not in "\t\n\r" and unicodedata.category(ch) in _HIDDEN for ch in text)
+            and not _CONTACT.search(text))
 
 
 def _inside(small, big):
@@ -231,18 +298,28 @@ def verify(data, needs, src_texts, rules_rows, forbid=(), helpers=None):
             return None
         return value.strip()
 
-    got = data.get("fields") if isinstance(data.get("fields"), dict) else {}
-    for key in ("lot", "fabricagedatum", "vervaldatum"):
-        f = got.get(_KEY[key])
-        if key not in needs or not isinstance(f, dict) or not (f.get("value") or "").strip():
-            continue
+    def check_field(key, f):
         v = clean(f.get("value"), f.get("quote"))
         ok = v is not None and _LABEL[key].search(f.get("quote") or "") is not None and re.search(r"\d", v)
         if ok and key == "lot":
             ok = h.clean_identifier(v) == v and not h._DATE_LIKE.search(v)     # a date is no batch
         elif ok:
             ok = len(v) <= 40 and h._clean_date(v) == v
-        if ok:
+        return v if ok else None
+
+    got = data.get("fields") if isinstance(data.get("fields"), dict) else {}
+    for key in ("lot", "fabricagedatum", "vervaldatum"):
+        f = got.get(_KEY[key])
+        if key not in needs or not isinstance(f, dict):
+            continue
+        # one bad value (not text, say) drops that value only, never the good ones (testing review)
+        try:
+            if not (f.get("value") or "").strip():
+                continue
+            v = check_field(key, f)
+        except (AttributeError, TypeError):
+            v = None
+        if v is not None:
             fields[key] = v
         else:
             dropped += 1
@@ -253,14 +330,17 @@ def verify(data, needs, src_texts, rules_rows, forbid=(), helpers=None):
             if not isinstance(r, dict):
                 dropped += 1
                 continue
-            quote = r.get("quote") or ""
-            cells = [r.get(k) or "" for k in ("parameter", "specification", "result", "unit", "method")]
-            param, result = cells[0].strip(), cells[2].strip()
-            good = bool(param and result) and _safe(quote, MAX_QUOTE) and provenance.traced(norm(quote), corpus)
-            good = good and not h._IDENTITY_PARAM.search(param)
-            # a cell of signs only ("%") has nothing to look up, as in the gate; it must still be clean
-            good = good and all(not c.strip() or (_safe(c, MAX_VALUE) and (not norm(c) or clean(c, quote) is not None))
-                                for c in cells)
+            try:
+                quote = r.get("quote") or ""
+                cells = [r.get(k) or "" for k in ("parameter", "specification", "result", "unit", "method")]
+                param, result = cells[0].strip(), cells[2].strip()
+                good = bool(param and result) and _safe(quote, MAX_QUOTE) and provenance.traced(norm(quote), corpus)
+                good = good and not h._IDENTITY_PARAM.search(param)
+                # a cell of signs only ("%") has nothing to look up, as in the gate; it must still be clean
+                good = good and all(not c.strip() or (_safe(c, MAX_VALUE) and (not norm(c) or clean(c, quote) is not None))
+                                    for c in cells)
+            except (AttributeError, TypeError):
+                good = False
             if not good:
                 dropped += 1
                 continue
@@ -285,11 +365,16 @@ def usage_line(reply, accepted, dropped):
             f"{accepted} value(s) accepted, {dropped} dropped")
 
 
-def propose(pdf_path, needs, src_texts, rules_rows, provider, budget, forbid=(), helpers=None):
+def propose(pdf_path, needs, src_texts, rules_rows, provider, budget, forbid=(), helpers=None,
+            on_usage=None, env=os.environ):
     """One call for one supplier COA. Never raises: on any failure the Proposal is empty and the
-    rules output stays exactly as it was. Only counts go to the log, never document text."""
+    rules output stays exactly as it was. Only counts go to the log, never document text.
+    `on_usage(record)`: called before the call and again after it, so every attempt is counted
+    (and written down) even when the call fails or the run is stopped (security review F3)."""
     if not needs or provider is None:
         return Proposal()
+    if not source_allowed(pdf_path, env):
+        return Proposal(log="  i  AI reader: not asked (not the supplier upload)")
     try:
         import pdfplumber
         with pdfplumber.open(pdf_path) as pdf:
@@ -297,26 +382,51 @@ def propose(pdf_path, needs, src_texts, rules_rows, provider, budget, forbid=(),
         if pages > MAX_PAGES:
             return Proposal(log=f"  i  AI reader: skipped, {pages} pages (max {MAX_PAGES})")
         if not budget.take():
-            return Proposal(log="  i  AI reader: limit of calls for this run reached, not asked")
+            return Proposal(log="  i  AI reader: limit of calls or time for this run reached, not asked")
         pdf = open(pdf_path, "rb").read()
     except Exception as exc:
         return Proposal(log=f"  i  AI reader: not asked ({type(exc).__name__})")
+    model = getattr(provider, "model", None) or DEFAULT_MODEL
+    # an attempt is counted before it is made: a failed or stopped call may still be billed
+    usage = {"model": model, "input_tokens": 0, "output_tokens": 0, "usd": None, "stop_reason": "attempt"}
+    _note(on_usage, usage)
     try:
         reply = provider.read(pdf, needs)
     except Exception as exc:
         status = getattr(exc, "status_code", None)
-        return Proposal(log=f"  !  AI reader: no answer ({type(exc).__name__}{f' {status}' if status else ''}); "
+        usage["stop_reason"] = "error"
+        _note(on_usage, usage)
+        return Proposal(usage=usage,
+                        log=f"  !  AI reader: no answer ({type(exc).__name__}{f' {status}' if status else ''}); "
                             "the rules result is kept")
-    usage = {"model": reply.model, "input_tokens": reply.input_tokens, "output_tokens": reply.output_tokens,
-             "usd": cost_usd(reply.model, reply.input_tokens, reply.output_tokens), "stop_reason": reply.stop_reason}
-    if reply.data is None:
+    usage.update(model=reply.model, input_tokens=reply.input_tokens, output_tokens=reply.output_tokens,
+                 usd=cost_usd(reply.model, reply.input_tokens, reply.output_tokens), stop_reason=reply.stop_reason)
+    _note(on_usage, usage)
+    data = reply.data
+    if data is None and reply.text is not None and reply.stop_reason == "end_turn":
+        try:
+            data = json.loads(reply.text)
+        except ValueError as exc:
+            return Proposal(usage=usage, log=usage_line(reply, 0, 0) + f"\n  !  AI reader: answer not readable "
+                                                                        f"({type(exc).__name__}); the rules result is kept")
+    if data is None:
         why = reply.stop_reason + (f" ({reply.category})" if reply.category else "")
         return Proposal(usage=usage, log=usage_line(reply, 0, 0) + f"\n  !  AI reader: no usable answer ({why}); "
                                                                     "the rules result is kept")
     try:
-        fields, rows, dropped = verify(reply.data, needs, src_texts, rules_rows, forbid, helpers)
+        fields, rows, dropped = verify(data, needs, src_texts, rules_rows, forbid, helpers)
     except Exception as exc:
         return Proposal(usage=usage, log=usage_line(reply, 0, 0) + f"\n  !  AI reader: answer not checked "
                                                                     f"({type(exc).__name__}); the rules result is kept")
     usage.update(accepted=len(fields) + len(rows), dropped=dropped)
+    _note(on_usage, usage)
     return Proposal(fields, rows, dropped, usage, usage_line(reply, len(fields) + len(rows), dropped))
+
+
+def _note(on_usage, usage):
+    if on_usage is None:
+        return
+    try:
+        on_usage(usage)
+    except Exception:        # writing the count down must never break the run
+        pass
