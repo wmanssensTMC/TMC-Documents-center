@@ -1,6 +1,6 @@
 # Changelog
 
-## 26/10/2026 · COA scorecard round (branch `phase-2m-coa-rows`; security review 85/100, fixes applied)
+## 26/10/2026 · COA scorecard round (branch `phase-2m-coa-rows`, merged 27/10; security review 85/100, fixes applied)
 - Scorecard on Willem's real dossiers (laptop only): 23 drafts paired with the colleagues' TMC version. Batch 22/23 (the 23rd only "LOT2504280" vs "2504280"), production date 21/23 (the 2 others yellow), expiry and file nr 23/23; Primojel results from 70% to 94%.
 - "Method of analysis" is read as the Method column (it was dropped). A test whose name holds a header word ("Identification (Flame test)") is kept; supplier, lab and address lines never become test rows (review R1).
 - Batch "U3/P1/MP/ 1610925" is read whole and marked yellow for a person; a following word is never taken in ("2504/ ACME", review R2); a cut-off batch ("U3/P1/MP/") is yellow, never printed half.
