@@ -135,8 +135,9 @@ const HIDE: [string, string][] = [
 export function cleanLog(log: string, workDir: string) {
   let out = log.split(workDir).join("<job>");
   for (const [p, label] of HIDE) if (p.length > 1) out = out.split(p).join(label);
-  const key = process.env.ANTHROPIC_API_KEY ?? "";
-  if (key.length >= 8) out = out.split(key).join("<key>");
+  // the key as passed to the engine (trimmed), and as set, in case they differ (security review F7)
+  const raw = process.env.ANTHROPIC_API_KEY ?? "";
+  for (const key of new Set([raw.trim(), raw])) if (key.length >= 8) out = out.split(key).join("<key>");
   return out.length > LOG_MAX ? `…${out.slice(-LOG_MAX)}` : out;
 }
 

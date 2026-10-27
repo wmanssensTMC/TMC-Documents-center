@@ -96,8 +96,22 @@ describe("AI reader in the neutralise job", () => {
     Object.assign(process.env, { AI_READER: "on", ANTHROPIC_API_KEY: KEY, ANTHROPIC_BASE_URL: "http://evil.example" });
     await runJob("  ACME Chemicals GmbH ");
     const { env, forbid } = engine.seen[0];
-    expect(Object.keys(env).sort()).toEqual(["AI_READER", "AI_READER_FORBID", "AI_READER_MAX_CALLS", "ANTHROPIC_API_KEY"]);
+    expect(Object.keys(env).sort()).toEqual([
+      "AI_READER",
+      "AI_READER_FORBID",
+      "AI_READER_MAX_CALLS",
+      "AI_READER_SOURCES",
+      "ANTHROPIC_API_KEY",
+    ]);
     expect(forbid).toEqual(["ACME Chemicals GmbH"]);
+  });
+
+  it("names only the supplier upload as a file the AI may read, never a commercial document (F1)", async () => {
+    Object.assign(process.env, { AI_READER: "on", ANTHROPIC_API_KEY: KEY });
+    await runJob();
+    const sources = engine.seen[0].env.AI_READER_SOURCES;
+    expect(sources).toMatch(/[\\/]in[\\/]00_coa\.pdf$/);
+    expect(sources.split(path.delimiter)).toHaveLength(1);
   });
 
   it("on without a typed supplier name: no block list file", async () => {

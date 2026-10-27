@@ -168,4 +168,23 @@ describe("worker log", () => {
       else process.env.ANTHROPIC_API_KEY = old;
     }
   });
+
+  it("hides the key also when its setting has stray spaces (the engine gets it trimmed, F7)", async () => {
+    const old = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = `  ${on.ANTHROPIC_API_KEY} \n`;
+    try {
+      expect(cleanLog(`failed with ${on.ANTHROPIC_API_KEY}.`, "/nowhere")).toBe("failed with <key>.");
+      expect((await aiEngineEnv(db, { ...on, ANTHROPIC_API_KEY: `  ${on.ANTHROPIC_API_KEY} ` })).ANTHROPIC_API_KEY).toBe(
+        on.ANTHROPIC_API_KEY,
+      );
+    } finally {
+      if (old === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = old;
+    }
+  });
+
+  it("a per-run limit of 0 stays 0 (no calls), not the default", async () => {
+    expect((await aiEngineEnv(db, { ...on, AI_READER_MAX_CALLS: "0" })).AI_READER_MAX_CALLS).toBe("0");
+    expect((await aiEngineEnv(db, { ...on, AI_READER_RUN_DEADLINE_S: "120" })).AI_READER_RUN_DEADLINE_S).toBe("120");
+  });
 });

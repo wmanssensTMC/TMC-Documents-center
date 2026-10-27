@@ -17,6 +17,7 @@ const PASS = [
   "AI_READER_EFFORT",
   "AI_READER_MAX_CALLS",
   "AI_READER_TIMEOUT_S",
+  "AI_READER_RUN_DEADLINE_S",
   "AI_READER_PROVIDER",
   "AI_READER_FOUNDRY_RESOURCE",
 ] as const;
@@ -52,10 +53,12 @@ export async function aiEngineEnv(db: Db, env: Env = process.env): Promise<Recor
   if (left <= 0) return {};
   const out: Record<string, string> = {};
   for (const k of PASS) {
-    const v = env[k];
+    const v = env[k]?.trim(); // trimmed, so the key the log hides is exactly the key in use (F7)
     if (v) out[k] = v;
   }
-  const perRun = Math.floor(Number(out.AI_READER_MAX_CALLS ?? DEFAULT_PER_RUN)) || DEFAULT_PER_RUN;
+  // 0 stays 0 (no calls); only a missing or broken value takes the default (testing review)
+  const asked = Number(out.AI_READER_MAX_CALLS ?? DEFAULT_PER_RUN);
+  const perRun = Number.isFinite(asked) ? Math.floor(asked) : DEFAULT_PER_RUN;
   out.AI_READER_MAX_CALLS = String(Math.max(0, Math.min(perRun, left)));
   return out;
 }
