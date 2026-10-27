@@ -1,5 +1,17 @@
 # Changelog
 
+## 27/10/2026 · API v1 for TMC Logistics (branch `phase-api-v1`, on top of `phase-2n-ai-reader`)
+- Off by default (`API_CLIENTS_ENABLED=on` and `APP_URL` to switch on). Contract: `DOCUMENT-CENTER-API.md` in the TMC Logistics repo; this side: `docs/API.md`.
+- TMC Logistics asks for a COA, MSDS, TDS or label for one part of an order (`POST /api/v1/jobs`), reads states (`GET /jobs/{id}`, `GET /jobs?ids=`), result references (`/results`) and stops a request (`/cancel`). Strict bodies (an unknown field is refused), fixed error codes, idempotency per request id, a client only sees its own requests. Never a supplier name, source file, download address, yellow text or engine log in an answer.
+- Settings > API keys: make a key (shown once, only its SHA-256 kept, two active per app for rotation), deactivate, last used.
+- Requests from TMC Logistics: on the Neutralise page (waiting for you) and on `/api-jobs`. The request page shows the BC lines, state, runs and results; "Add supplier document" (route and entity fixed, dossier = order no and product name = line description as proposals, supplier name mandatory) or "Make label" per line.
+- State worked out from the runs and documents (waiting-input, in-progress, to-check, ready, failed, cancelled; edge cases Willem 27/10). Cancel: queued runs stop (new job state `cancelled`), drafts to check become Rejected "Not needed in TMC Logistics", a running run's drafts are saved as Rejected, Finals stay. Requests are never deleted (database trigger).
+- Audit: `api.job.created`, `api.job.cancelled`, `api.key.created`, `api.key.deactivated`, `api.key.refused` (client prefix only, at most once a minute). Reads not audited; "last used" per key.
+- Limits: 64 KB body, 30 creates a minute and 300 open requests per app (database), 120 reads a minute (per server instance).
+- Login filter: `/api-jobs` pages now pass through it (it skipped every path starting with "api").
+- Migration 0011. Deploy the worker (Railway) before the web app.
+- Tests: `web/lib/api/api.test.ts`, `web/app/api/v1/routes.test.ts`.
+
 ## 27/10/2026 · AI reader v1, COA route (branch `phase-2n-ai-reader`)
 - Off by default. With `AI_READER=on` and a key, the engine asks Claude (claude-opus-5-5) only where the rules are unsure: an empty batch or date, a table with too few rows. Only the supplier COA is sent; never the commercial documents or entity data.
 - Every proposed value must be printed in the original on the line it was quoted from, with the right label and shape; e-mails, web addresses, control characters and the typed supplier name are refused. Accepted values are yellow with one AI note; they never go into the batch lock or the file name; the provenance gate checks everything as before (an invented value deletes the output). A refusal, timeout or broken answer leaves the rules output exactly as it was.
