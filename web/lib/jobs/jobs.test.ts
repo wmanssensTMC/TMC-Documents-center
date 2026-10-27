@@ -29,7 +29,7 @@ function input(name = "supplier-coa.pdf", bytes = PDF) {
 }
 
 function job(over: Partial<JobInput> = {}): JobInput {
-  return { route: "coa", entity: "TMC", fileNr: "840.S0850", supplierFile: input(), ...over };
+  return { route: "coa", entity: "TMC", fileNr: "840.S0850", supplierName: "Example Supplier BV", supplierFile: input(), ...over };
 }
 
 beforeEach(async () => {
@@ -84,6 +84,12 @@ describe("createJobs", () => {
       await expect(createJobs(db, storage, user, [job({ supplierFile: { key, filename: "a.pdf" } })])).rejects.toThrow(
         JobError,
       );
+    }
+  });
+
+  it("refuses a job without a supplier name (mandatory since 27/10, security review F4)", async () => {
+    for (const supplierName of [undefined, "", " ", "A"]) {
+      await expect(createJobs(db, storage, user, [job({ supplierName })])).rejects.toThrow(/supplier name/);
     }
   });
 

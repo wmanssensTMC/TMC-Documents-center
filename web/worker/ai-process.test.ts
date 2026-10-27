@@ -65,7 +65,7 @@ afterEach(() => {
   }
 });
 
-/** supplierName null: the field is left out, as when nobody typed it. */
+/** supplierName null: a job from before the name was mandatory (27/10); the form now refuses it. */
 async function runJob(supplierName: string | null = "ACME Chemicals GmbH") {
   const key = newUploadKey("input");
   await storage.put(key, PDF, "application/pdf");
@@ -75,10 +75,11 @@ async function runJob(supplierName: string | null = "ACME Chemicals GmbH") {
       entity: "TMC",
       productName: "Sodium Benzoate",
       fileNr: "840.S0999",
-      ...(supplierName === null ? {} : { supplierName }),
+      supplierName: supplierName ?? "placeholder",
       supplierFile: { key, filename: "coa.pdf" },
     },
   ]);
+  if (supplierName === null) await db.update(jobs).set({ supplierName: null });
   const job = (await claimNextJob(db))!;
   await processNeutraliseJob(db, storage, job);
   return job;
@@ -114,10 +115,10 @@ describe("AI reader in the neutralise job", () => {
     expect(sources.split(path.delimiter)).toHaveLength(1);
   });
 
-  it("on without a typed supplier name: no block list file", async () => {
+  it("on, but a job without a supplier name: no AI at all (security review F4)", async () => {
     Object.assign(process.env, { AI_READER: "on", ANTHROPIC_API_KEY: KEY });
     await runJob(null);
-    expect(engine.seen[0].env.AI_READER_FORBID).toBeUndefined();
+    expect(engine.seen[0].env).toEqual({});
   });
 
   it("a job that fails after AI calls still counts them toward today's limit", async () => {

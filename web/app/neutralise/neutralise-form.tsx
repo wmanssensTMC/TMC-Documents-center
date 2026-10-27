@@ -59,6 +59,7 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
     e.preventDefault();
     setError(null);
     if (!rows.length) return setError("Add at least one supplier document.");
+    if (supplierName.trim().length < 2) return setError("Type the supplier name (internal, never printed).");
     if (!entitiesWithDetails.includes(entity)) return setError(`No details entered yet for ${entity}.`);
     try {
       const commercialRefs = [];
@@ -120,8 +121,18 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
           </select>
         </label>
         <label className="block text-sm">
-          Supplier name (internal, optional)
-          <input value={supplierName} onChange={(e) => setSupplierName(e.target.value)} maxLength={200} className={`mt-1 ${input}`} />
+          Supplier name (internal, required, never printed) *
+          <input
+            value={supplierName}
+            onChange={(e) => setSupplierName(e.target.value)}
+            required
+            minLength={2}
+            maxLength={200}
+            className={`mt-1 ${input}`}
+          />
+          <span className="mt-1 block text-xs text-gray-500">
+            The neutralizer refuses any document that still names this supplier.
+          </span>
         </label>
       </section>
 

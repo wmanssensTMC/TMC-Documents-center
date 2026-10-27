@@ -97,7 +97,8 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
 
     // AI reader (27/10): only on this run, only when on and under today's limit. The supplier name
     // a person typed goes along only as a block list for AI values (Willem 27/10), never printed.
-    const aiEnv = await aiEngineEnv(db);
+    // No supplier name (a job from before it was mandatory): no AI at all (security review F4).
+    const aiEnv = job.supplierName?.trim() ? await aiEngineEnv(db) : {};
     // only the person's supplier upload may ever be sent, never a commercial document the engine
     // takes for a COA (security review F1)
     if (aiEnv.AI_READER) aiEnv.AI_READER_SOURCES = supplier;
