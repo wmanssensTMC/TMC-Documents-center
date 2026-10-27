@@ -46,6 +46,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from tmc_common import (load_entity, entity_code, apply_entity_footer, close_hyphens,  # noqa: E402
                         mark_yellow, finalise, non_clobbering, EXIT_REVIEW)
 import provenance  # noqa: E402
+import ai_reader  # noqa: E402  (no network unless AI_READER=on; anthropic is loaded only then)
 
 # Fields that must always be on a certificate (platform NEU_MOETVELDEN). Empty means
 # something did not come over, and he has to see it: yellow, Final locked.
@@ -1103,7 +1104,18 @@ def _yellow_cell(cell, text):
         if r.text:
             mark_yellow(r)
 
-def build_docx(coa_fields, ref_fields, product_name, output_path, entity=None, review=()):
+def _row_values(param, spec, result, uom, method):
+    lim_min, lim_max = parse_spec(spec)
+    unit              = uom if uom.lower() not in _CELL_EMPTY else ""
+    # Quality standard = the specification exactly as printed (rule of 16/09).
+    # House rule 2: a spaced hyphen inside a number range is written closed up.
+    quality           = "" if isinstance(spec, ComposedSpec) else close_hyphens(spec)
+    return [param, close_hyphens(lim_min), close_hyphens(lim_max), result, unit, method, quality]
+
+
+def build_docx(coa_fields, ref_fields, product_name, output_path, entity=None, review=(), ai=None):
+    """`ai`: an ai_reader.Proposal. Every value it holds is written yellow and the table gets
+    one yellow AI note, so a person confirms them (27/10/2026); None leaves the output as before."""
     if not TEMPLATE_DOC.exists():
         sys.exit(f"Template not found: {TEMPLATE_DOC}")
 
@@ -1134,9 +1146,12 @@ def build_docx(coa_fields, ref_fields, product_name, output_path, entity=None, r
     set_c(tbl0.rows[1].cells[0], "Production date", bold=True)
     vals = [("lot", coa_fields.get("batch_lot")), ("fabricagedatum", coa_fields.get("manufacture_date")),
             ("vervaldatum", coa_fields.get("expiry_date")), ("dossier", ref_fields.get("doc_ref"))]
+    ai_fields = ai.fields if ai else {}
     for i, (key, val) in enumerate(vals):
         set_c(tbl0.rows[i].cells[1], val or "")
-        if key in review:
+        if key in ai_fields and not (val or "").strip():
+            _yellow_cell(tbl0.rows[i].cells[1], ai_fields[key])     # proposed by the AI reader
+        elif key in review:
             # an empty required field gets a visible yellow marker, never a guess
             _yellow_cell(tbl0.rows[i].cells[1], val or "[not on the source - check]")
 
@@ -1148,13 +1163,7 @@ def build_docx(coa_fields, ref_fields, product_name, output_path, entity=None, r
     test_data = coa_fields.get("results_table") or []
     unsure    = coa_fields.get("_yellow_results") or ()
     for n, (param, spec, result, uom, method) in enumerate(test_data):
-        lim_min, lim_max = parse_spec(spec)
-        unit              = uom if uom.lower() not in _CELL_EMPTY else ""
-        # Quality standard = the specification exactly as printed (rule of 16/09).
-        # House rule 2: a spaced hyphen inside a number range is written closed up.
-        quality           = "" if isinstance(spec, ComposedSpec) else close_hyphens(spec)
-        values            = [param, close_hyphens(lim_min), close_hyphens(lim_max), result,
-                             unit, method, quality]
+        values            = _row_values(param, spec, result, uom, method)
         new_row           = clone_row(tbl1, template_row)
         for i, val in enumerate(values):
             if i < len(new_row.cells):
@@ -1163,10 +1172,23 @@ def build_docx(coa_fields, ref_fields, product_name, output_path, entity=None, r
             # the scan readings did not agree on this value: a person checks it
             _yellow_cell(new_row.cells[3], result or DOUBT)
 
-    if not test_data:
+    ai_rows = ai.rows if ai else []
+    for param, spec, result, uom, method in ai_rows:
+        new_row = clone_row(tbl1, template_row)
+        for i, val in enumerate(_row_values(param, spec, result, uom, method)):
+            if i < len(new_row.cells):
+                set_c(new_row.cells[i], val)
+                if val:
+                    _yellow_cell(new_row.cells[i], val)       # proposed by the AI reader
+
+    if not test_data and not ai_rows:
         clone_row(tbl1, template_row)
-    if coa_fields.get("_incomplete"):
+    incomplete = coa_fields.get("_incomplete")
+    # the AI rows complete the table: the incomplete note makes way for the AI note
+    if incomplete and len(test_data) + len(ai_rows) < incomplete:
         _yellow_cell(clone_row(tbl1, template_row).cells[0], INCOMPLETE)
+    if ai:
+        _yellow_cell(clone_row(tbl1, template_row).cells[0], ai_reader.AI_NOTE)
 
     if entity:
         apply_entity_footer(doc, entity)
@@ -1184,6 +1206,19 @@ def build_docx(coa_fields, ref_fields, product_name, output_path, entity=None, r
 # ═══════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════
+def _source_texts(src, readings, coa_fields):
+    """Everything the source of one COA says, as the provenance gate reads it; the AI reader's
+    check uses the very same texts (27/10/2026)."""
+    rows = [row for t in (src.get("tables") or []) for row in (t.get("rows") or []) if row]
+    texts = [src.get("full_text", "")] + [p.get("text", "") for p in src.get("pages", [])]
+    # the layout reading of the same file: test rows are read from it (20/10/2026)
+    texts += [line for line in (src.get("layout_text") or "").split("\n") if line.strip()]
+    texts += [" ".join(c for c in row if c) for row in rows]
+    texts += [c.replace("\n", " ") for row in rows for c in row if c]
+    texts += readings.get((coa_fields.get("_source"), coa_fields.get("_lot")), [])
+    return texts + [close_hyphens(t) for t in texts]
+
+
 def main():
     ap = argparse.ArgumentParser(description="Transmare Chemie NV -- DOCX COA Neutralizer v2")
     ap.add_argument("files", nargs="+")
@@ -1320,6 +1355,7 @@ def main():
             if args.batch is not None:
                 coa_fields = dict(coa_fields); coa_fields["batch_lot"] = args.batch.strip()
             test_count   = len(coa_fields.get("results_table") or [])
+            coa_fields = dict(coa_fields); coa_fields["_n_batches"] = n_batches
             jobs.append((coa_fields, best_ref, product_name, test_count))
 
     if not args.batch:
@@ -1337,6 +1373,13 @@ def main():
     print(f"\nGenerating {len(jobs)} {code} COA(s) ...")
     pdf_failures = []
     drafts = []
+    # AI reader (27/10/2026): off unless AI_READER=on; asked only where the rules are unsure
+    ai_provider = ai_reader.provider_from_env()
+    ai_budget   = ai_reader.Budget.from_env()
+    ai_forbid   = ai_reader.forbid_from_env()
+    ai_usage    = []
+    if (os.environ.get("AI_READER") or "").strip().lower() == "on" and ai_provider is None:
+        print("  i  AI reader: on, but no API key is set; not used")
 
     for coa_fields, best_ref, product_name, test_count in jobs:
         stem  = make_output_stem(best_ref.get("doc_ref",""), product_name,
@@ -1361,20 +1404,30 @@ def main():
                             "vervaldatum": coa_fields.get("expiry_date")}[k]) or "").strip()}
         if re.search(r"\s", (coa_fields.get("batch_lot") or "").strip()):
             review.add("lot")    # joined over a space: a person confirms it (security review R2)
-        build_docx(coa_fields, best_ref, product_name, docx_path, entity=entity, review=review)
+        src_texts = _source_texts(src, readings, coa_fields)
+
+        # AI reader: only where the rules are unsure; its values stay apart from batch_lot, the
+        # file name and the batch lock, and pass the provenance gate on the source only
+        ai = None
+        needs = ai_reader.needs_for(review, coa_fields.get("_incomplete"), test_count, args.batch is not None,
+                                    coa_fields.get("_n_batches", 1),
+                                    {"lot": coa_fields.get("batch_lot"), "fabricagedatum": coa_fields.get("manufacture_date"),
+                                     "vervaldatum": coa_fields.get("expiry_date")})
+        if ai_provider is not None and needs and coa_fields.get("_source"):
+            ai = ai_reader.propose(coa_fields["_source"], needs, src_texts, coa_fields.get("results_table") or [],
+                                   ai_provider, ai_budget, ai_forbid, helpers=sys.modules[__name__])
+            if ai.log:
+                print(ai.log)
+            if ai.usage:
+                ai_usage.append(ai.usage)
+            ai = ai or None
+        build_docx(coa_fields, best_ref, product_name, docx_path, entity=entity, review=review, ai=ai)
 
         # HARD RULE: nothing in the output may be invented (gate added to the COA
-        # route in v0.6.0; the SDS route had it since 14/09).
-        rows = [row for t in (src.get("tables") or []) for row in (t.get("rows") or []) if row]
-        src_texts = [src.get("full_text", "")] + [p.get("text", "") for p in src.get("pages", [])]
-        # the layout reading of the same file: test rows are read from it (20/10/2026)
-        src_texts += [line for line in (src.get("layout_text") or "").split("\n") if line.strip()]
-        src_texts += [" ".join(c for c in row if c) for row in rows]
-        src_texts += [c.replace("\n", " ") for row in rows for c in row if c]
-        src_texts += readings.get((coa_fields.get("_source"), coa_fields.get("_lot")), [])
-        src_texts += [close_hyphens(t) for t in src_texts]
+        # route in v0.6.0; the SDS route had it since 14/09). AI values are never in `allowed`.
         allowed = [product_name or "", best_ref.get("doc_ref") or "", coa_fields.get("batch_lot") or "",
-                   "Production date", "[not on the source - check]", NO_PRODUCT, DOUBT, INCOMPLETE]
+                   "Production date", "[not on the source - check]", NO_PRODUCT, DOUBT, INCOMPLETE,
+                   ai_reader.AI_NOTE]
         allowed += list(entity.values())
         # product names from the commercial documents (each entry is {name, quantity}: 20/10/2026,
         # a real order confirmation crashed the gate with the whole entry)
@@ -1386,8 +1439,10 @@ def main():
             # The batch this document is for, so the platform names and files it
             # exactly as printed (one document per batch; Willem 19/10).
             import json
-            Path(docx_path).with_suffix(".meta.json").write_text(
-                json.dumps({"batch": coa_fields.get("batch_lot") or ""}), encoding="utf-8")
+            meta = {"batch": coa_fields.get("batch_lot") or ""}
+            if ai:      # what the AI reader proposed, for the feedback overview (never the batch lock)
+                meta["ai"] = {"fields": ai.fields, "rows": [r[0] for r in ai.rows]}
+            Path(docx_path).with_suffix(".meta.json").write_text(json.dumps(meta), encoding="utf-8")
         except RuntimeError as exc:
             print(f"  x  {exc}")
             pdf_failures.append((Path(docx_path).name, "provenance gate"))
@@ -1395,10 +1450,11 @@ def main():
         print(f"  ok  DOCX -> {Path(docx_path).name}  ({test_count} test row(s))")
         unsure = coa_fields.get("_yellow_results") or ()
         incomplete = coa_fields.get("_incomplete")
-        if review or no_product or unsure or incomplete:
+        if review or no_product or unsure or incomplete or ai:
             names = (["Product name"] if no_product else []) + [lbl for k, lbl in REQUIRED if k in review]
             names += [f"{len(unsure)} unclear scan value(s)"] if unsure else []
             names += [f"results table may be incomplete ({test_count} of {incomplete} numbered tests read)"] if incomplete else []
+            names += [f"{len(ai.fields) + len(ai.rows)} AI value(s)"] if ai else []
             print(f"  !  REVIEW: marked yellow, PDF held back until checked: {', '.join(names)}")
             drafts.append(Path(docx_path).name)
             continue
@@ -1423,6 +1479,11 @@ def main():
         elif not any(f[0] == Path(docx_path).name for f in pdf_failures):
             pdf_failures.append((Path(docx_path).name, "PDF missing or empty after conversion"))
             print("  x  FAIL  PDF missing or empty after conversion")
+
+    # what the AI reader cost, for the platform's count and Willem's evaluation (counts only)
+    if ai_usage and out_dir:
+        import json
+        (out_dir / "ai_usage.json").write_text(json.dumps(ai_usage), encoding="utf-8")
 
     # always reported, also when the run fails further down
     if unrecognised:
