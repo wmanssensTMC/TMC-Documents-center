@@ -57,15 +57,21 @@ export function labelArgv(a: { templateFile: string; fieldsJson: string; entityJ
   ];
 }
 
-/** keepStdout: also return standard output on its own (machine-readable output of yellow.py). */
-export function runPython(argv: string[], workDir: string, opts: { keepStdout?: boolean } = {}): Promise<EngineRun> {
+/** keepStdout: also return standard output on its own (machine-readable output of yellow.py).
+ * env: extra variables for this run only - the AI reader's, from ai.ts, on the neutralise run. */
+export function runPython(
+  argv: string[],
+  workDir: string,
+  opts: { keepStdout?: boolean; env?: Record<string, string> } = {},
+): Promise<EngineRun> {
   const env = {
+    ...opts.env,
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
     HOME: workDir,
     TMPDIR: workDir,
     LANG: "C.UTF-8",
     PYTHONIOENCODING: "utf-8",
-  } as unknown as NodeJS.ProcessEnv; // only these: the engine gets no secrets
+  } as unknown as NodeJS.ProcessEnv; // only these: no database or storage keys, ever
   return new Promise((resolve) => {
     // Own process group, so a timeout also stops the LibreOffice/OCR the engine started.
     const child = spawn(PYTHON, argv, {
@@ -125,10 +131,12 @@ const HIDE: [string, string][] = [
   [os.tmpdir(), "<tmp>"],
 ];
 
-/** Log for people: no server paths, last 8 000 characters. */
+/** Log for people: no server paths, never the AI reader's key, last 8 000 characters. */
 export function cleanLog(log: string, workDir: string) {
   let out = log.split(workDir).join("<job>");
   for (const [p, label] of HIDE) if (p.length > 1) out = out.split(p).join(label);
+  const key = process.env.ANTHROPIC_API_KEY ?? "";
+  if (key.length >= 8) out = out.split(key).join("<key>");
   return out.length > LOG_MAX ? `…${out.slice(-LOG_MAX)}` : out;
 }
 

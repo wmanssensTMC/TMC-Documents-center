@@ -108,6 +108,7 @@ ENGINE_MARKERS = (
     "[unclear in the scan - check the original]",
     "[results table may be incomplete - compare with the original]",
     "[product name not given - check]",
+    "[AI reader proposed the yellow values - check each against the original]",   # ai_reader.AI_NOTE
 )
 
 
