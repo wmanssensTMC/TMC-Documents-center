@@ -4,6 +4,7 @@
 import "server-only";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
+import { assertRequestOpen } from "../api/requests";
 import { logAudit, type Actor } from "../audit";
 import type { Db } from "../db";
 import { documents, ENTITIES, jobs, type Document } from "../db/schema";
@@ -44,6 +45,8 @@ export const labelInput = z.object({
   expiryDate: optional(isoDate),
   netWeight: optional(weight),
   grossWeight: optional(weight),
+  // A label request from TMC Logistics this label answers (API v1).
+  apiJobId: z.uuid().optional(),
 });
 
 export type LabelInput = z.input<typeof labelInput>;
@@ -63,6 +66,10 @@ export async function createLabelJob(db: Db, actor: Actor, raw: unknown): Promis
   const fields: Record<string, string> = {};
   for (const f of LABEL_FIELDS) if (input[f.key]) fields[f.key] = input[f.key];
   const id = await db.transaction(async (tx) => {
+    if (input.apiJobId) {
+      const req = await assertRequestOpen(tx, input.apiJobId, { label: true });
+      if (req.entity !== input.entity) throw new LabelError(`this request is for entity ${req.entity}`);
+    }
     const [row] = await tx
       .insert(jobs)
       .values({
@@ -74,9 +81,16 @@ export async function createLabelJob(db: Db, actor: Actor, raw: unknown): Promis
         supplierName: null,
         label: { template: input.template, language: input.language, fields, sample: labelTemplate(input.template)!.sample },
         createdBy: actor.email,
+        apiJobId: input.apiJobId ?? null,
       })
       .returning({ id: jobs.id });
-    await logAudit(tx, actor, "job.created", null, { job: row.id, kind: "label", template: input.template, language: input.language });
+    await logAudit(tx, actor, "job.created", null, {
+      job: row.id,
+      kind: "label",
+      template: input.template,
+      language: input.language,
+      ...(input.apiJobId ? { apiJob: input.apiJobId } : {}),
+    });
     return row.id;
   });
   await wakeWorker();

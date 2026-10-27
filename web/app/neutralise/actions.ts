@@ -1,5 +1,6 @@
 "use server";
 
+import { RequestError } from "@/lib/api/requests";
 import { requireUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { createJobs, JobError, type JobInput } from "@/lib/jobs";
@@ -13,7 +14,7 @@ export async function submitJobs(inputs: JobInput[]): Promise<CreateJobsResult> 
     const ids = await createJobs(await getDb(), getStorage(), user, inputs);
     return { ok: true, count: ids.length };
   } catch (err) {
-    if (err instanceof JobError) return { ok: false, error: err.message };
+    if (err instanceof JobError || err instanceof RequestError) return { ok: false, error: err.message };
     console.error("submitJobs failed", err instanceof Error ? err.message : err);
     return { ok: false, error: "Sending the documents failed. Try again or tell the administrator." };
   }

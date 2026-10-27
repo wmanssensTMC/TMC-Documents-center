@@ -4,7 +4,8 @@ import "server-only";
 import { and, eq, lt, sql } from "drizzle-orm";
 import { logAudit } from "../audit";
 import type { Db } from "../db";
-import { documents, feedback, jobs, type DocType, type Entity, type Job, type YellowPart } from "../db/schema";
+import { NOT_NEEDED } from "../api/requests";
+import { apiJobs, documents, feedback, jobs, type DocType, type Entity, type Job, type YellowPart } from "../db/schema";
 import { CheckError, makeFinal } from "../documents/check";
 
 /** A job left "running" this long is treated as crashed. */
@@ -74,13 +75,19 @@ export type Draft = {
 
 /**
  * Stores the engine's drafts as "To check" documents and closes the job. Engine output always
- * waits for a person (Willem 17/10): nothing becomes Final here.
+ * waits for a person (Willem 17/10): nothing becomes Final here. A run whose request from TMC
+ * Logistics was cancelled while it ran keeps its drafts as Rejected (API v1, contract section 9).
  */
 export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: number, log: string) {
   await db.transaction(async (tx) => {
+    // the request row lock: a cancel waits until these drafts are saved, or comes first
+    const [request] = job.apiJobId
+      ? await tx.select({ cancelledAt: apiJobs.cancelledAt }).from(apiJobs).where(eq(apiJobs.id, job.apiJobId)).for("update")
+      : [];
+    const notNeeded = !!request?.cancelledAt;
     const closed = await tx
       .update(jobs)
-      .set({ state: "to_check", exitCode, log, finishedAt: new Date() })
+      .set({ state: notNeeded ? "done" : "to_check", exitCode, log, finishedAt: new Date() })
       .where(stillMine(job))
       .returning({ id: jobs.id });
     if (!closed.length) throw new Error("job is no longer held by this run; drafts not saved");
@@ -98,7 +105,8 @@ export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: nu
           manufacturingDate: d.manufacturingDate ?? null,
           expiryOrRetestDate: d.expiryOrRetestDate ?? null,
           supplierName: job.supplierName,
-          status: "To check",
+          status: notNeeded ? "Rejected" : "To check",
+          rejectedReason: notNeeded ? NOT_NEEDED : null,
           version: null,
           pdfKey: d.pdfKey,
           pdfFilename: d.pdfFilename,
@@ -107,8 +115,8 @@ export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: nu
           sourceKey: d.sourceKey,
           sourceFilename: d.sourceFilename,
           yellowParts: d.yellowParts,
-          previewKey: d.previewKey,
-          viewKey: d.viewKey ?? null,
+          previewKey: notNeeded ? null : d.previewKey,
+          viewKey: notNeeded ? null : (d.viewKey ?? null),
           createdBy: job.createdBy,
           jobId: job.id,
         })
@@ -121,6 +129,7 @@ export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: nu
         yellowParts: d.yellowParts.length,
         ...(d.ai ? { aiProposed: d.ai } : {}),
       });
+      if (notNeeded) await logAudit(tx, { email: job.createdBy }, "document.rejected", row.id, { reason: NOT_NEEDED });
     }
   });
 }

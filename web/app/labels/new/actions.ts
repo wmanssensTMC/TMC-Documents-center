@@ -1,5 +1,6 @@
 "use server";
 
+import { RequestError } from "@/lib/api/requests";
 import { requireUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { createLabelJob, LabelError, type LabelInput } from "@/lib/labels";
@@ -12,7 +13,7 @@ export async function submitLabel(input: LabelInput): Promise<CreateLabelResult>
     await createLabelJob(await getDb(), user, input);
     return { ok: true };
   } catch (err) {
-    if (err instanceof LabelError) return { ok: false, error: err.message };
+    if (err instanceof LabelError || err instanceof RequestError) return { ok: false, error: err.message };
     console.error("submitLabel failed", err instanceof Error ? err.message : err);
     return { ok: false, error: "Sending the label failed. Try again or tell the administrator." };
   }

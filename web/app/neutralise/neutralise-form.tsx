@@ -15,7 +15,16 @@ const ROUTE_LABEL: Record<Route, string> = {
   tds: "TDS or specification sheet",
 };
 
-type Row = { file: File; productName: string; fileNr: string; batch: string };
+type Row = { file: File; productName: string; fileNr: string; batch: string; lineNo?: number };
+
+/** A request from TMC Logistics this form answers (API v1): route, entity and dossier come with it. */
+export type FormRequest = {
+  id: string;
+  route: Route;
+  entity: Entity;
+  orderNo: string;
+  lines: { lineNo: number; itemNo: string | null; description: string | null }[];
+};
 
 const input =
   "block w-full rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-tmc focus:outline-none focus:ring-1 focus:ring-tmc";
@@ -27,11 +36,19 @@ function pdfsOnly(list: FileList | File[] | null): { ok: File[]; error?: string 
   return bad ? { ok: [], error: `${bad.name}: only PDF files up to ${MAX_FILE_MB.input} MB.` } : { ok: files };
 }
 
-export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode: "blob" | "local"; entitiesWithDetails: string[] }) {
+export function NeutraliseForm({
+  uploadMode,
+  entitiesWithDetails,
+  request,
+}: {
+  uploadMode: "blob" | "local";
+  entitiesWithDetails: string[];
+  request?: FormRequest;
+}) {
   const router = useRouter();
   const ready = useSyncExternalStore(noSubscribe, () => true, () => false);
-  const [route, setRoute] = useState<Route>("auto");
-  const [entity, setEntity] = useState<Entity>("TMC");
+  const [route, setRoute] = useState<Route>(request?.route ?? "auto");
+  const [entity, setEntity] = useState<Entity>(request?.entity ?? "TMC");
   const [rows, setRows] = useState<Row[]>([]);
   const [commercial, setCommercial] = useState<File[]>([]);
   const [supplierName, setSupplierName] = useState("");
@@ -44,7 +61,10 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
     const { ok, error } = pdfsOnly(list);
     if (error) return setError(error);
     setError(null);
-    setRows((r) => [...r, ...ok.map((file) => ({ file, productName: "", fileNr: "", batch: "" }))].slice(0, 20));
+    // a request's dossier and, with one line, its description: proposed values the person may change
+    const only = request?.lines.length === 1 ? request.lines[0] : undefined;
+    const prefill = { productName: only?.description ?? "", fileNr: request?.orderNo ?? "", lineNo: only?.lineNo };
+    setRows((r) => [...r, ...ok.map((file) => ({ file, batch: "", ...prefill }))].slice(0, 20));
   }
 
   function update(i: number, patch: Partial<Row>) {
@@ -81,6 +101,7 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
           supplierName,
           supplierFile: { key: await sendFile(uploadMode, "input", row.file), filename: row.file.name },
           commercialFiles: commercialRefs,
+          ...(request ? { apiJobId: request.id } : {}),
         });
       }
       setBusy("Sending to the neutralizer…");
@@ -89,7 +110,8 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
         setBusy(null);
         return setError(result.error);
       }
-      router.push(`/jobs?ok=${encodeURIComponent(`${result.count} document(s) sent to the neutralizer.`)}`);
+      const ok = encodeURIComponent(`${result.count} document(s) sent to the neutralizer.`);
+      router.push(request ? `/api-jobs/${request.id}?ok=${ok}` : `/jobs?ok=${ok}`);
     } catch (err) {
       setBusy(null);
       setError(err instanceof Error ? `Upload failed: ${err.message}` : "Upload failed.");
@@ -101,7 +123,7 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
       <section className="grid gap-4 rounded-lg bg-white p-5 shadow-sm ring-1 ring-black/5 sm:grid-cols-3">
         <label className="block text-sm">
           Document type
-          <select value={route} onChange={(e) => setRoute(e.target.value as Route)} className={`mt-1 ${input}`}>
+          <select value={route} onChange={(e) => setRoute(e.target.value as Route)} disabled={!!request} className={`mt-1 ${input}`}>
             {(Object.keys(ROUTE_LABEL) as Route[]).map((r) => (
               <option key={r} value={r}>
                 {ROUTE_LABEL[r]}
@@ -111,7 +133,7 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
         </label>
         <label className="block text-sm">
           Entity
-          <select value={entity} onChange={(e) => setEntity(e.target.value as Entity)} className={`mt-1 ${input}`}>
+          <select value={entity} onChange={(e) => setEntity(e.target.value as Entity)} disabled={!!request} className={`mt-1 ${input}`}>
             {ENTITIES.map((x) => (
               <option key={x} value={x} disabled={!entitiesWithDetails.includes(x)}>
                 {x}
@@ -157,6 +179,7 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
               <thead className="text-gray-600">
                 <tr>
                   <th className="py-1 pr-2">File</th>
+                  {request && <th className="py-1 pr-2">BC line</th>}
                   <th className="py-1 pr-2">Product name (TMC)</th>
                   <th className="py-1 pr-2">Dossier</th>
                   {showBatch && <th className="py-1 pr-2">Batch</th>}
@@ -169,6 +192,26 @@ export function NeutraliseForm({ uploadMode, entitiesWithDetails }: { uploadMode
                     <td className="max-w-[14rem] truncate py-1.5 pr-2" title={row.file.name}>
                       {row.file.name}
                     </td>
+                    {request && (
+                      <td className="py-1.5 pr-2">
+                        <select
+                          value={row.lineNo ?? ""}
+                          onChange={(e) => {
+                            const l = request.lines.find((x) => x.lineNo === Number(e.target.value));
+                            update(i, { lineNo: l?.lineNo, productName: l?.description ?? row.productName });
+                          }}
+                          className={input}
+                          aria-label={`BC line for ${row.file.name}`}
+                        >
+                          <option value="">Choose a line</option>
+                          {request.lines.map((l) => (
+                            <option key={l.lineNo} value={l.lineNo}>
+                              {[l.lineNo, l.itemNo, l.description].filter(Boolean).join(" · ")}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                    )}
                     <td className="py-1.5 pr-2">
                       <input value={row.productName} onChange={(e) => update(i, { productName: e.target.value })} maxLength={200} className={input} aria-label={`Product for ${row.file.name}`} />
                     </td>
