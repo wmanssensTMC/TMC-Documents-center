@@ -11,7 +11,9 @@
 - Login filter: `/api-jobs` pages now pass through it (it skipped every path starting with "api").
 - Migration 0011. Deploy the worker (Railway) before the web app.
 - Security review (85/100) fixes: a result's name only goes out once Final, as a draft's name can hold the supplier file's name (S1); refused keys audited only under a known client name or "unknown", at most 20 rows a minute (S2); writes limited too, 60 a minute (S3); create limits counted under a lock (S4); a crashed run of a cancelled request is not queued again (S5); 30 refused keys a minute per address, then 429 before any lookup (S6).
-- Tests: `web/lib/api/api.test.ts`, `web/app/api/v1/routes.test.ts`.
+- Contract amendments f40cabf (02/11): at most 100 results per job (Finals first, then the newest); cancelled jobs stay in `GET /jobs?ids=`. Open requests for the 300 limit leave failed ones out (contract 11).
+- Tests: `web/lib/api/api.test.ts`, `web/app/api/v1/routes.test.ts` (testing review: parallel creates with one key, body hash, every result status, label request, other entity, a draft being finalised at cancel, `__proto__` in the body).
+- Open, Low: a draft whose finalise was already queued when its request was cancelled and then fails stays "To check" in the library (the request shows cancelled); a finalise run does not make the request "in-progress" (it shows "to-check").
 
 ## 27/10/2026 · AI reader v1, COA route (branch `phase-2n-ai-reader`)
 - Off by default. With `AI_READER=on` and a key, the engine asks Claude (claude-opus-5-5) only where the rules are unsure: an empty batch or date, a table with too few rows. Only the supplier COA is sent; never the commercial documents or entity data.

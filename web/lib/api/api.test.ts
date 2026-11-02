@@ -6,7 +6,8 @@ import { createPgliteDb, type Db } from "../db";
 import { apiClients, apiJobs, auditLog, documents, jobs } from "../db/schema";
 import { newUploadKey } from "../files";
 import { createJobs, type JobInput } from "../jobs";
-import { claimNextJob, requeueStaleJobs, saveDrafts, type Draft } from "../jobs/worker-state";
+import { claimNextJob, requeueStaleJobs, saveDrafts, saveFinal, type Draft } from "../jobs/worker-state";
+import { saveEntity } from "../entities";
 import { createLabelJob } from "../labels";
 import type { Storage } from "../storage";
 import { ApiError } from "./errors";
@@ -223,6 +224,41 @@ describe("POST /jobs", () => {
     expect([e.status, e.code, e.retryAfter]).toEqual([429, "rate_limited", 60]);
     expect((await create(first)).created).toBe(false);
   });
+
+  it("the same key sent at once: one job made, every other answer is that job (contract 8)", async () => {
+    const b = body();
+    const answers = await Promise.all([create(b), create(b), create(b)]);
+    expect(answers.filter((a) => a.created)).toHaveLength(1);
+    expect(new Set(answers.map((a) => a.job.jobId)).size).toBe(1);
+    expect(await db.select().from(apiJobs)).toHaveLength(1);
+    expect(await db.select().from(auditLog).where(eq(auditLog.action, "api.job.created"))).toHaveLength(1);
+  });
+
+  it("same body: key order at every level does not matter; any changed value is 409 (contract 8)", async () => {
+    const lines = [
+      { lineNo: 10000, itemNo: "IT-1", description: "Betaine AI test" },
+      { lineNo: 20000, itemNo: null, description: null },
+    ];
+    const b = { ...body(), facts: { lines } };
+    const s = b.source;
+    const first = await createRequest(db, tmclog, s.requestId, b);
+    const reordered = {
+      facts: { lines: lines.map((l) => ({ description: l.description, lineNo: l.lineNo, itemNo: l.itemNo })) },
+      source: { reason: s.reason, partNo: s.partNo, requestedBy: s.requestedBy, requestId: s.requestId, orderNo: s.orderNo, app: s.app },
+      entity: b.entity,
+      kind: b.kind,
+    };
+    expect(await createRequest(db, tmclog, s.requestId, reordered)).toEqual({ job: first.job, created: false });
+    const changed = [
+      { ...b, source: { ...s, partNo: 3 } },
+      { ...b, source: { ...s, reason: "asked-by-person" } },
+      { ...b, facts: { lines: [{ ...lines[0], description: "Betaine AI test " }, lines[1]] } },
+      { ...b, facts: { lines: [lines[1], lines[0]] } },
+      { ...b, facts: { lines: [lines[0]] } },
+    ];
+    for (const c of changed) expect((await apiError(createRequest(db, tmclog, s.requestId, c))).code).toBe("idempotency_conflict");
+    expect(await db.select().from(apiJobs)).toHaveLength(1);
+  });
 });
 
 describe("GET /jobs and results", () => {
@@ -235,6 +271,61 @@ describe("GET /jobs and results", () => {
     expect((await getRequests(db, tmclog, `${job.jobId},${randomUUID()}`)).map((j) => j.jobId)).toEqual([job.jobId]);
     expect((await apiError(getRequests(db, tmclog, "x,y"))).fields).toEqual(["ids"]);
     expect((await apiError(getRequests(db, tmclog, Array.from({ length: 101 }, () => randomUUID()).join(",")))).code).toBe("invalid_payload");
+  });
+
+  it("ids are matched case-insensitively and each job comes back once", async () => {
+    const { job } = await create();
+    const list = await getRequests(db, tmclog, `${job.jobId.toUpperCase()}, ${job.jobId} ,${job.jobId},`);
+    expect(list.map((j) => j.jobId)).toEqual([job.jobId]);
+  });
+
+  it("results: only the contract fields for every status; a name only from Final on (S1)", async () => {
+    const { job } = await create();
+    const { doc } = await draftFor(job.jobId);
+    for (const status of ["Draft", "To check", "Final", "Superseded", "Rejected"] as const) {
+      const final = status === "Final" || status === "Superseded";
+      await db
+        .update(documents)
+        .set({ status, version: final ? 1 : null, pdfKey: final ? newUploadKey("pdf") : null, approvedAt: final ? new Date() : null })
+        .where(eq(documents.id, doc.id));
+      const results = await requestResults(db, tmclog, job.jobId);
+      expect(results).toHaveLength(1);
+      expect(Object.keys(results[0]).sort()).toEqual(["batch", "documentId", "finalAt", "link", "name", "status", "type", "version"]);
+      expect([results[0].status, results[0].name !== null, results[0].finalAt !== null]).toEqual([status, final, final]);
+      const out = JSON.stringify(results);
+      for (const secret of [SUPPLIER, "coa.pdf", "uploads/", "engine"]) expect(out).not.toContain(secret);
+    }
+  });
+
+  it("a label request follows its label: in-progress, to-check, ready", async () => {
+    const { job } = await create(body(randomUUID(), { kind: "label" }));
+    await createLabelJob(db, person, {
+      template: "sample",
+      language: "EN",
+      entity: "TMC",
+      productName: "Betaine AI test",
+      batch: "BT-3877",
+      fileNr: "901.S0001",
+      apiJobId: job.jobId,
+    });
+    expect(await getRequest(db, tmclog, job.jobId)).toMatchObject({ state: "in-progress", problem: null });
+    const run = (await claimNextJob(db))!;
+    expect(run.apiJobId).toBe(job.jobId);
+    const label: Draft = { ...draft("TMC_LABEL_901.S0001_Betaine_AI_test_BT-3877_EN"), type: "LABEL", sourceKey: null, sourceFilename: null, by: "label" };
+    await saveDrafts(db, run, [label], 0, "ok");
+    expect(await getRequest(db, tmclog, job.jobId)).toMatchObject({ state: "to-check", problem: null, resultCount: 1 });
+    await db.update(documents).set({ status: "Final", version: 1, pdfKey: newUploadKey("pdf"), approvedAt: new Date() }).where(eq(documents.jobId, run.id));
+    expect(await getRequest(db, tmclog, job.jobId)).toMatchObject({ state: "ready", problem: null, resultCount: 1 });
+  });
+
+  it("a person's run for another entity than the request's is refused (supplier document and label)", async () => {
+    await saveEntity(db, admin, "TMCGULF", { naam: "Example Gulf", adres: "Street 1", telefoon: "+1 0", email: "x@example.com", web: "example.com", btw: "X1", nood: "+1 0" });
+    const coa = (await create()).job;
+    await expect(createJobs(db, storage, person, [supplierDoc(coa.jobId, { entity: "TMCGULF" })])).rejects.toThrow(/for entity TMC/);
+    const lbl = (await create(body(randomUUID(), { kind: "label" }))).job;
+    const label = { template: "sample", language: "EN", entity: "TMCGULF", productName: "Betaine AI test", batch: "BT-3877", apiJobId: lbl.jobId };
+    await expect(createLabelJob(db, person, label)).rejects.toThrow(/for entity TMC/);
+    expect(await db.select().from(jobs)).toHaveLength(0);
   });
 
   it("follows the work in the app: waiting-input, in-progress, to-check, ready; never a supplier name or file", async () => {
@@ -350,6 +441,21 @@ describe("cancel (contract section 9)", () => {
     await requeueStaleJobs(db);
     expect((await db.select().from(jobs).where(eq(jobs.id, run.id)))[0].state).toBe("cancelled");
     expect(await claimNextJob(db)).toBeNull();
+  });
+
+  it("a draft a person is finalising is left alone and may still become Final; the request stays cancelled", async () => {
+    const { job } = await create();
+    const { doc } = await draftFor(job.jobId);
+    const metadata = { productName: "Betaine AI test", fileNr: "901.S0001", batch: "BT-3877" };
+    await db.insert(jobs).values({ kind: "finalise", documentId: doc.id, entity: "TMC", payload: { mode: "approve", metadata }, createdBy: person.email });
+    await cancelRequest(db, tmclog, job.jobId, by);
+    expect((await db.select().from(documents).where(eq(documents.id, doc.id)))[0].status).toBe("To check");
+    const fin = (await claimNextJob(db))!;
+    expect(fin).toMatchObject({ kind: "finalise", documentId: doc.id });
+    await saveFinal(db, fin, { pdfKey: newUploadKey("pdf"), pdfFilename: "f.pdf", docxKey: newUploadKey("docx"), docxFilename: "f.docx" }, "ok");
+    expect((await db.select().from(documents).where(eq(documents.id, doc.id)))[0].status).toBe("Final");
+    expect(await getRequest(db, tmclog, job.jobId)).toMatchObject({ state: "cancelled", resultCount: 1 });
+    expect((await requestResults(db, tmclog, job.jobId)).map((r) => r.status)).toEqual(["Final"]);
   });
 
   it("a Final stays Final", async () => {

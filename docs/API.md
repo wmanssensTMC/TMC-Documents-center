@@ -26,7 +26,9 @@ active keys per client (current + next). Rotation: make the next key, put it in 
 
 Job and result shapes: contract 4.1 and 4.2, with one rule: a result's `name` is `null` until it is Final (or
 Superseded). A draft's name can still hold the supplier file's name or trade name; a Final's name is made from details
-a person checked (security review S1). `link` of a job opens `/api-jobs/<id>`, of a result `/documents/<id>`
+a person checked (security review S1). At most 100 results per job, Finals first, then the newest (contract
+amendment f40cabf, 02/11). `GET /jobs?ids=` also lists cancelled jobs (state `cancelled`). New response fields may be
+added in v1; removing or changing one means `/api/v2`. `link` of a job opens `/api-jobs/<id>`, of a result `/documents/<id>`
 (both behind the sign-in). Strict bodies: an unknown key anywhere is `422 unknown_field` with its path.
 
 ## Payload rules

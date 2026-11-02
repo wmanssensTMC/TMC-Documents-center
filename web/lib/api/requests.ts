@@ -295,18 +295,23 @@ export async function createRequest(db: Db, caller: ApiCaller, idempotencyKey: s
   return { job: jobView(row, (await rollupMany(db, [row])).get(row.id)!), created: true };
 }
 
-/** Open = not cancelled and no Final yet (an approximation that never needs the full rollup). */
+/**
+ * Open = not ready, failed or cancelled (contract 11). Not cancelled and no Final yet is a cheap
+ * first count; only when that reaches the limit are the failed ones worked out and left out.
+ */
 export async function countOpenRequests(db: Db | Tx, client: string) {
   const finals = db
     .select({ one: sql`1` })
     .from(jobs)
     .innerJoin(documents, eq(documents.jobId, jobs.id))
     .where(and(eq(jobs.apiJobId, apiJobs.id), inArray(documents.status, ["Final", "Superseded"])));
-  const [{ n }] = await db
-    .select({ n: sql<number>`count(*)::int` })
+  const candidates = await db
+    .select()
     .from(apiJobs)
     .where(and(eq(apiJobs.client, client), isNull(apiJobs.cancelledAt), notExists(finals)));
-  return n;
+  if (candidates.length < MAX_OPEN_REQUESTS) return candidates.length;
+  const states = await rollupMany(db, candidates);
+  return candidates.filter((r) => states.get(r.id)!.state !== "failed").length;
 }
 
 /** GET /jobs/{id} */
@@ -327,10 +332,17 @@ export async function getRequests(db: Db, caller: ApiCaller, idsParam: string | 
   return rows.map((r) => jobView(r, states.get(r.id)!));
 }
 
+/** At most this many results per job (contract amendment f40cabf): Finals first, then the newest. */
+export const MAX_RESULTS = 100;
+const isFinal = (s: DocStatus) => s === "Final" || s === "Superseded";
+
 /** GET /jobs/{id}/results: references only (contract 4.2). */
 export async function requestResults(db: Db, caller: ApiCaller, id: string) {
   const row = await ownRequest(db, caller, id);
-  const { documents: docs } = (await rollupMany(db, [row])).get(row.id)!;
+  const { documents: all } = (await rollupMany(db, [row])).get(row.id)!;
+  const docs = [...all]
+    .sort((a, b) => Number(isFinal(b.status)) - Number(isFinal(a.status)) || b.createdAt.getTime() - a.createdAt.getTime())
+    .slice(0, MAX_RESULTS);
   const base = appUrl();
   return docs.map((d) => ({
     documentId: d.id,

@@ -123,6 +123,22 @@ describe("/api/v1", () => {
     expect(chunked.status).toBe(413);
   });
 
+  it("a __proto__ or constructor key in the body is 422 unknown_field: nothing stored, nothing polluted", async () => {
+    const id = randomUUID();
+    const clean = JSON.stringify(body(id));
+    const cases: [string, string][] = [
+      [clean.replace(/^\{/, '{"__proto__":{"polluted":true},'), "__proto__"],
+      [clean.replace('"source":{', '"source":{"__proto__":{"polluted":true},'), "source.__proto__"],
+      [clean.replace('{"lineNo"', '{"constructor":{"prototype":{"polluted":true}},"lineNo"'), "facts.lines.0.constructor"],
+    ];
+    for (const [raw, field] of cases) {
+      const res = await post(raw, { ...auth(), "idempotency-key": id });
+      expect([res.status, (await res.json()).error]).toEqual([422, expect.objectContaining({ code: "unknown_field", fields: [field] })]);
+    }
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect((await post(clean, { ...auth(), "idempotency-key": id })).status).toBe(201);
+  });
+
   it(`more than ${MAX_READS_PER_MINUTE} reads a minute: 429 with Retry-After`, async () => {
     const url = `${BASE}/jobs?ids=${randomUUID()}`;
     for (let i = 0; i < MAX_READS_PER_MINUTE; i++) expect((await jobsRoute.GET(new Request(url, { headers: auth() }))).status).toBe(200);
