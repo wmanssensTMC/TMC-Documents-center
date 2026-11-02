@@ -6,6 +6,8 @@ import { requireUser } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { getAuditTrail, getDocument, getVersions } from "@/lib/documents/service";
 import { formatDate, formatDateTime } from "@/lib/format";
+import { canRerun } from "@/lib/jobs";
+import { RerunButton } from "./rerun-button";
 
 export const metadata = { title: "Document · TMC Document Center" };
 
@@ -18,6 +20,7 @@ const ACTIONS: Record<string, string> = {
   "document.finalise_requested": "Sent for finalising",
   "document.finalised": "Finalised",
   "document.rejected": "Rejected",
+  "document.rerun": "Run again with the latest neutralizer",
 };
 
 function Field({ label, value }: { label: string; value?: string | null }) {
@@ -53,6 +56,7 @@ export default async function DocumentPage({ params, searchParams }: PageProps<"
   );
   const file = (kind: string, inline = false) => `/api/files/${doc.id}/${kind}${inline ? "?inline=1" : ""}`;
   const sourceIsPdf = doc.sourceFilename?.toLowerCase().endsWith(".pdf");
+  const rerun = await canRerun(db, doc);
 
   return (
     <PageShell user={user}>
@@ -73,6 +77,7 @@ export default async function DocumentPage({ params, searchParams }: PageProps<"
               Check this draft
             </Link>
           )}
+          {rerun && <RerunButton documentId={doc.id} />}
           {doc.pdfKey && <Download href={file("pdf")} label="Download PDF" />}
           {doc.docxKey && <Download href={file("docx")} label="Download Word" />}
           {doc.sourceKey && <Download href={file("source")} label="Supplier original" />}
@@ -84,7 +89,9 @@ export default async function DocumentPage({ params, searchParams }: PageProps<"
       )}
       {doc.status === "Superseded" && (
         <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-amber-200">
-          This is an old version. The current version is in the list below.
+          {doc.version
+            ? "This is an old version. The current version is in the list below."
+            : "This draft was replaced by a newer run of the neutralizer."}
         </p>
       )}
 

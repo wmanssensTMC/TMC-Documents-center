@@ -8,7 +8,9 @@ import { getDb } from "@/lib/db";
 import { jobs } from "@/lib/db/schema";
 import { pendingEdit } from "@/lib/documents/changes-pending";
 import { getDocument } from "@/lib/documents/service";
+import { canRerun } from "@/lib/jobs";
 import { getStorage } from "@/lib/storage";
+import { RerunButton } from "../rerun-button";
 import { CheckForm } from "./check-form";
 
 export const metadata = { title: "Check · TMC Document Center" };
@@ -37,7 +39,10 @@ export default async function CheckPage({ params }: PageProps<"/documents/[id]/c
       <Link href={`/documents/${doc.id}`} className="text-sm text-tmc underline">
         ← Document
       </Link>
-      <h1 className="mt-2 text-xl font-semibold text-tmc">Check: {doc.name}</h1>
+      <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
+        <h1 className="text-xl font-semibold text-tmc">Check: {doc.name}</h1>
+        {!busy && (await canRerun(db, doc)) && <RerunButton documentId={doc.id} />}
+      </div>
       <p className="text-sm text-gray-600">
         {parts.length
           ? `${parts.length} yellow part(s) to confirm. Nothing becomes Final until every one is confirmed by you.`

@@ -104,6 +104,13 @@ export async function createJobs(db: Db, storage: Storage, actor: Actor, raws: J
 /** Drafts that may be run again: still waiting for a check, or rejected. */
 export const RERUN_STATUSES = ["To check", "Rejected"] as const;
 
+/** Whether the "Run again" button belongs on this document (the action checks everything again). */
+export async function canRerun(db: Db, doc: { status: string; jobId: string | null }) {
+  if (!(RERUN_STATUSES as readonly string[]).includes(doc.status) || !doc.jobId) return false;
+  const job = await getJob(db, doc.jobId);
+  return !!job && job.kind === "neutralise" && !!job.supplierFile;
+}
+
 /**
  * "Run again with the latest neutralizer" (Willem 02/11): a new job from the draft's own job, same
  * values and the same stored files (no new upload), checked as a new job from the Neutralise form.
