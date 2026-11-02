@@ -23,14 +23,17 @@ const input =
 const noSubscribe = () => () => {};
 const empty = { productName: "", fileNr: "", batch: "", productionDate: "", expiryDate: "", netWeight: "", grossWeight: "" };
 
-export function LabelForm({ entitiesWithDetails, coas }: { entitiesWithDetails: string[]; coas: Coa[] }) {
+/** A label request from TMC Logistics (API v1): dossier and the line's description come with it. */
+export type LabelRequest = { id: string; entity: Entity; orderNo: string; productName: string };
+
+export function LabelForm({ entitiesWithDetails, coas, request }: { entitiesWithDetails: string[]; coas: Coa[]; request?: LabelRequest }) {
   const router = useRouter();
   const ready = useSyncExternalStore(noSubscribe, () => true, () => false);
   const [template, setTemplate] = useState(LABEL_TEMPLATES[0].id);
   const [language, setLanguage] = useState<LabelLanguage>("EN");
-  const [entity, setEntity] = useState<Entity>("TMC");
+  const [entity, setEntity] = useState<Entity>(request?.entity ?? "TMC");
   const [coaId, setCoaId] = useState("");
-  const [values, setValues] = useState(empty);
+  const [values, setValues] = useState(request ? { ...empty, productName: request.productName, fileNr: request.orderNo } : empty);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,7 +44,7 @@ export function LabelForm({ entitiesWithDetails, coas }: { entitiesWithDetails: 
     setCoaId(id);
     const c = coas.find((x) => x.id === id);
     if (!c) return;
-    setEntity(c.entity);
+    if (!request) setEntity(c.entity); // a request keeps its own entity
     setValues((v) => ({
       ...v,
       productName: c.productName ?? "",
@@ -56,10 +59,10 @@ export function LabelForm({ entitiesWithDetails, coas }: { entitiesWithDetails: 
     e.preventDefault();
     setError(null);
     setBusy(true);
-    const result = await submitLabel({ template, language, entity, ...values });
+    const result = await submitLabel({ template, language, entity, ...values, ...(request ? { apiJobId: request.id } : {}) });
     setBusy(false);
     if (!result.ok) return setError(result.error);
-    router.push("/jobs");
+    router.push(request ? `/api-jobs/${request.id}?ok=${encodeURIComponent("Label sent to the worker.")}` : "/jobs");
   }
 
   return (
@@ -87,7 +90,7 @@ export function LabelForm({ entitiesWithDetails, coas }: { entitiesWithDetails: 
         </label>
         <label className="block text-sm">
           Entity
-          <select value={entity} onChange={(e) => setEntity(e.target.value as Entity)} className={`mt-1 ${input}`}>
+          <select value={entity} onChange={(e) => setEntity(e.target.value as Entity)} disabled={!!request} className={`mt-1 ${input}`}>
             {ENTITIES.map((x) => (
               <option key={x} value={x} disabled={!entitiesWithDetails.includes(x)}>
                 {x}
