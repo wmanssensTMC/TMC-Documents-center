@@ -7,7 +7,8 @@ import { createRequest } from "../api/requests";
 import type { Actor } from "../audit";
 import { createPgliteDb, type Db } from "../db";
 import { auditLog, documents, jobs } from "../db/schema";
-import { dossierFileNr, getDossierDocuments } from "../documents/dossier";
+import { approveDraft, rejectDraft, requestFinalise } from "../documents/check";
+import { dossierFileNr, dossierHref, getDossierDocuments } from "../documents/dossier";
 import { newUploadKey } from "../files";
 import { createLabelJob } from "../labels";
 import type { Storage } from "../storage";
@@ -209,10 +210,12 @@ describe("run again", () => {
 });
 
 describe("dossier overview", () => {
-  it("accepts a file nr as typed and refuses empty, overlong, slashes and control characters", () => {
+  it("accepts any file nr a check screen accepts ('/' and '-' too) and refuses empty, overlong and control characters", () => {
     expect(dossierFileNr(" 840.S0959 ")).toBe("840.S0959");
     expect(dossierFileNr("PO019192")).toBe("PO019192");
-    for (const bad of ["", "   ", "x".repeat(51), "../etc", "a/b", "a\\b", "a\u0000b", "-x", 42, null, undefined]) {
+    expect(dossierFileNr("PO/2026-12")).toBe("PO/2026-12"); // review L1: the link works for it too
+    expect(dossierFileNr("-x")).toBe("-x");
+    for (const bad of ["", "   ", "x".repeat(51), "a\u0000b", "a\u0085b", 42, null, undefined]) {
       expect(dossierFileNr(bad)).toBeNull();
     }
   });
@@ -225,7 +228,7 @@ describe("dossier overview", () => {
 
     const docs = await getDossierDocuments(db, "840.S0959");
     expect(docs.map((d) => d.id)).toEqual([second.id, first.id]);
-    expect(docs[0]).toMatchObject({ status: "To check", yellowParts: [expect.objectContaining({ id: "y0" })] });
+    expect(docs[0]).toMatchObject({ status: "To check", yellowCount: 1 });
 
     const rows = await listJobs(db, 100, { fileNr: "840.S0959" });
     expect(rows).toHaveLength(2);
@@ -285,7 +288,7 @@ describe("run again: more refusals", () => {
   // KNOWN BUG (testing review 02/11): rerunJob's /^[0-9a-f-]{36}$/ lets "-" x 36 through to the
   // uuid query, which throws a database error (the action shows its generic message and logs it).
   // Checking the id with z.uuid() as lib/api/requests.ts does fixes it; then turn `it.fails` into `it`.
-  it.fails("a 36-character id of dashes only is refused as 'not found', not a database error", async () => {
+  it("a 36-character id of dashes only is refused as 'not found', not a database error", async () => {
     await expect(rerunJob(db, storage, willem, "-".repeat(36))).rejects.toBeInstanceOf(JobError);
   });
 });
@@ -429,11 +432,20 @@ describe("run again: the worker replaces the old draft", () => {
 });
 
 describe("dossier overview: more", () => {
-  it("file nr: accepts exactly 50 characters and unicode; refuses tab, CR/LF, DEL, decoded %2F / %5C, leading '-' after spaces, non-strings", () => {
+  it("file nr: accepts exactly 50 characters and unicode; refuses tab, CR/LF, DEL, C1 controls, non-strings", () => {
     expect(dossierFileNr("x".repeat(50))).toBe("x".repeat(50));
     expect(dossierFileNr("840.S0959-é")).toBe("840.S0959-é");
-    const bad: unknown[] = ["a\tb", "a\nb", "a\rb", "a\u007fb", decodeURIComponent("a%2Fb"), decodeURIComponent("a%5Cb"), decodeURIComponent("%2E%2E%2Fetc"), " -x", {}, ["840.S0959"]];
+    const bad: unknown[] = ["a\tb", "a\nb", "a\rb", "a\u007fb", "a\u0080b", "a\u009fb", {}, ["840.S0959"]];
     for (const v of bad) expect(dossierFileNr(v)).toBeNull();
+  });
+
+  it("the link carries the file nr in ?nr=, decoded exactly once: '50%25', '/' and spaces round-trip (review L1, L2)", () => {
+    for (const nr of ["50%25", "PO/2026", "840.S0959 A", "a&b=c", "../etc"]) {
+      const href = dossierHref(nr);
+      expect(href.startsWith("/dossiers?nr=")).toBe(true);
+      const back = new URL(href, "https://dc.example.com").searchParams.get("nr");
+      expect(dossierFileNr(back)).toBe(nr);
+    }
   });
 
   it("matches the file nr exactly: no prefix, no other case, no LIKE wildcards, no injection", async () => {
@@ -498,5 +510,89 @@ describe("listJobs filter object", () => {
     expect((await listJobs(db, 100, { apiJobId: a })).map(({ job }) => job.id)).toEqual([runA]);
     expect(await listJobs(db, 100, { apiJobId: randomUUID() })).toEqual([]);
     expect(await listJobs(db)).toHaveLength(3);
+  });
+});
+
+describe("security review of Run again (88/100): fixes", () => {
+  const caller: ApiCaller = { client: "tmclog", keyId: randomUUID(), allowedKinds: ["coa-neutralise"] };
+  async function apiRequest() {
+    process.env.APP_URL = "https://dc.example.com";
+    const requestId = randomUUID();
+    const b = {
+      kind: "coa-neutralise",
+      entity: "TMC",
+      source: { app: "tmc-logistics", requestId, orderNo: "840.S0959", partNo: 1, requestedBy: "stivdb@transmare.com", reason: "neutral-customer" },
+      facts: { lines: [{ lineNo: 10000, itemNo: "IT-1", description: "Euxyl PE 9010" }] },
+    };
+    return (await createRequest(db, caller, requestId, b)).job.jobId;
+  }
+
+  it("H1: a draft that answers a request from TMC Logistics is never run again here", async () => {
+    const { doc } = await madeDraft({ apiJobId: await apiRequest() });
+    expect(await canRerun(db, doc)).toBe(false);
+    await expect(rerunJob(db, storage, willem, doc.id)).rejects.toThrow(/request from TMC Logistics/);
+    expect(await db.select().from(jobs).where(eq(jobs.rerunOf, doc.id))).toHaveLength(0);
+  });
+
+  it("M1: finalise, approve and reject wait while the draft is being run again", async () => {
+    const { doc } = await madeDraft();
+    await rerunJob(db, storage, willem, doc.id);
+    const metadata = { productName: "Euxyl PE 9010", fileNr: "840.S0959", batch: "LOT2504280" };
+    await expect(requestFinalise(db, storage, willem, doc.id, { mode: "editor", metadata, fixes: {} })).rejects.toThrow(/being run again/);
+    await expect(approveDraft(db, willem, doc.id, metadata)).rejects.toThrow(/being run again/);
+    await expect(rejectDraft(db, willem, doc.id, "not good")).rejects.toThrow(/being run again/);
+    expect(await statusOf(doc.id)).toBe("To check");
+  });
+
+  it("M2: one run per supplier document replaces every waiting draft of it, audited one by one", async () => {
+    await createJobs(db, storage, dennis, [job()]);
+    const first = (await claimNextJob(db))!;
+    await saveDrafts(db, first, [draft("TMC_COA_A"), draft("TMC_COA_B"), draft("TMC_COA_C")], 2, "log");
+    const [a, b, c] = await db.select().from(documents).where(eq(documents.jobId, first.id)).orderBy(documents.name);
+    await db.update(documents).set(FINAL).where(eq(documents.id, c.id)); // one already Final: never touched
+    await db.update(documents).set({ status: "Rejected", rejectedReason: "no" }).where(eq(documents.id, b.id));
+    await rerunJob(db, storage, willem, a.id);
+    // a second click on another draft of the same supplier document: refused, one run only
+    await expect(rerunJob(db, storage, willem, b.id)).rejects.toThrow(/already being run again/);
+    await saveDrafts(db, (await claimNextJob(db))!, [draft("TMC_COA_A2"), draft("TMC_COA_B2")], 2, "log");
+    expect(await statusOf(a.id)).toBe("Superseded");
+    expect(await statusOf(b.id)).toBe("Superseded");
+    expect(await statusOf(c.id)).toBe("Final");
+    const superseded = (await db.select().from(auditLog)).filter((x) => x.action === "document.superseded").map((x) => x.documentId);
+    expect(superseded.sort()).toEqual([a.id, b.id].sort());
+    // the earlier run is done now that none of its drafts waits
+    expect((await db.select().from(jobs).where(eq(jobs.id, first.id)))[0].state).toBe("done");
+  });
+
+  it("M1: a sibling being finalised is left as it is when the run's drafts arrive", async () => {
+    await createJobs(db, storage, dennis, [job()]);
+    const first = (await claimNextJob(db))!;
+    await saveDrafts(db, first, [draft("TMC_COA_A"), draft("TMC_COA_B")], 2, "log");
+    const [a, b] = await db.select().from(documents).where(eq(documents.jobId, first.id)).orderBy(documents.name);
+    await rerunJob(db, storage, willem, a.id);
+    const rerun = (await claimNextJob(db))!;
+    await db.insert(jobs).values({ kind: "finalise", documentId: b.id, state: "queued", createdBy: willem.email });
+    await saveDrafts(db, rerun, [draft("TMC_COA_A2")], 2, "log");
+    expect(await statusOf(a.id)).toBe("Superseded");
+    expect(await statusOf(b.id)).toBe("To check");
+  });
+
+  it("L6: a replaced draft keeps no DRAFT preview or editor view", async () => {
+    const { doc } = await madeDraft();
+    await db.update(documents).set({ previewKey: newUploadKey("preview"), viewKey: newUploadKey("view") }).where(eq(documents.id, doc.id));
+    await rerunJob(db, storage, willem, doc.id);
+    await saveDrafts(db, (await claimNextJob(db))!, [draft("TMC_COA_new")], 2, "log");
+    const [old] = await db.select().from(documents).where(eq(documents.id, doc.id));
+    expect(old).toMatchObject({ status: "Superseded", previewKey: null, viewKey: null });
+  });
+
+  it("L3: a draft finalised meanwhile gets an audit row saying it was not replaced", async () => {
+    const { doc } = await madeDraft();
+    await rerunJob(db, storage, willem, doc.id);
+    const rerun = (await claimNextJob(db))!;
+    await db.update(documents).set(FINAL).where(eq(documents.id, doc.id));
+    await saveDrafts(db, rerun, [draft("TMC_COA_new")], 2, "log");
+    const rows = (await db.select().from(auditLog)).filter((x) => x.action === "document.rerun_not_applied");
+    expect(rows.map((x) => x.documentId)).toEqual([doc.id]);
   });
 });

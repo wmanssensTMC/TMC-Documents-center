@@ -19,16 +19,10 @@ const STATUS_CLASS: Record<string, string> = {
   Superseded: "text-gray-500",
 };
 
-export default async function DossierPage({ params }: PageProps<"/dossiers/[fileNr]">) {
+export default async function DossierPage({ searchParams }: PageProps<"/dossiers">) {
   const user = await requireUser();
-  const raw = (await params).fileNr;
-  let decoded = raw;
-  try {
-    decoded = decodeURIComponent(raw); // a space or other escaped character in the link
-  } catch {
-    // not escaped: use it as it is
-  }
-  const fileNr = dossierFileNr(decoded);
+  // `?nr=` is decoded once by the platform: "50%25" stays "50%25" (review L2)
+  const fileNr = dossierFileNr((await searchParams).nr);
   if (!fileNr) notFound();
   const db = await getDb();
   const [rows, docs] = await Promise.all([listJobs(db, 100, { fileNr }), getDossierDocuments(db, fileNr)]);
@@ -84,7 +78,7 @@ export default async function DossierPage({ params }: PageProps<"/dossiers/[file
                   {d.status}
                   {d.version ? ` · version ${d.version}` : ""}
                 </td>
-                <td className="px-3 py-2">{d.status === "To check" ? (d.yellowParts?.length ?? 0) : "—"}</td>
+                <td className="px-3 py-2">{d.status === "To check" ? d.yellowCount : "—"}</td>
                 <td className="px-3 py-2 whitespace-nowrap">{formatDateTime(d.createdAt)}</td>
               </tr>
             ))}

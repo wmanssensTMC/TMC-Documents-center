@@ -8,6 +8,7 @@ import { getAuditTrail, getDocument, getVersions } from "@/lib/documents/service
 import { formatDate, formatDateTime } from "@/lib/format";
 import { canRerun } from "@/lib/jobs";
 import { RerunButton } from "./rerun-button";
+import { dossierHref } from "@/lib/documents/dossier";
 
 export const metadata = { title: "Document · TMC Document Center" };
 
@@ -149,7 +150,7 @@ export default async function DocumentPage({ params, searchParams }: PageProps<"
               <div className="grid grid-cols-[9rem_1fr] gap-2 py-1 text-sm">
                 <dt className="text-gray-500">Dossier</dt>
                 <dd className="break-words">
-                  <Link href={`/dossiers/${encodeURIComponent(doc.fileNr)}`} className="text-tmc underline" title="Dossier overview">
+                  <Link href={dossierHref(doc.fileNr)} className="text-tmc underline" title="Dossier overview">
                     {doc.fileNr}
                   </Link>
                 </dd>
