@@ -115,7 +115,40 @@ export const RERUN_STATUSES = ["To check", "Rejected"] as const;
 export async function canRerun(db: Db, doc: { status: string; jobId: string | null }) {
   if (!(RERUN_STATUSES as readonly string[]).includes(doc.status) || !doc.jobId) return false;
   const job = await getJob(db, doc.jobId);
-  return !!job && job.kind === "neutralise" && !!job.supplierFile;
+  // a draft that answers a request from TMC Logistics goes through the request (security review H1)
+  return !!job && job.kind === "neutralise" && !!job.supplierFile && !job.apiJobId;
+}
+
+/**
+ * The open "Run again" job that will replace this draft: one for the draft itself or for any draft
+ * of the same earlier run, as a run replaces them all (Willem 02/11, review M2). Null when none.
+ */
+export async function openRerunFor(db: Db | Tx, doc: { id: string; jobId: string | null }) {
+  const siblings = doc.jobId ? db.select({ id: documents.id }).from(documents).where(eq(documents.jobId, doc.jobId)) : null;
+  const [open] = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.kind, "neutralise"),
+        inArray(jobs.state, ["queued", "running"]),
+        siblings ? or(eq(jobs.rerunOf, doc.id), inArray(jobs.rerunOf, siblings)) : eq(jobs.rerunOf, doc.id),
+      ),
+    )
+    .limit(1);
+  return open ?? null;
+}
+
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+const DOCUMENT_ID = z.uuid();
+
+/** Two clicks at once on the same draft: only the partial unique index, nothing else (review L4). */
+function isOneOpenRerunViolation(err: unknown) {
+  const e = err as { code?: string; constraint?: string; message?: string; cause?: { code?: string; constraint?: string; message?: string } };
+  const code = e?.code ?? e?.cause?.code;
+  const where = `${e?.constraint ?? ""} ${e?.cause?.constraint ?? ""} ${e?.message ?? ""} ${e?.cause?.message ?? ""}`;
+  return code === "23505" && where.includes("jobs_one_open_rerun");
 }
 
 /**
@@ -125,7 +158,7 @@ export async function canRerun(db: Db, doc: { status: string; jobId: string | nu
  * that fails leaves it as it is. Anyone logged in may run a draft again, as anyone may check one.
  */
 export async function rerunJob(db: Db, storage: Storage, actor: Actor, documentId: string): Promise<string> {
-  if (!/^[0-9a-f-]{36}$/i.test(documentId)) throw new JobError("document not found");
+  if (!DOCUMENT_ID.safeParse(documentId).success) throw new JobError("document not found");
   const [doc] = await db.select().from(documents).where(eq(documents.id, documentId));
   if (!doc) throw new JobError("document not found");
   if (!(RERUN_STATUSES as readonly string[]).includes(doc.status)) {
@@ -135,15 +168,18 @@ export async function rerunJob(db: Db, storage: Storage, actor: Actor, documentI
   if (!source || source.kind !== "neutralise" || !source.supplierFile) {
     throw new JobError("this document was not made from a supplier document, so it cannot be run again");
   }
+  if (source.apiJobId) {
+    throw new JobError("this draft answers a request from TMC Logistics; send a new supplier document from the request page");
+  }
   if (!source.supplierName?.trim()) {
     throw new JobError("this draft was made before the supplier name was required; run it again from Neutralise and type the supplier name");
   }
-  const busy = await db
-    .select({ id: jobs.id, kind: jobs.kind })
+  const finalising = await db
+    .select({ id: jobs.id })
     .from(jobs)
-    .where(and(inArray(jobs.state, ["queued", "running"]), or(eq(jobs.rerunOf, doc.id), eq(jobs.documentId, doc.id))));
-  if (busy.some((j) => j.kind === "finalise")) throw new JobError("this draft is being finalised; wait until that is done");
-  if (busy.length) throw new JobError("this draft is already being run again");
+    .where(and(eq(jobs.documentId, doc.id), eq(jobs.kind, "finalise"), inArray(jobs.state, ["queued", "running"])));
+  if (finalising.length) throw new JobError("this draft is being finalised; wait until that is done");
+  if (await openRerunFor(db, doc)) throw new JobError("this draft is already being run again");
   if ((await countOpenJobs(db, actor.email)) + 1 > MAX_OPEN_JOBS_PER_USER) {
     throw new JobError(`you already have many documents waiting; wait until fewer than ${MAX_OPEN_JOBS_PER_USER} are open`);
   }
@@ -161,6 +197,10 @@ export async function rerunJob(db: Db, storage: Storage, actor: Actor, documentI
   let id: string;
   try {
     id = await db.transaction(async (tx) => {
+      // clicks on two drafts of the same earlier run at once: one lock per earlier run, then the
+      // check again (the unique index covers the same draft only)
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`rerun:${source.id}`}))`);
+      if (await openRerunFor(tx, doc)) throw new JobError("this draft is already being run again");
       const [row] = await tx
         .insert(jobs)
         .values({ ...p, kind: "neutralise", rerunOf: doc.id, createdBy: actor.email })
@@ -169,10 +209,8 @@ export async function rerunJob(db: Db, storage: Storage, actor: Actor, documentI
       return row.id;
     });
   } catch (err) {
-    // two clicks at once: the unique index lets one through
-    if (/jobs_one_open_rerun|unique/i.test(String((err as { message?: string })?.message ?? "") + String((err as { cause?: unknown })?.cause ?? ""))) {
-      throw new JobError("this draft is already being run again");
-    }
+    // two clicks at once on the same draft: the unique index lets one through
+    if (isOneOpenRerunViolation(err)) throw new JobError("this draft is already being run again");
     throw err;
   }
   await wakeWorker();

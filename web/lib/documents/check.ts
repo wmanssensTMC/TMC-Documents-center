@@ -11,7 +11,7 @@ import { logAudit, type Actor } from "../audit";
 import type { Db } from "../db";
 import { documents, feedback, jobs, type DocMetadata, type Document, type FinalisePayload } from "../db/schema";
 import { detectType, maxFileBytes, parseUploadKey, cleanFilename } from "../files";
-import { countOpenJobs, MAX_OPEN_JOBS_PER_USER, wakeWorker } from "../jobs";
+import { countOpenJobs, MAX_OPEN_JOBS_PER_USER, openRerunFor, wakeWorker } from "../jobs";
 import { assertLabelApprovable } from "../labels";
 import { fileStem, plainName } from "../naming";
 import { pendingEdit } from "./changes-pending";
@@ -90,6 +90,9 @@ async function loadDraft(db: Db | Tx, id: string): Promise<Document> {
   return doc;
 }
 
+/** A "Run again" that will replace this draft: Final, Approve and Reject wait for it (review M1). */
+const RERUN_OPEN = "this draft is being run again with the latest neutralizer; check the new draft when it is ready";
+
 async function openFinaliseJob(db: Db, documentId: string) {
   const [open] = await db
     .select({ id: jobs.id })
@@ -102,6 +105,7 @@ async function openFinaliseJob(db: Db, documentId: string) {
 export async function requestFinalise(db: Db, storage: Storage, actor: Actor, documentId: string, raw: unknown) {
   const doc = await loadDraft(db, documentId);
   if (await openFinaliseJob(db, doc.id)) throw new CheckError("this document is already being finalised");
+  if (await openRerunFor(db, doc)) throw new CheckError(RERUN_OPEN);
   if ((await countOpenJobs(db, actor.email)) >= MAX_OPEN_JOBS_PER_USER) {
     throw new CheckError("you already have many documents waiting; try again when some are done"); // review N6
   }
@@ -290,6 +294,7 @@ export async function approveDraft(db: Db, actor: Actor, documentId: string, raw
   if (!m.success) throw new CheckError(m.error.issues.map((i) => i.message).join("; "));
   const doc = await loadDraft(db, documentId);
   if (await openFinaliseJob(db, doc.id)) throw new CheckError("this document is being finalised");
+  if (await openRerunFor(db, doc)) throw new CheckError(RERUN_OPEN);
   if ((doc.yellowParts ?? []).length) throw new CheckError("this draft has yellow parts: check them first");
   if (!doc.pdfKey || !doc.pdfFilename || !doc.docxKey || !doc.docxFilename) throw new CheckError("this draft has no PDF yet");
   await assertLabelApprovable(db, doc, (msg) => new CheckError(msg)); // early, clear message
@@ -305,6 +310,7 @@ export async function rejectDraft(db: Db, actor: Actor, documentId: string, rawR
   if (await openFinaliseJob(db, documentId)) throw new CheckError("this document is being finalised");
   await db.transaction(async (tx) => {
     const doc = await loadDraft(tx, documentId);
+    if (await openRerunFor(tx, doc)) throw new CheckError(RERUN_OPEN);
     await tx.update(documents).set({ status: "Rejected", rejectedReason: reason.data, previewKey: null, viewKey: null }).where(eq(documents.id, doc.id));
     await tx.insert(feedback).values({ actor: actor.email, documentId: doc.id, kind: "rejected", reason: reason.data });
     await logAudit(tx, actor, "document.rejected", doc.id, { reason: reason.data });

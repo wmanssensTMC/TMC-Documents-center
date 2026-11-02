@@ -1,7 +1,7 @@
 // Job state changes made by the worker. The worker never writes job or document rows any
 // other way, so the rules stay in one place.
 import "server-only";
-import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, not, or, sql } from "drizzle-orm";
 import { logAudit } from "../audit";
 import type { Db } from "../db";
 import { NOT_NEEDED } from "../api/requests";
@@ -138,25 +138,55 @@ export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: nu
       });
       if (notNeeded) await logAudit(tx, { email: job.createdBy }, "document.rejected", row.id, { reason: NOT_NEEDED });
     }
-    // "Run again" (Willem 02/11): the earlier draft is replaced now that this run made its draft,
-    // never before (a failed run leaves it), and only while it still waits for a check or was
-    // rejected: a draft finalised meanwhile is left as it is (hard rule 4).
-    if (job.rerunOf && drafts.length) {
-      const replaced = await tx
-        .update(documents)
-        .set({ status: "Superseded" })
-        .where(and(eq(documents.id, job.rerunOf), inArray(documents.status, ["To check", "Rejected"])))
-        .returning({ id: documents.id });
-      if (replaced.length) {
-        await logAudit(tx, { email: job.createdBy }, "document.superseded", job.rerunOf, { job: job.id, by: "run again" });
-      } else {
-        await tx
-          .update(jobs)
-          .set({ log: sql`coalesce(${jobs.log}, '') || ${"\n[worker] the earlier draft was not replaced: it no longer waits for a check"}` })
-          .where(eq(jobs.id, job.id));
-      }
-    }
+    // "Run again" (Willem 02/11): the earlier drafts are replaced now that this run made its drafts,
+    // never before (a failed run leaves them). The run reads the whole supplier document again, so
+    // every draft of the same earlier run is replaced (Willem 02/11, review M2), but only while it
+    // still waits for a check or was rejected and nobody is finalising it: a draft finalised
+    // meanwhile, or being finalised, is left as it is (hard rule 4, review M1).
+    if (job.rerunOf && drafts.length) await supersedeEarlierDrafts(tx, job);
   });
+}
+
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+async function supersedeEarlierDrafts(tx: Tx, job: Job) {
+  const [clicked] = await tx.select({ jobId: documents.jobId }).from(documents).where(eq(documents.id, job.rerunOf!));
+  const finalising = sql`exists (select 1 from ${jobs} f where f.document_id = ${documents.id}
+    and f.kind = 'finalise' and f.state in ('queued', 'running'))`;
+  const replaced = await tx
+    .update(documents)
+    .set({ status: "Superseded", previewKey: null, viewKey: null }) // as a rejected draft (review L6)
+    .where(
+      and(
+        clicked?.jobId ? or(eq(documents.id, job.rerunOf!), eq(documents.jobId, clicked.jobId)) : eq(documents.id, job.rerunOf!),
+        inArray(documents.status, ["To check", "Rejected"]),
+        not(finalising),
+      ),
+    )
+    .returning({ id: documents.id });
+  for (const r of replaced) {
+    await logAudit(tx, { email: job.createdBy }, "document.superseded", r.id, { job: job.id, by: "run again" });
+  }
+  if (!replaced.some((r) => r.id === job.rerunOf)) {
+    await logAudit(tx, { email: job.createdBy }, "document.rerun_not_applied", job.rerunOf!, { job: job.id }); // review L3
+    await tx
+      .update(jobs)
+      .set({ log: sql`coalesce(${jobs.log}, '') || ${"\n[worker] the earlier draft was not replaced: it no longer waits for a check"}` })
+      .where(eq(jobs.id, job.id));
+  }
+  // the earlier run is done once none of its drafts waits for a check any more
+  if (clicked?.jobId) {
+    await tx
+      .update(jobs)
+      .set({ state: "done" })
+      .where(
+        and(
+          eq(jobs.id, clicked.jobId),
+          eq(jobs.state, "to_check"),
+          sql`not exists (select 1 from ${documents} d where d.job_id = ${clicked.jobId} and d.status = 'To check')`,
+        ),
+      );
+  }
 }
 
 /** A finalise job succeeded: the checked draft becomes Final (see documents/check.ts). */
