@@ -145,7 +145,16 @@ export default async function DocumentPage({ params, searchParams }: PageProps<"
             <Field label="INCI name" value={doc.inciName} />
             <Field label="CAS number" value={doc.casNumber} />
             <Field label="Batch" value={doc.batch} />
-            <Field label="Dossier" value={doc.fileNr} />
+            {doc.fileNr && (
+              <div className="grid grid-cols-[9rem_1fr] gap-2 py-1 text-sm">
+                <dt className="text-gray-500">Dossier</dt>
+                <dd className="break-words">
+                  <Link href={`/dossiers/${encodeURIComponent(doc.fileNr)}`} className="text-tmc underline" title="Dossier overview">
+                    {doc.fileNr}
+                  </Link>
+                </dd>
+              </div>
+            )}
             <Field label="PO number" value={doc.poNumber} />
             <Field label="Language" value={doc.language} />
             <Field label="Manufactured" value={formatDate(doc.manufacturingDate)} />

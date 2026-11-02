@@ -51,7 +51,14 @@ export function JobsTable({ rows }: { rows: Awaited<ReturnType<typeof listJobs>>
                 {job.route.toUpperCase()} · {job.entity}
               </td>
               <td className="px-3 py-2 text-xs">
-                {[job.productName, job.fileNr, job.batch].filter(Boolean).join(" · ") || "—"}
+                {[job.productName, job.batch].filter(Boolean).join(" · ")}
+                {job.fileNr && (
+                  <Link href={`/dossiers/${encodeURIComponent(job.fileNr)}`} className="block text-tmc underline" title="Dossier overview">
+                    {job.fileNr}
+                  </Link>
+                )}
+                {!job.productName && !job.batch && !job.fileNr && "—"}
+                {job.rerunOf && <span className="mt-1 block text-gray-500">Run again</span>}
               </td>
               <td className={`px-3 py-2 font-medium ${STATE[job.state].className}`}>
                 {STATE[job.state].label}

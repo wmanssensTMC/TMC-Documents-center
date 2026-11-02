@@ -150,7 +150,13 @@ export default async function LibraryPage({ searchParams }: PageProps<"/">) {
                     </div>
                   </td>
                   <td className={cell}>{d.batch}</td>
-                  <td className={cell}>{d.fileNr}</td>
+                  <td className={cell}>
+                    {d.fileNr && (
+                      <Link href={`/dossiers/${encodeURIComponent(d.fileNr)}`} className="text-tmc underline" title="Dossier overview">
+                        {d.fileNr}
+                      </Link>
+                    )}
+                  </td>
                   <td className={cell}>{d.entity}</td>
                   <td className={cell}>
                     <span className={d.status === "Final" ? "text-green-700" : d.status === "Superseded" ? "text-gray-500" : "text-amber-700"}>

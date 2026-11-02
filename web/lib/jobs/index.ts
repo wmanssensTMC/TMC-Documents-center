@@ -194,8 +194,14 @@ export async function wakeWorker() {
   }
 }
 
-export async function listJobs(db: Db, limit = 100) {
-  const rows = await db.select().from(jobs).orderBy(desc(jobs.createdAt)).limit(limit);
+/** Newest first; with `fileNr` only the neutralise jobs of that dossier (dossier overview). */
+export async function listJobs(db: Db, limit = 100, fileNr?: string) {
+  const rows = await db
+    .select()
+    .from(jobs)
+    .where(fileNr === undefined ? undefined : and(eq(jobs.kind, "neutralise"), eq(jobs.fileNr, fileNr)))
+    .orderBy(desc(jobs.createdAt))
+    .limit(limit);
   const results = rows.length
     ? await db
         .select({ id: documents.id, jobId: documents.jobId, name: documents.name, status: documents.status })
