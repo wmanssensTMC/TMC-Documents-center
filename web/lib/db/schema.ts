@@ -18,9 +18,9 @@ import {
 } from "drizzle-orm/pg-core";
 
 import type { Edits } from "../documents/edits";
-import { DOC_TYPES, ENTITIES, JOB_KINDS, JOB_STATES, ROLES, ROUTES, STATUSES } from "../constants";
+import { API_JOB_KINDS, DOC_TYPES, ENTITIES, JOB_KINDS, JOB_STATES, ROLES, ROUTES, STATUSES } from "../constants";
 
-export { DOC_TYPES, ENTITIES, JOB_KINDS, JOB_STATES, ROLES, ROUTES, STATUSES };
+export { API_JOB_KINDS, DOC_TYPES, ENTITIES, JOB_KINDS, JOB_STATES, ROLES, ROUTES, STATUSES };
 export type { DocStatus, DocType, Entity, JobState, Route } from "../constants";
 
 export const docType = pgEnum("doc_type", DOC_TYPES);
@@ -30,6 +30,7 @@ export const role = pgEnum("role", ROLES);
 export const jobState = pgEnum("job_state", JOB_STATES);
 export const jobKind = pgEnum("job_kind", JOB_KINDS);
 export const route = pgEnum("route", ROUTES);
+export const apiJobKind = pgEnum("api_job_kind", API_JOB_KINDS);
 
 // Entity records the engine prints (BRIEF 6, engine/entity.example.json). Only an admin edits
 // them; a job for an entity without a record is refused: an address is never invented.
@@ -99,6 +100,8 @@ export const jobs = pgTable(
     rerunOf: uuid("rerun_of").references((): AnyPgColumn => documents.id),
     exitCode: integer("exit_code"),
     log: text("log"),
+    // The request from a calling app (API v1) this run belongs to; null for the app's own jobs.
+    apiJobId: uuid("api_job_id").references((): AnyPgColumn => apiJobs.id),
     attempts: integer("attempts").notNull().default(0),
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -108,6 +111,7 @@ export const jobs = pgTable(
   (t) => [
     index("jobs_state_created").on(t.state, t.createdAt),
     index("jobs_created_by").on(t.createdBy, t.createdAt),
+    index("jobs_api_job").on(t.apiJobId),
     // One open finalise per document at a time (review L3).
     uniqueIndex("jobs_one_open_finalise")
       .on(t.documentId)
@@ -118,6 +122,65 @@ export const jobs = pgTable(
       .where(sql`${t.rerunOf} is not null and ${t.state} in ('queued', 'running')`),
     // ::text: the enum value is new in the same migration
     check("jobs_label_has_payload", sql`${t.kind}::text <> 'label' OR ${t.label} IS NOT NULL`),
+  ],
+);
+
+/** One BC order line as a calling app sends it (API v1, contract section 6): BC facts only. */
+export type ApiLine = { lineNo: number; itemNo: string | null; description: string | null };
+
+// Apps that may call the API (API v1, contract section 3). Only the SHA-256 of a key is kept;
+// the key itself is shown once to the admin who makes it. Two active keys per client (rotation).
+export const apiClients = pgTable(
+  "api_clients",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    client: text("client").notNull(),
+    keyHash: text("key_hash").notNull(),
+    /** The last 4 characters, so an admin can tell two keys apart. */
+    keyHint: text("key_hint").notNull(),
+    allowedKinds: apiJobKind("allowed_kinds").array().notNull(),
+    active: boolean("active").notNull().default(true),
+    createdBy: text("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    deactivatedBy: text("deactivated_by"),
+    deactivatedAt: timestamp("deactivated_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("api_clients_key_hash").on(t.keyHash),
+    index("api_clients_client").on(t.client),
+    check("api_clients_client_name", sql`${t.client} ~ '^[a-z0-9]{2,16}$'`),
+  ],
+);
+
+// A request from a calling app (API v1): one part (order no + part no) and one kind. A person in
+// the app adds the supplier document(s) or makes the label; those runs point here (jobs.api_job_id).
+// The state is worked out from those runs and their documents (lib/api/requests.ts), never stored.
+export const apiJobs = pgTable(
+  "api_jobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    client: text("client").notNull(),
+    idempotencyKey: uuid("idempotency_key").notNull(),
+    /** SHA-256 of the request body (canonical JSON): same key with another body is refused. */
+    bodyHash: text("body_hash").notNull(),
+    kind: apiJobKind("kind").notNull(),
+    entity: entityCode("entity").notNull(),
+    requestId: uuid("request_id").notNull(),
+    orderNo: text("order_no").notNull(),
+    partNo: integer("part_no").notNull(),
+    requestedBy: text("requested_by").notNull(),
+    reason: text("reason").notNull(),
+    lines: jsonb("lines").$type<ApiLine[]>().notNull(),
+    createdBy: text("created_by").notNull(), // "<client>:<requestedBy>"
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    cancelledBy: text("cancelled_by"),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("api_jobs_client_idempotency").on(t.client, t.idempotencyKey),
+    index("api_jobs_client_created").on(t.client, t.createdAt),
+    index("api_jobs_created").on(t.createdAt),
   ],
 );
 
@@ -237,3 +300,5 @@ export type Feedback = typeof feedback.$inferSelect;
 export type User = typeof users.$inferSelect;
 export type Job = typeof jobs.$inferSelect;
 export type EntityRecord = typeof entities.$inferSelect;
+export type ApiClient = typeof apiClients.$inferSelect;
+export type ApiJob = typeof apiJobs.$inferSelect;

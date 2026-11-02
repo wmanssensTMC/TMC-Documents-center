@@ -3,6 +3,7 @@
 import "server-only";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
+import { assertRequestOpen } from "../api/requests";
 import { logAudit, type Actor } from "../audit";
 import type { Db } from "../db";
 import { documents, ENTITIES, jobs, ROUTES, type Job } from "../db/schema";
@@ -39,6 +40,8 @@ export const jobInput = z.object({
   supplierName: text(200).refine((s) => !!s && s.length >= 2, "type the supplier name (internal, never printed)"),
   supplierFile: fileRef,
   commercialFiles: z.array(fileRef).max(5).default([]),
+  // A request from TMC Logistics this supplier document answers (API v1); its kind fixes the route.
+  apiJobId: z.uuid().optional(),
 });
 
 export type JobInput = z.input<typeof jobInput>;
@@ -88,11 +91,15 @@ export async function createJobs(db: Db, storage: Storage, actor: Actor, raws: J
   const ids = await db.transaction(async (tx) => {
     const out: string[] = [];
     for (const p of prepared) {
+      if (p.apiJobId) {
+        const req = await assertRequestOpen(tx, p.apiJobId, { route: p.route });
+        if (req.entity !== p.entity) throw new JobError(`this request is for entity ${req.entity}`);
+      }
       const [row] = await tx
         .insert(jobs)
         .values({ ...p, kind: "neutralise", createdBy: actor.email })
         .returning({ id: jobs.id });
-      await logAudit(tx, actor, "job.created", null, { job: row.id, route: p.route, file: p.supplierFile.filename });
+      await logAudit(tx, actor, "job.created", null, { job: row.id, route: p.route, file: p.supplierFile.filename, ...(p.apiJobId ? { apiJob: p.apiJobId } : {}) });
       out.push(row.id);
     }
     return out;
@@ -194,12 +201,18 @@ export async function wakeWorker() {
   }
 }
 
-/** Newest first; with `fileNr` only the neutralise jobs of that dossier (dossier overview). */
-export async function listJobs(db: Db, limit = 100, fileNr?: string) {
+/** Newest first. `fileNr`: only the neutralise jobs of that dossier (dossier overview); `apiJobId`:
+ * only the jobs of one API request (API v1). */
+export async function listJobs(db: Db, limit = 100, filter: { fileNr?: string; apiJobId?: string } = {}) {
   const rows = await db
     .select()
     .from(jobs)
-    .where(fileNr === undefined ? undefined : and(eq(jobs.kind, "neutralise"), eq(jobs.fileNr, fileNr)))
+    .where(
+      and(
+        filter.fileNr === undefined ? undefined : and(eq(jobs.kind, "neutralise"), eq(jobs.fileNr, filter.fileNr)),
+        filter.apiJobId ? eq(jobs.apiJobId, filter.apiJobId) : undefined,
+      ),
+    )
     .orderBy(desc(jobs.createdAt))
     .limit(limit);
   const results = rows.length

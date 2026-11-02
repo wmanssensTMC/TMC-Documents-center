@@ -1,9 +1,299 @@
 {
-  "id": "36487f50-089b-4c46-9d4b-98d4a18b58f4",
+  "id": "5f9e90bb-c63e-40a4-acf5-91fac9b479ab",
   "prevId": "66318db6-6389-4be2-a124-9213797c91f1",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
+    "public.api_clients": {
+      "name": "api_clients",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "client": {
+          "name": "client",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_hash": {
+          "name": "key_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_hint": {
+          "name": "key_hint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "allowed_kinds": {
+          "name": "allowed_kinds",
+          "type": "api_job_kind[]",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "active": {
+          "name": "active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_used_at": {
+          "name": "last_used_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deactivated_by": {
+          "name": "deactivated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deactivated_at": {
+          "name": "deactivated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "api_clients_key_hash": {
+          "name": "api_clients_key_hash",
+          "columns": [
+            {
+              "expression": "key_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "api_clients_client": {
+          "name": "api_clients_client",
+          "columns": [
+            {
+              "expression": "client",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "api_clients_client_name": {
+          "name": "api_clients_client_name",
+          "value": "\"api_clients\".\"client\" ~ '^[a-z0-9]{2,16}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.api_jobs": {
+      "name": "api_jobs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "client": {
+          "name": "client",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "body_hash": {
+          "name": "body_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "api_job_kind",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entity": {
+          "name": "entity",
+          "type": "entity_code",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "order_no": {
+          "name": "order_no",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "part_no": {
+          "name": "part_no",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_by": {
+          "name": "requested_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lines": {
+          "name": "lines",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "cancelled_by": {
+          "name": "cancelled_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancelled_at": {
+          "name": "cancelled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "api_jobs_client_idempotency": {
+          "name": "api_jobs_client_idempotency",
+          "columns": [
+            {
+              "expression": "client",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "api_jobs_client_created": {
+          "name": "api_jobs_client_created",
+          "columns": [
+            {
+              "expression": "client",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "api_jobs_created": {
+          "name": "api_jobs_created",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.audit_log": {
       "name": "audit_log",
       "schema": "",
@@ -748,12 +1038,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "rerun_of": {
-          "name": "rerun_of",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "exit_code": {
           "name": "exit_code",
           "type": "integer",
@@ -763,6 +1047,12 @@
         "log": {
           "name": "log",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "api_job_id": {
+          "name": "api_job_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
@@ -842,6 +1132,21 @@
           "method": "btree",
           "with": {}
         },
+        "jobs_api_job": {
+          "name": "jobs_api_job",
+          "columns": [
+            {
+              "expression": "api_job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "jobs_one_open_finalise": {
           "name": "jobs_one_open_finalise",
           "columns": [
@@ -854,22 +1159,6 @@
           ],
           "isUnique": true,
           "where": "\"jobs\".\"kind\" = 'finalise' and \"jobs\".\"state\" in ('queued', 'running')",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "jobs_one_open_rerun": {
-          "name": "jobs_one_open_rerun",
-          "columns": [
-            {
-              "expression": "rerun_of",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"jobs\".\"rerun_of\" is not null and \"jobs\".\"state\" in ('queued', 'running')",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -889,12 +1178,12 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "jobs_rerun_of_documents_id_fk": {
-          "name": "jobs_rerun_of_documents_id_fk",
+        "jobs_api_job_id_api_jobs_id_fk": {
+          "name": "jobs_api_job_id_api_jobs_id_fk",
           "tableFrom": "jobs",
-          "tableTo": "documents",
+          "tableTo": "api_jobs",
           "columnsFrom": [
-            "rerun_of"
+            "api_job_id"
           ],
           "columnsTo": [
             "id"
@@ -998,6 +1287,16 @@
     }
   },
   "enums": {
+    "public.api_job_kind": {
+      "name": "api_job_kind",
+      "schema": "public",
+      "values": [
+        "coa-neutralise",
+        "sds-neutralise",
+        "tds-neutralise",
+        "label"
+      ]
+    },
     "public.doc_status": {
       "name": "doc_status",
       "schema": "public",
@@ -1058,7 +1357,8 @@
         "running",
         "to_check",
         "done",
-        "failed"
+        "failed",
+        "cancelled"
       ]
     },
     "public.role": {

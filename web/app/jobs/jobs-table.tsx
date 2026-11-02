@@ -11,6 +11,7 @@ const STATE: Record<JobState, { label: string; className: string }> = {
   to_check: { label: "Ready to check", className: "text-amber-700" },
   done: { label: "Done", className: "text-green-700" },
   failed: { label: "Failed", className: "text-red-700" },
+  cancelled: { label: "Cancelled (not needed)", className: "text-gray-500" },
 };
 
 export function JobsTable({ rows }: { rows: Awaited<ReturnType<typeof listJobs>> }) {
@@ -49,6 +50,11 @@ export function JobsTable({ rows }: { rows: Awaited<ReturnType<typeof listJobs>>
               </td>
               <td className="px-3 py-2">
                 {job.route.toUpperCase()} · {job.entity}
+                {job.apiJobId && (
+                  <Link href={`/api-jobs/${job.apiJobId}`} className="mt-1 block text-xs text-tmc underline">
+                    Request from TMC Logistics
+                  </Link>
+                )}
               </td>
               <td className="px-3 py-2 text-xs">
                 {[job.productName, job.batch].filter(Boolean).join(" · ")}
