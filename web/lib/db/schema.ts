@@ -95,6 +95,8 @@ export const jobs = pgTable(
     documentId: uuid("document_id").references((): AnyPgColumn => documents.id),
     payload: jsonb("payload").$type<FinalisePayload>(),
     label: jsonb("label").$type<LabelPayload>(),
+    // "Run again" (Willem 02/11): the draft this run replaces once it has made its own draft
+    rerunOf: uuid("rerun_of").references((): AnyPgColumn => documents.id),
     exitCode: integer("exit_code"),
     log: text("log"),
     attempts: integer("attempts").notNull().default(0),
@@ -110,6 +112,10 @@ export const jobs = pgTable(
     uniqueIndex("jobs_one_open_finalise")
       .on(t.documentId)
       .where(sql`${t.kind} = 'finalise' and ${t.state} in ('queued', 'running')`),
+    // One open "run again" per draft at a time: a double click files one job.
+    uniqueIndex("jobs_one_open_rerun")
+      .on(t.rerunOf)
+      .where(sql`${t.rerunOf} is not null and ${t.state} in ('queued', 'running')`),
     // ::text: the enum value is new in the same migration
     check("jobs_label_has_payload", sql`${t.kind}::text <> 'label' OR ${t.label} IS NOT NULL`),
   ],

@@ -1,7 +1,7 @@
 // Job state changes made by the worker. The worker never writes job or document rows any
 // other way, so the rules stay in one place.
 import "server-only";
-import { and, eq, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { logAudit } from "../audit";
 import type { Db } from "../db";
 import { documents, feedback, jobs, type DocType, type Entity, type Job, type YellowPart } from "../db/schema";
@@ -121,6 +121,24 @@ export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: nu
         yellowParts: d.yellowParts.length,
         ...(d.ai ? { aiProposed: d.ai } : {}),
       });
+    }
+    // "Run again" (Willem 02/11): the earlier draft is replaced now that this run made its draft,
+    // never before (a failed run leaves it), and only while it still waits for a check or was
+    // rejected: a draft finalised meanwhile is left as it is (hard rule 4).
+    if (job.rerunOf && drafts.length) {
+      const replaced = await tx
+        .update(documents)
+        .set({ status: "Superseded" })
+        .where(and(eq(documents.id, job.rerunOf), inArray(documents.status, ["To check", "Rejected"])))
+        .returning({ id: documents.id });
+      if (replaced.length) {
+        await logAudit(tx, { email: job.createdBy }, "document.superseded", job.rerunOf, { job: job.id, by: "run again" });
+      } else {
+        await tx
+          .update(jobs)
+          .set({ log: sql`coalesce(${jobs.log}, '') || ${"\n[worker] the earlier draft was not replaced: it no longer waits for a check"}` })
+          .where(eq(jobs.id, job.id));
+      }
     }
   });
 }
