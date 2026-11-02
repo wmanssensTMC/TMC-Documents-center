@@ -1,6 +1,6 @@
 # Changelog
 
-## 27/10/2026 · AI reader v1, COA route (branch `phase-2n-ai-reader`)
+## 27/10/2026 · AI reader v1, COA route (branch `phase-2n-ai-reader`, merged 02/11 switched off: AI_READER is not set on Railway; security review 85/100, fixes applied)
 - Off by default. With `AI_READER=on` and a key, the engine asks Claude (claude-opus-5-5) only where the rules are unsure: an empty batch or date, a table with too few rows. Only the supplier COA is sent; never the commercial documents or entity data.
 - Every proposed value must be printed in the original on the line it was quoted from, with the right label and shape; e-mails, web addresses, control characters and the typed supplier name are refused. Accepted values are yellow with one AI note; they never go into the batch lock or the file name; the provenance gate checks everything as before (an invented value deletes the output). A refusal, timeout or broken answer leaves the rules output exactly as it was.
 - Worker: only the AI reader's own variables reach the engine, only on the neutralise run; daily limit (`AI_READER_DAILY_CALLS`, start 30) counted from `ai.used` audit rows; usage (tokens and cost, no document text) per run; the key is hidden in every log; the AI note blocks Final until a person removes it.
