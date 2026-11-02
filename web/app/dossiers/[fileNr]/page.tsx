@@ -31,7 +31,7 @@ export default async function DossierPage({ params }: PageProps<"/dossiers/[file
   const fileNr = dossierFileNr(decoded);
   if (!fileNr) notFound();
   const db = await getDb();
-  const [rows, docs] = await Promise.all([listJobs(db, 100, fileNr), getDossierDocuments(db, fileNr)]);
+  const [rows, docs] = await Promise.all([listJobs(db, 100, { fileNr }), getDossierDocuments(db, fileNr)]);
   const open = rows.some(({ job }) => job.state === "queued" || job.state === "running");
   const waiting = docs.filter((d) => d.status === "To check").length;
 

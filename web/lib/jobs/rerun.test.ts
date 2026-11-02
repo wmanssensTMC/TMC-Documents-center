@@ -223,10 +223,10 @@ describe("dossier overview", () => {
     expect(docs.map((d) => d.id)).toEqual([second.id, first.id]);
     expect(docs[0]).toMatchObject({ status: "To check", yellowParts: [expect.objectContaining({ id: "y0" })] });
 
-    const rows = await listJobs(db, 100, "840.S0959");
+    const rows = await listJobs(db, 100, { fileNr: "840.S0959" });
     expect(rows).toHaveLength(2);
     expect(rows.every(({ job }) => job.fileNr === "840.S0959" && job.kind === "neutralise")).toBe(true);
-    expect(await listJobs(db, 100, "nothing")).toEqual([]);
+    expect(await listJobs(db, 100, { fileNr: "nothing" })).toEqual([]);
     expect((await listJobs(db)).length).toBe(3); // without a file nr: every job, as before
   });
 });

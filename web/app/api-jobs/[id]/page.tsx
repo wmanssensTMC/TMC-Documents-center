@@ -25,7 +25,7 @@ export default async function RequestPage({ params, searchParams }: PageProps<"/
   const req = await getRequestForPage(db, (await params).id);
   if (!req) notFound();
   const sp = await searchParams;
-  const runs = await listJobs(db, 100, req.id);
+  const runs = await listJobs(db, 100, { apiJobId: req.id });
   const route = API_KIND_ROUTE[req.kind];
   const cancelled = req.state === "cancelled";
   const running = req.state === "in-progress";
