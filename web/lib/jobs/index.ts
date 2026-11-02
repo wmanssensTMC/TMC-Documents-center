@@ -34,7 +34,9 @@ export const jobInput = z.object({
   productName: text(200),
   fileNr: text(50),
   batch: text(100),
-  supplierName: text(200),
+  // Mandatory (Willem 27/10): the Final check always refuses this name on the output, and the AI
+  // reader only works with it as a block list (security review F4).
+  supplierName: text(200).refine((s) => !!s && s.length >= 2, "type the supplier name (internal, never printed)"),
   supplierFile: fileRef,
   commercialFiles: z.array(fileRef).max(5).default([]),
 });

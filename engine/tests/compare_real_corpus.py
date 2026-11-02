@@ -2,11 +2,13 @@
 by hand. Real supplier documents never go into git, GitHub or Vercel (Willem 20/10/2026).
 
   python tests/compare_real_corpus.py "<OneDrive>/03 COA-SDS-Neutralizer/COA's/1. COA's" <temp output folder>
+  python tests/compare_real_corpus.py "<...>/1. COA's" <temp output folder> --ai [--max-calls 30]   (AI off vs on;
+      needs AI_READER=on and ANTHROPIC_API_KEY in the environment, and costs real money)
 
 Each dossier folder holds "COA - EXTERN" (supplier COAs), "COA - INTERN" (TMC versions) and the
 commercial document. Output and report.json go to the output folder only.
 """
-import json, re, subprocess, sys, unicodedata
+import json, os, re, subprocess, sys, unicodedata
 from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parent.parent
@@ -61,9 +63,29 @@ def norm_name(s):
     return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFKC", s).lower())
 
 
-def main(root, out_root):
+# what the engine needs from the laptop's environment for an --ai run; nothing else goes along
+# (no ANTHROPIC_BASE_URL or other settings that could send the key elsewhere; security review F11)
+_BASE_ENV = ("PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP", "HOME", "USERPROFILE",
+             "APPDATA", "LOCALAPPDATA", "PYTHONIOENCODING", "LANG", "LC_ALL", "TESSDATA_PREFIX")
+_AI_ENV = ("AI_READER", "ANTHROPIC_API_KEY", "AI_READER_MODEL", "AI_READER_EFFORT", "AI_READER_MAX_CALLS",
+           "AI_READER_TIMEOUT_S", "AI_READER_RUN_DEADLINE_S")
+
+
+def ai_env(env, on):
+    keep = _BASE_ENV + (_AI_ENV if on else ())
+    out = {k: env[k] for k in keep if env.get(k)}
+    if not on:
+        out["AI_READER"] = "off"
+    return out
+
+
+def main(root, out_root, env=None, quiet=False, max_calls=None):
+    """`max_calls`: the AI reader's calls for the whole run together (--ai); each dossier may ask
+    at most what is left, and only its supplier COAs (EXTERN) are named as files the AI may read."""
     root, out_root = Path(root), Path(out_root)
+    out_root.mkdir(parents=True, exist_ok=True)
     report = []
+    left = max_calls
     for dossier in sorted(p for p in root.iterdir() if p.is_dir()):
         subs = {p.name.lower(): p for p in dossier.iterdir() if p.is_dir()}
         ext = next((p for n, p in subs.items() if "extern" in n), None)
@@ -75,10 +97,20 @@ def main(root, out_root):
         inputs = sorted(p for p in ext.rglob("*") if p.suffix.lower() == ".pdf")
         out = out_root / dossier.name
         out.mkdir(parents=True, exist_ok=True)
+        run_env = env
+        if env is not None and left is not None:
+            # only the supplier COAs may go to the AI, never the PFI or order confirmation (F1)
+            run_env = dict(env, AI_READER_SOURCES=os.pathsep.join(map(str, inputs)),
+                           AI_READER_MAX_CALLS=str(max(0, min(left, int(env.get("AI_READER_MAX_CALLS") or 3)))))
         run = subprocess.run([PY, "-I", str(ENGINE / "scripts" / "neutralize_docx.py"), *map(str, inputs),
                               *map(str, commercial), "--output-dir", str(out)],
-                             capture_output=True, text=True, encoding="utf-8", errors="replace")
+                             env=run_env, capture_output=True, text=True, encoding="utf-8", errors="replace")
         (out / "_engine.log").write_text(run.stdout + run.stderr, encoding="utf-8")
+        if left is not None and (out / "ai_usage.json").exists():
+            try:
+                left -= len(json.loads((out / "ai_usage.json").read_text(encoding="utf-8")))
+            except ValueError:
+                left = 0                               # unreadable count: stop asking
         made = sorted(out.glob("*.docx"))
         humans = sorted(p for p in (intern.rglob("*") if intern else []) if p.suffix.lower() in (".pdf", ".docx"))
         entry = {"dossier": dossier.name, "inputs": [p.name for p in inputs], "exit": run.returncode,
@@ -120,6 +152,8 @@ def main(root, out_root):
             entry["pairs"].append(pair)
         report.append(entry)
     (out_root / "report.json").write_text(json.dumps(report, indent=1, ensure_ascii=False), encoding="utf-8")
+    if quiet:
+        return report
     for e in report:
         print(f"\n== {e['dossier']}  exit {e.get('exit')}  engine {len(e.get('engine', []))} doc(s), tmc {len(e.get('tmc', []))}")
         if e.get("error"):
@@ -138,7 +172,59 @@ def main(root, out_root):
         avg = sum(p["results_recall"] for p in pairs) / len(pairs)
         print(f"\nSUMMARY: {drafts} draft(s), {len(pairs)} paired with a TMC version; "
               f"results found {avg:.0%} on average; fields equal (of {len(pairs)}): {same}")
+    return report
+
+
+def compare_ai(root, out_root, max_calls=30):
+    """--ai (27/10/2026): every dossier twice, AI reader off (out/rules) and on (out/ai), against the
+    TMC versions. Needs AI_READER=on and ANTHROPIC_API_KEY in the laptop's environment; it spends
+    real money (counted below), at most `max_calls` calls for the whole run (--max-calls, default 30).
+    The key is never printed."""
+    env = dict(os.environ)
+    if (env.get("AI_READER") or "").strip().lower() != "on" or not (env.get("ANTHROPIC_API_KEY") or "").strip():
+        sys.exit("set AI_READER=on and ANTHROPIC_API_KEY first (the AI run costs real money)")
+    out_root = Path(out_root)
+    rules = main(root, out_root / "rules", ai_env(env, on=False), quiet=True)
+    ai = main(root, out_root / "ai", ai_env(env, on=True), quiet=True, max_calls=max_calls)
+    keys = ("lot", "production", "expiry")
+    gained = lost = differs = paired = 0
+    for r_entry, a_entry in zip(rules, ai):
+        r_pairs = {p["engine"]: p for p in r_entry.get("pairs", [])}
+        for a in a_entry.get("pairs", []):
+            r = r_pairs.get(a["engine"])
+            if not r or "same_fields" not in a or "same_fields" not in r:
+                continue
+            paired += 1
+            for k in keys:
+                filled = a["engine_fields"][k] != r["engine_fields"][k]     # the AI reader wrote this one
+                if not r["same_fields"][k] and a["same_fields"][k]:
+                    gained += 1
+                if r["same_fields"][k] and not a["same_fields"][k]:
+                    lost += 1
+                if filled and not a["same_fields"][k]:
+                    differs += 1
+                    print(f"   {a_entry['dossier']} / {a['engine']}: AI {k} differs from the TMC version")
+    calls = tokens_in = tokens_out = 0
+    usd = 0.0
+    for f in (out_root / "ai").glob("*/ai_usage.json"):
+        for u in json.loads(f.read_text(encoding="utf-8")):
+            calls += 1
+            tokens_in += u.get("input_tokens", 0)
+            tokens_out += u.get("output_tokens", 0)
+            usd += u.get("usd") or 0
+    print(f"\nAI SUMMARY: {paired} paired draft(s); fields gained {gained}, lost {lost}; "
+          f"AI value differs from the TMC version {differs}; {calls} call(s), {tokens_in} in / {tokens_out} out tokens, "
+          f"~${usd:.2f}" + (f" (~${usd / calls:.3f} per call)" if calls else ""))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1], sys.argv[2])
+    if "--ai" in sys.argv:
+        rest = [a for a in sys.argv[1:] if a != "--ai"]
+        cap = 30
+        if "--max-calls" in rest:
+            i = rest.index("--max-calls")
+            cap = max(0, int(rest[i + 1]))
+            del rest[i:i + 2]
+        compare_ai(*rest[:2], max_calls=cap)
+    else:
+        main(sys.argv[1], sys.argv[2])

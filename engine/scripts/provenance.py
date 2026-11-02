@@ -115,6 +115,16 @@ def template_strings(template_path):
         return []
 
 
+def traced(n, corpus):
+    """True when the normalised text `n` is printed in the source corpus (build_corpus).
+    A short string matched loosely ("29" inside "1129") would be a hole, so anything under
+    four characters must match on word boundaries. Shared with the AI reader's check."""
+    if len(n) < 4:
+        pat = re.compile(r"(?:^| )%s(?:$| )" % re.escape(n))
+        return any(pat.search(c) for c in corpus)
+    return any(n in c for c in corpus)
+
+
 def check(docx_path, source_texts, allowed_values, template_path=None,
           source_pdf=None):
     """-> list of (location, offending text). Empty means fully traceable."""
@@ -138,13 +148,7 @@ def check(docx_path, source_texts, allowed_values, template_path=None,
         n = norm(raw)
         if not n:
             continue
-        # A short string matched loosely ("29" inside "1129") would be a hole,
-        # so anything under four characters must match on word boundaries.
-        if len(n) < 4:
-            pat = re.compile(r"(?:^| )%s(?:$| )" % re.escape(n))
-            if any(pat.search(c) for c in corpus):
-                continue
-        elif any(n in c for c in corpus):
+        if traced(n, corpus):
             continue
         if any(n in a or a == n for a in allowed):
             continue

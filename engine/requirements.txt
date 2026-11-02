@@ -10,3 +10,4 @@ reportlab   # tests only: builds synthetic supplier PDFs
 pytesseract # scan fallback in scripts/neutralize.py (classify)
 pdf2image
 pymupdf     # MSDS images and pictograms (extract_sds), scan readings (ocr_prep), image check (provenance)
+anthropic==2.3.0   # AI reader (27/10/2026); loaded only when AI_READER=on

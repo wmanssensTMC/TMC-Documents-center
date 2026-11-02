@@ -68,6 +68,8 @@ export type Draft = {
   expiryOrRetestDate?: string | null;
   /** What made it, for the audit trail. */
   by?: "neutralizer" | "label";
+  /** What the AI reader proposed (yellow in the document), for the audit and feedback. */
+  ai?: { fields: Record<string, string>; rows: string[] } | null;
 };
 
 /**
@@ -117,6 +119,7 @@ export async function saveDrafts(db: Db, job: Job, drafts: Draft[], exitCode: nu
         name: d.name,
         yellow: d.yellow,
         yellowParts: d.yellowParts.length,
+        ...(d.ai ? { aiProposed: d.ai } : {}),
       });
     }
   });

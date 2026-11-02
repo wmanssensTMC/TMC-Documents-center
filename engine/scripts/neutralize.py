@@ -16,7 +16,7 @@ Exit code: 0 all done (docx + pdf), 2 at least one draft waits for a yellow chec
   python neutralize.py FILE [FILE ...] --output-dir OUT [--entity e.json]
          [--product-name NAME] [--file-nr 840.S0850] [--batch LOT] [--type coa|sds|tds]
 """
-import argparse, re, subprocess, sys
+import argparse, os, re, subprocess, sys
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -84,9 +84,13 @@ def classify(path):
     return "unknown"
 
 
-def run(cmd):
+def run(cmd, ai=False):
+    """`ai`: only the COA route gets the AI reader's settings and key; TDS and SDS runs never
+    see them (security review F6, 27/10/2026)."""
     print("\n$ " + " ".join(Path(c).name if i == 1 else c for i, c in enumerate(cmd)))
-    return subprocess.run(cmd).returncode
+    env = None if ai else {k: v for k, v in os.environ.items()
+                           if not (k.startswith("AI_READER") or k.startswith("ANTHROPIC_"))}
+    return subprocess.run(cmd, env=env).returncode
 
 
 def main():
@@ -122,7 +126,7 @@ def main():
                          ("--batch", a.batch)):
             if val:
                 cmd += [opt, val]
-        codes.append(run(cmd))
+        codes.append(run(cmd, ai=True))
     for f in [f for f, k in kinds.items() if k == "tds"]:
         cmd = [py, str(HERE / "neutralize_tds_docx.py"), f] + common
         if a.product_name:

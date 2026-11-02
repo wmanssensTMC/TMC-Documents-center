@@ -79,8 +79,8 @@ describe("engine call safety (review N2/N3)", () => {
 describe("job queue", () => {
   it("each job is claimed once, oldest first", async () => {
     await createJobs(db, storage, willem, [
-      { route: "coa", entity: "TMC", supplierFile: await upload(PDF, "a.pdf") },
-      { route: "coa", entity: "TMC", supplierFile: await upload(PDF, "b.pdf") },
+      { route: "coa", entity: "TMC", supplierName: "Example Supplier BV", supplierFile: await upload(PDF, "a.pdf") },
+      { route: "coa", entity: "TMC", supplierName: "Example Supplier BV", supplierFile: await upload(PDF, "b.pdf") },
     ]);
     const first = await claimNextJob(db);
     const second = await claimNextJob(db);
@@ -91,7 +91,7 @@ describe("job queue", () => {
   });
 
   it("a crashed run goes back in the queue, and fails after the last attempt", async () => {
-    await createJobs(db, storage, willem, [{ route: "coa", entity: "TMC", supplierFile: await upload(PDF) }]);
+    await createJobs(db, storage, willem, [{ route: "coa", entity: "TMC", supplierName: "Example Supplier BV", supplierFile: await upload(PDF) }]);
     const job = (await claimNextJob(db))!;
     await db.update(jobs).set({ startedAt: sql`now() - interval '2 hours'` }).where(eq(jobs.id, job.id));
     await requeueStaleJobs(db);
@@ -164,6 +164,7 @@ c.save()`;
     await createJobs(db, storage, willem, [
       {
         route: "coa",
+        supplierName: "Example Supplier BV",
         entity: "TMC",
         productName: "Sodium Benzoate",
         fileNr: "840.S0998",
@@ -208,6 +209,7 @@ c.save()`;
     await createJobs(db, storage, willem, [
       {
         route: "coa",
+        supplierName: "Example Supplier BV",
         entity: "TMC",
         productName: "Sodium Benzoate",
         fileNr: "840.S0997",
@@ -248,7 +250,7 @@ c.save()`;
     const pdfPath = path.join(dir, "coa.pdf");
     syntheticCoa(pdfPath);
     await createJobs(db, storage, willem, [
-      { route: "coa", entity: "TMC", productName: "Sodium Benzoate", fileNr: "840.S0996", supplierFile: await upload(new Uint8Array(readFileSync(pdfPath)), "coa.pdf") },
+      { route: "coa", entity: "TMC", productName: "Sodium Benzoate", fileNr: "840.S0996", supplierName: "Example Supplier BV", supplierFile: await upload(new Uint8Array(readFileSync(pdfPath)), "coa.pdf") },
     ]);
     await processNeutraliseJob(db, storage, (await claimNextJob(db))!);
     const [draft] = await db.select().from(documents);
@@ -312,7 +314,7 @@ c.save()`;
       pdfPath,
     ]);
     await createJobs(db, storage, willem, [
-      { route: "auto", entity: "TMC", supplierFile: await upload(new Uint8Array(readFileSync(pdfPath)), "letter.pdf") },
+      { route: "auto", entity: "TMC", supplierName: "Example Supplier BV", supplierFile: await upload(new Uint8Array(readFileSync(pdfPath)), "letter.pdf") },
     ]);
     await processNeutraliseJob(db, storage, (await claimNextJob(db))!);
     const [failed] = await db.select().from(jobs);

@@ -19,6 +19,7 @@ import { failJob, saveDrafts, saveFinal, type Draft } from "../lib/jobs/worker-s
 import { labelTemplate } from "../lib/labels/templates";
 import { fileStem, nameParts, plainName } from "../lib/naming";
 import type { Storage } from "../lib/storage";
+import { aiEngineEnv, engineAi, logAiUsage, readAiUsage } from "./ai";
 import { cleanLog, engineArgv, finaliseArgv, labelArgv, runPython, yellowArgv } from "./engine";
 
 export { plainName };
@@ -94,10 +95,24 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
     const entityJson = path.join(dir, "entity.json");
     await writeFile(entityJson, JSON.stringify(engineEntityJson(entity)), "utf8");
 
+    // AI reader (27/10): only on this run, only when on and under today's limit. The supplier name
+    // a person typed goes along only as a block list for AI values (Willem 27/10), never printed.
+    // No supplier name (a job from before it was mandatory): no AI at all (security review F4).
+    const aiEnv = job.supplierName?.trim() ? await aiEngineEnv(db) : {};
+    // only the person's supplier upload may ever be sent, never a commercial document the engine
+    // takes for a COA (security review F1)
+    if (aiEnv.AI_READER) aiEnv.AI_READER_SOURCES = supplier;
+    if (aiEnv.AI_READER && job.supplierName?.trim()) {
+      const forbid = path.join(dir, "ai_forbid.json");
+      await writeFile(forbid, JSON.stringify([job.supplierName.trim()]), "utf8");
+      aiEnv.AI_READER_FORBID = forbid;
+    }
     const run = await runPython(
       engineArgv({ inputs, outDir, entityJson, workDir: dir, route: job.route, productName: job.productName, fileNr: job.fileNr, batch: job.batch }),
       dir,
+      { env: aiEnv },
     );
+    await logAiUsage(db, job, await readAiUsage(outDir)); // counted also when the job fails below
     if (run.code !== 0 && run.code !== 2) return failJob(db, job, run.code, run.log);
 
     const names = (await readdir(outDir)).filter((n) => n.toLowerCase().endsWith(".docx"));
@@ -169,6 +184,7 @@ export async function processNeutraliseJob(db: Db, storage: Storage, job: Job) {
         previewKey,
         viewKey,
         batch: await engineBatch(outDir, stem, m[2] === "COA"),
+        ai: await engineAi(outDir, stem),
       });
     }
     await saveDrafts(db, job, drafts, run.code, run.log);

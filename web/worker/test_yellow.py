@@ -140,6 +140,13 @@ with tempfile.TemporaryDirectory() as d:
     note.save(d / "note.docx")
     rc, _, err = run("check", d / "note.docx", d / "forbid.json")
     check("check: a neutralizer note left in the text is refused, yellow or not (R3)", rc == 1 and "note" in err, err)
+    ai_note = Document(); ai_note.add_paragraph("[AI reader proposed the yellow values - check each against the original]")
+    ai_note.save(d / "ai_note.docx")
+    rc, _, err = run("check", d / "ai_note.docx", d / "forbid.json")
+    check("check: the AI reader's note left in the text is refused (27/10)", rc == 1 and "note" in err, err)
+    import ai_reader    # engine/scripts is on the path (top of this file)
+    check("check: the worker knows the engine's AI note word for word",
+          ai_reader.AI_NOTE in __import__("yellow").ENGINE_MARKERS)
 
     other = Document(); other.add_paragraph("Acme is a common word; chemicals too."); other.save(d / "other.docx")
     rc, _, err = run("check", d / "other.docx", d / "forbid.json")
