@@ -34,7 +34,14 @@ export async function requeueStaleJobs(db: Db) {
   const stale = and(eq(jobs.state, "running"), lt(jobs.startedAt, sql`now() - make_interval(mins => ${STALE_MINUTES})`));
   await db
     .update(jobs)
-    .set({ state: sql`case when ${jobs.attempts} >= ${MAX_ATTEMPTS} then 'failed'::job_state else 'queued'::job_state end`, log: sql`coalesce(${jobs.log}, '') || ${"\n[worker] run did not finish; "}` })
+    .set({
+      // a run whose request from TMC Logistics was cancelled is not run again (security review S5)
+      state: sql`case
+        when exists (select 1 from api_jobs a where a.id = ${jobs.apiJobId} and a.cancelled_at is not null) then 'cancelled'::job_state
+        when ${jobs.attempts} >= ${MAX_ATTEMPTS} then 'failed'::job_state
+        else 'queued'::job_state end`,
+      log: sql`coalesce(${jobs.log}, '') || ${"\n[worker] run did not finish; "}`,
+    })
     .where(stale);
 }
 

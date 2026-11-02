@@ -6,7 +6,7 @@ import { createPgliteDb, type Db } from "../db";
 import { apiClients, apiJobs, auditLog, documents, jobs } from "../db/schema";
 import { newUploadKey } from "../files";
 import { createJobs, type JobInput } from "../jobs";
-import { claimNextJob, saveDrafts, type Draft } from "../jobs/worker-state";
+import { claimNextJob, requeueStaleJobs, saveDrafts, type Draft } from "../jobs/worker-state";
 import { createLabelJob } from "../labels";
 import type { Storage } from "../storage";
 import { ApiError } from "./errors";
@@ -129,6 +129,13 @@ describe("API keys", () => {
     expect(JSON.stringify(refused)).not.toContain(key.slice(11, 30));
   });
 
+  it("invented client prefixes cannot flood the audit (security review S2)", async () => {
+    for (let i = 0; i < 50; i++) await authenticate(db, `Bearer tdc_zz${i}_${"a".repeat(43)}`);
+    const refused = await db.select().from(auditLog).where(eq(auditLog.action, "api.key.refused"));
+    expect(refused.length).toBeLessThanOrEqual(1);
+    expect(refused.every((r) => (r.details as { client: string }).client === "unknown")).toBe(true);
+  });
+
   it(`at most ${MAX_ACTIVE_KEYS} active keys per client (rotation), bad input refused`, async () => {
     await createApiKey(db, admin, { client: "tmclog", allowedKinds: ["label"] });
     const second = await createApiKey(db, admin, { client: "tmclog", allowedKinds: ["label"] });
@@ -237,6 +244,8 @@ describe("GET /jobs and results", () => {
     const run = (await claimNextJob(db))!;
     await saveDrafts(db, run, [draft("TMC_COA_901.S0001_Betaine_AI_test_BT-3877")], 0, `engine log naming ${SUPPLIER}`);
     expect((await getRequest(db, tmclog, job.jobId)).state).toBe("to-check");
+    // a draft's name can hold the supplier file's name: never sent before Final (security review S1)
+    expect((await requestResults(db, tmclog, job.jobId))[0]).toMatchObject({ status: "To check", name: null, finalAt: null });
     const [doc] = await db.select().from(documents).where(eq(documents.jobId, run.id));
     await db.update(documents).set({ status: "Final", version: 1, pdfKey: newUploadKey("pdf"), approvedAt: new Date(), approvedBy: person.email }).where(eq(documents.id, doc.id));
     const ready = await getRequest(db, tmclog, job.jobId);
@@ -330,6 +339,17 @@ describe("cancel (contract section 9)", () => {
     const [doc] = await db.select().from(documents).where(eq(documents.jobId, run.id));
     expect(doc).toMatchObject({ status: "Rejected", rejectedReason: NOT_NEEDED, previewKey: null, viewKey: null });
     expect((await getRequest(db, tmclog, job.jobId)).state).toBe("cancelled");
+  });
+
+  it("a crashed run of a cancelled request is not queued again (security review S5)", async () => {
+    const { job } = await create();
+    await createJobs(db, storage, person, [supplierDoc(job.jobId)]);
+    const run = (await claimNextJob(db))!;
+    await cancelRequest(db, tmclog, job.jobId, by);
+    await db.update(jobs).set({ startedAt: new Date(Date.now() - 60 * 60 * 1000) }).where(eq(jobs.id, run.id));
+    await requeueStaleJobs(db);
+    expect((await db.select().from(jobs).where(eq(jobs.id, run.id)))[0].state).toBe("cancelled");
+    expect(await claimNextJob(db)).toBeNull();
   });
 
   it("a Final stays Final", async () => {

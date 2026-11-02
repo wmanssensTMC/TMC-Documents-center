@@ -252,16 +252,17 @@ export async function createRequest(db: Db, caller: ApiCaller, idempotencyKey: s
 
   if (!caller.allowedKinds.includes(body.kind)) throw new ApiError("kind_not_allowed", ["kind"]);
   if (!(await getEntity(db, body.entity))) throw new ApiError("entity_not_set_up", ["entity"]);
-  const [{ recent }] = await db
-    .select({ recent: sql<number>`count(*)::int` })
-    .from(apiJobs)
-    .where(and(eq(apiJobs.client, caller.client), sql`${apiJobs.createdAt} > now() - interval '1 minute'`));
-  if (recent >= MAX_CREATES_PER_MINUTE) throw new ApiError("rate_limited", [], 60);
-  if ((await countOpenRequests(db, caller.client)) >= MAX_OPEN_REQUESTS) throw new ApiError("rate_limited", [], 300);
-
   const requestedBy = body.source.requestedBy.toLowerCase();
   const createdBy = `${caller.client}:${requestedBy}`;
   const row = await db.transaction(async (tx) => {
+    // counted and inserted under one lock per client, so creates sent at once cannot pass the limits together (S4)
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`api_jobs:${caller.client}`}))`);
+    const [{ recent }] = await tx
+      .select({ recent: sql<number>`count(*)::int` })
+      .from(apiJobs)
+      .where(and(eq(apiJobs.client, caller.client), sql`${apiJobs.createdAt} > now() - interval '1 minute'`));
+    if (recent >= MAX_CREATES_PER_MINUTE) throw new ApiError("rate_limited", [], 60);
+    if ((await countOpenRequests(tx, caller.client)) >= MAX_OPEN_REQUESTS) throw new ApiError("rate_limited", [], 300);
     const [inserted] = await tx
       .insert(apiJobs)
       .values({
@@ -295,7 +296,7 @@ export async function createRequest(db: Db, caller: ApiCaller, idempotencyKey: s
 }
 
 /** Open = not cancelled and no Final yet (an approximation that never needs the full rollup). */
-export async function countOpenRequests(db: Db, client: string) {
+export async function countOpenRequests(db: Db | Tx, client: string) {
   const finals = db
     .select({ one: sql`1` })
     .from(jobs)
@@ -334,7 +335,9 @@ export async function requestResults(db: Db, caller: ApiCaller, id: string) {
   return docs.map((d) => ({
     documentId: d.id,
     type: d.type,
-    name: d.name,
+    // Only a Final's name was made from details a person checked; a draft's name can still hold
+    // the supplier file's name or trade name (security review S1), so it never leaves.
+    name: d.status === "Final" || d.status === "Superseded" ? d.name : null,
     status: d.status,
     version: d.version,
     batch: d.batch,

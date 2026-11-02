@@ -8,7 +8,7 @@ vi.mock("@/lib/db", async (orig) => ({ ...(await orig<typeof import("@/lib/db")>
 
 const { createPgliteDb } = await import("@/lib/db");
 const { createApiKey } = await import("@/lib/api/keys");
-const { MAX_READS_PER_MINUTE } = await import("@/lib/api/http");
+const { MAX_READS_PER_MINUTE, MAX_REFUSED_PER_MINUTE, MAX_WRITES_PER_MINUTE } = await import("@/lib/api/http");
 const jobsRoute = await import("./jobs/route");
 const oneRoute = await import("./jobs/[id]/route");
 const resultsRoute = await import("./jobs/[id]/results/route");
@@ -129,6 +129,20 @@ describe("/api/v1", () => {
     const res = await jobsRoute.GET(new Request(url, { headers: auth() }));
     expect(res.status).toBe(429);
     expect(Number(res.headers.get("retry-after"))).toBeGreaterThan(0);
+  });
+
+  it(`after ${MAX_REFUSED_PER_MINUTE} refused keys an address gets 429 before any lookup; others still pass (S6)`, async () => {
+    const bad = { authorization: `Bearer tdc_c1_${"x".repeat(43)}`, "x-forwarded-for": "203.0.113.7" };
+    const url = `${BASE}/jobs?ids=${randomUUID()}`;
+    for (let i = 0; i < MAX_REFUSED_PER_MINUTE; i++) expect((await jobsRoute.GET(new Request(url, { headers: bad }))).status).toBe(401);
+    expect((await jobsRoute.GET(new Request(url, { headers: bad }))).status).toBe(429);
+    expect((await jobsRoute.GET(new Request(url, { headers: { ...auth(), "x-forwarded-for": "203.0.113.8" } }))).status).toBe(200);
+  });
+
+  it(`more than ${MAX_WRITES_PER_MINUTE} writes a minute (also replays and cancels): 429 (S3)`, async () => {
+    const id = randomUUID();
+    for (let i = 0; i < MAX_WRITES_PER_MINUTE; i++) expect((await post(body(id), { ...auth(), "idempotency-key": id })).status).toBeLessThan(300);
+    expect((await post(body(id), { ...auth(), "idempotency-key": id })).status).toBe(429);
   });
 
   it("no APP_URL: 503, never a link made from the request's own host", async () => {

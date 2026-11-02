@@ -79,16 +79,23 @@ export async function listApiKeys(db: Db) {
 
 export type ApiCaller = { client: string; keyId: string; allowedKinds: ApiJobKind[] };
 
-// A refused key is written to the audit at most once a minute per client prefix, so a flood of
-// wrong keys cannot flood the append-only log. Per server instance.
+// A refused key is written to the audit at most once a minute per known client (any other prefix
+// counts as "unknown") and at most 20 rows a minute in all, so a flood of wrong keys cannot flood
+// the append-only log (security review S2). Per server instance.
+const REFUSED_PER_MINUTE = 20;
 const refusedLogged = new Map<string, number>();
+let refusedWindow = { start: 0, n: 0 };
 
 async function logRefused(db: Db, prefix: string) {
   const now = Date.now();
-  if (now - (refusedLogged.get(prefix) ?? 0) < 60_000) return;
-  if (refusedLogged.size >= 1000) refusedLogged.delete(refusedLogged.keys().next().value!);
-  refusedLogged.set(prefix, now);
-  await logAudit(db, { email: "api" }, "api.key.refused", null, { client: prefix });
+  if (now - refusedWindow.start >= 60_000) refusedWindow = { start: now, n: 0 };
+  if (refusedWindow.n >= REFUSED_PER_MINUTE) return;
+  const [known] = prefix === "unknown" ? [] : await db.select({ id: apiClients.id }).from(apiClients).where(eq(apiClients.client, prefix)).limit(1);
+  const client = known ? prefix : "unknown";
+  if (now - (refusedLogged.get(client) ?? 0) < 60_000) return;
+  refusedLogged.set(client, now); // at most the known clients plus "unknown": stays small
+  refusedWindow.n++;
+  await logAudit(db, { email: "api" }, "api.key.refused", null, { client });
 }
 
 /** The calling app for an `Authorization: Bearer <key>` header, or null (the route answers 401). */

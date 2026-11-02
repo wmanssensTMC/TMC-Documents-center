@@ -24,7 +24,9 @@ active keys per client (current + next). Rotation: make the next key, put it in 
 | `POST /jobs/{id}/cancel` `{ "requestedBy" }` | `200` job (also when already cancelled) |
 | `GET /health` | `200 { "ok": true }`, no key |
 
-Job and result shapes: contract 4.1 and 4.2. `link` of a job opens `/api-jobs/<id>`, of a result `/documents/<id>`
+Job and result shapes: contract 4.1 and 4.2, with one rule: a result's `name` is `null` until it is Final (or
+Superseded). A draft's name can still hold the supplier file's name or trade name; a Final's name is made from details
+a person checked (security review S1). `link` of a job opens `/api-jobs/<id>`, of a result `/documents/<id>`
 (both behind the sign-in). Strict bodies: an unknown key anywhere is `422 unknown_field` with its path.
 
 ## Payload rules
@@ -55,15 +57,17 @@ Nothing is deleted. A cancelled request takes no new supplier document or label.
 ## Limits and errors
 
 Creates 30 a minute per client and 300 open requests per client (open = not cancelled and no Final yet), counted in
-the database; reads 120 a minute per client, counted per server instance (approximate, Willem 27/10). Error codes and
+the database under one lock per client; per server instance (approximate, Willem 27/10): reads 120 a minute and writes
+(creates, replays, cancels) 60 a minute per client, and 30 refused keys a minute per address, after which that address
+gets `429` without a lookup. Error codes and
 texts: `web/lib/api/errors.ts` (contract section 10). Unexpected errors are `503 unavailable`; only the error name is
 logged.
 
 ## Audit
 
 `api.job.created` and `api.job.cancelled` (actor `<client>:<requestedBy>`; client, requestedBy, kind, request id),
-`api.key.created` / `api.key.deactivated` (admin), `api.key.refused` (client prefix only, at most once a minute per
-prefix and server). Reads are not audited; each key keeps "last used".
+`api.key.created` / `api.key.deactivated` (admin), `api.key.refused` (a known client's name, otherwise "unknown"; at
+most once a minute per name and 20 rows a minute per server). Reads are not audited; each key keeps "last used".
 
 ## In the app
 
