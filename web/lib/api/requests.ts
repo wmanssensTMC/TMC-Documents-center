@@ -5,7 +5,7 @@
 // What goes back: states, fixed texts and document references. Never a supplier name, a source
 // file, a download address, a yellow text or an engine log.
 import "server-only";
-import { and, desc, eq, inArray, isNull, notExists, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, notExists, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { logAudit } from "../audit";
 import { API_JOB_KINDS, API_KIND_ROUTE, type ApiJobKind, type ApiJobState, type DocStatus, type Route } from "../constants";
@@ -103,12 +103,16 @@ export function canonicalJson(v: unknown): string {
 // ---------- state rollup (contract section 7, edge cases Willem 27/10) ----------
 
 type Child = { id: string; apiJobId: string | null; state: string; createdAt: Date; startedAt: Date | null; finishedAt: Date | null };
-type Result = { id: string; jobId: string | null; status: DocStatus; createdAt: Date; approvedAt: Date | null };
+type Result = { id: string; jobId: string | null; status: DocStatus; createdAt: Date; approvedAt: Date | null; version: number | null };
+
+/** A Final, or a former Final: a Superseded with a version. A draft replaced by "Run again" is
+ * Superseded without a version and never counts (security review H1, 02/11/2026). */
+export const wasFinal = (d: { status: DocStatus; version: number | null }) => d.status === "Final" || (d.status === "Superseded" && d.version !== null);
 export type Rollup = { state: ApiJobState; problem: string | null; resultCount: number; changedAt: Date };
 
 /**
  * cancelled > a run queued or running (in-progress) > a draft waiting for a check (to-check) >
- * at least one Final (ready; a Final later superseded still counts) > the latest run failed
+ * at least one Final (ready; a Final later superseded still counts, a replaced draft never) > the latest run failed
  * (failed) > nothing usable yet, also when every draft was rejected (waiting-input).
  */
 export function rollup(req: Pick<ApiJob, "kind" | "createdAt" | "cancelledAt">, children: Child[], results: Result[], lastAudit?: Date | null): Rollup {
@@ -118,7 +122,7 @@ export function rollup(req: Pick<ApiJob, "kind" | "createdAt" | "cancelledAt">, 
   if (req.cancelledAt) return { ...base, state: "cancelled", problem: null };
   if (children.some((c) => c.state === "queued" || c.state === "running")) return { ...base, state: "in-progress", problem: null };
   if (results.some((d) => d.status === "To check" || d.status === "Draft")) return { ...base, state: "to-check", problem: null };
-  if (results.some((d) => d.status === "Final" || d.status === "Superseded")) return { ...base, state: "ready", problem: null };
+  if (results.some(wasFinal)) return { ...base, state: "ready", problem: null };
   const latest = [...children].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
   if (latest?.state === "failed") return { ...base, state: "failed", problem: PROBLEM.engine };
   return { ...base, state: "waiting-input", problem: req.kind === "label" ? PROBLEM.label : PROBLEM.supplierDocument };
@@ -304,7 +308,12 @@ export async function countOpenRequests(db: Db | Tx, client: string) {
     .select({ one: sql`1` })
     .from(jobs)
     .innerJoin(documents, eq(documents.jobId, jobs.id))
-    .where(and(eq(jobs.apiJobId, apiJobs.id), inArray(documents.status, ["Final", "Superseded"])));
+    .where(
+      and(
+        eq(jobs.apiJobId, apiJobs.id),
+        or(eq(documents.status, "Final"), and(eq(documents.status, "Superseded"), isNotNull(documents.version))),
+      ),
+    );
   const candidates = await db
     .select()
     .from(apiJobs)
@@ -334,14 +343,13 @@ export async function getRequests(db: Db, caller: ApiCaller, idsParam: string | 
 
 /** At most this many results per job (contract amendment f40cabf): Finals first, then the newest. */
 export const MAX_RESULTS = 100;
-const isFinal = (s: DocStatus) => s === "Final" || s === "Superseded";
 
 /** GET /jobs/{id}/results: references only (contract 4.2). */
 export async function requestResults(db: Db, caller: ApiCaller, id: string) {
   const row = await ownRequest(db, caller, id);
   const { documents: all } = (await rollupMany(db, [row])).get(row.id)!;
   const docs = [...all]
-    .sort((a, b) => Number(isFinal(b.status)) - Number(isFinal(a.status)) || b.createdAt.getTime() - a.createdAt.getTime())
+    .sort((a, b) => Number(wasFinal(b)) - Number(wasFinal(a)) || b.createdAt.getTime() - a.createdAt.getTime())
     .slice(0, MAX_RESULTS);
   const base = appUrl();
   return docs.map((d) => ({
@@ -349,11 +357,11 @@ export async function requestResults(db: Db, caller: ApiCaller, id: string) {
     type: d.type,
     // Only a Final's name was made from details a person checked; a draft's name can still hold
     // the supplier file's name or trade name (security review S1), so it never leaves.
-    name: d.status === "Final" || d.status === "Superseded" ? d.name : null,
+    name: wasFinal(d) ? d.name : null,
     status: d.status,
     version: d.version,
     batch: d.batch,
-    finalAt: d.approvedAt && (d.status === "Final" || d.status === "Superseded") ? d.approvedAt.toISOString() : null,
+    finalAt: d.approvedAt && wasFinal(d) ? d.approvedAt.toISOString() : null,
     link: `${base}/documents/${d.id}`,
   }));
 }

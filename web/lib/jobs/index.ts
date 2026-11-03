@@ -1,7 +1,7 @@
 // Neutralise jobs: the app files them, the worker (worker/) runs the engine on them.
 // Queue = the jobs table, so moving to Azure changes nothing here (BRIEF 4).
 import "server-only";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { assertRequestOpen } from "../api/requests";
 import { logAudit, type Actor } from "../audit";
@@ -56,6 +56,27 @@ async function checkInput(storage: Storage, ref: { key: string; filename: string
   return { key: ref.key, filename: cleanFilename(ref.filename) };
 }
 
+type Prepared = z.output<typeof jobInput>;
+
+/** One job's input checked exactly as the Neutralise form's: values, entity details, stored files. */
+async function prepareJob(db: Db, storage: Storage, raw: JobInput): Promise<Prepared> {
+  const r = jobInput.safeParse(raw);
+  if (!r.success) throw new JobError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+  const input = r.data;
+  // Never invent an entity's address: no record, no job.
+  if (!(await getEntity(db, input.entity))) {
+    throw new JobError(`no details entered yet for entity ${input.entity}; an admin adds them under Settings > Entities`);
+  }
+  if (input.commercialFiles.length && !["auto", "coa"].includes(input.route)) {
+    throw new JobError("commercial documents (PFI, OC, contract, invoice) only go with a COA");
+  }
+  return {
+    ...input,
+    supplierFile: await checkInput(storage, input.supplierFile),
+    commercialFiles: await Promise.all(input.commercialFiles.map((f) => checkInput(storage, f))),
+  };
+}
+
 /** Files one job per supplier document. All-or-nothing: one bad file refuses the batch. */
 export async function createJobs(db: Db, storage: Storage, actor: Actor, raws: JobInput[]): Promise<string[]> {
   if (!Array.isArray(raws) || raws.length === 0) throw new JobError("add at least one supplier document");
@@ -64,25 +85,8 @@ export async function createJobs(db: Db, storage: Storage, actor: Actor, raws: J
     throw new JobError(`you already have many documents waiting; wait until fewer than ${MAX_OPEN_JOBS_PER_USER} are open`);
   }
 
-  type Prepared = z.output<typeof jobInput>;
   const prepared: Prepared[] = [];
-  for (const raw of raws) {
-    const r = jobInput.safeParse(raw);
-    if (!r.success) throw new JobError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
-    const input = r.data;
-    // Never invent an entity's address: no record, no job.
-    if (!(await getEntity(db, input.entity))) {
-      throw new JobError(`no details entered yet for entity ${input.entity}; an admin adds them under Settings > Entities`);
-    }
-    if (input.commercialFiles.length && !["auto", "coa"].includes(input.route)) {
-      throw new JobError("commercial documents (PFI, OC, contract, invoice) only go with a COA");
-    }
-    prepared.push({
-      ...input,
-      supplierFile: await checkInput(storage, input.supplierFile),
-      commercialFiles: await Promise.all(input.commercialFiles.map((f) => checkInput(storage, f))),
-    });
-  }
+  for (const raw of raws) prepared.push(await prepareJob(db, storage, raw));
 
   const ids = await db.transaction(async (tx) => {
     const out: string[] = [];
@@ -102,6 +106,115 @@ export async function createJobs(db: Db, storage: Storage, actor: Actor, raws: J
   });
   await wakeWorker();
   return ids;
+}
+
+/** Drafts that may be run again: still waiting for a check, or rejected. */
+export const RERUN_STATUSES = ["To check", "Rejected"] as const;
+
+/** Whether the "Run again" button belongs on this document (the action checks everything again). */
+export async function canRerun(db: Db, doc: { status: string; jobId: string | null }) {
+  if (!(RERUN_STATUSES as readonly string[]).includes(doc.status) || !doc.jobId) return false;
+  const job = await getJob(db, doc.jobId);
+  // a draft that answers a request from TMC Logistics goes through the request (security review H1)
+  return !!job && job.kind === "neutralise" && !!job.supplierFile && !job.apiJobId;
+}
+
+/**
+ * The open "Run again" job that will replace this draft: one for the draft itself or for any draft
+ * of the same earlier run, as a run replaces them all (Willem 02/11, review M2). Null when none.
+ */
+export async function openRerunFor(db: Db | Tx, doc: { id: string; jobId: string | null }) {
+  const siblings = doc.jobId ? db.select({ id: documents.id }).from(documents).where(eq(documents.jobId, doc.jobId)) : null;
+  const [open] = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.kind, "neutralise"),
+        inArray(jobs.state, ["queued", "running"]),
+        siblings ? or(eq(jobs.rerunOf, doc.id), inArray(jobs.rerunOf, siblings)) : eq(jobs.rerunOf, doc.id),
+      ),
+    )
+    .limit(1);
+  return open ?? null;
+}
+
+type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+const DOCUMENT_ID = z.uuid();
+
+/** Two clicks at once on the same draft: only the partial unique index, nothing else (review L4). */
+function isOneOpenRerunViolation(err: unknown) {
+  const e = err as { code?: string; constraint?: string; message?: string; cause?: { code?: string; constraint?: string; message?: string } };
+  const code = e?.code ?? e?.cause?.code;
+  const where = `${e?.constraint ?? ""} ${e?.cause?.constraint ?? ""} ${e?.message ?? ""} ${e?.cause?.message ?? ""}`;
+  return code === "23505" && where.includes("jobs_one_open_rerun");
+}
+
+/**
+ * "Run again with the latest neutralizer" (Willem 02/11): a new job from the draft's own job, same
+ * values and the same stored files (no new upload), checked as a new job from the Neutralise form.
+ * The draft is replaced (Superseded) only once the new run has made its draft (hard rule 4); a run
+ * that fails leaves it as it is. Anyone logged in may run a draft again, as anyone may check one.
+ */
+export async function rerunJob(db: Db, storage: Storage, actor: Actor, documentId: string): Promise<string> {
+  if (!DOCUMENT_ID.safeParse(documentId).success) throw new JobError("document not found");
+  const [doc] = await db.select().from(documents).where(eq(documents.id, documentId));
+  if (!doc) throw new JobError("document not found");
+  if (!(RERUN_STATUSES as readonly string[]).includes(doc.status)) {
+    throw new JobError("only a draft that waits for a check, or a rejected one, can be run again");
+  }
+  const source = doc.jobId ? await getJob(db, doc.jobId) : null;
+  if (!source || source.kind !== "neutralise" || !source.supplierFile) {
+    throw new JobError("this document was not made from a supplier document, so it cannot be run again");
+  }
+  if (source.apiJobId) {
+    throw new JobError("this draft answers a request from TMC Logistics; send a new supplier document from the request page");
+  }
+  if (!source.supplierName?.trim()) {
+    throw new JobError("this draft was made before the supplier name was required; run it again from Neutralise and type the supplier name");
+  }
+  const finalising = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(and(eq(jobs.documentId, doc.id), eq(jobs.kind, "finalise"), inArray(jobs.state, ["queued", "running"])));
+  if (finalising.length) throw new JobError("this draft is being finalised; wait until that is done");
+  if (await openRerunFor(db, doc)) throw new JobError("this draft is already being run again");
+  if ((await countOpenJobs(db, actor.email)) + 1 > MAX_OPEN_JOBS_PER_USER) {
+    throw new JobError(`you already have many documents waiting; wait until fewer than ${MAX_OPEN_JOBS_PER_USER} are open`);
+  }
+
+  const p = await prepareJob(db, storage, {
+    route: source.route,
+    entity: source.entity,
+    productName: source.productName ?? undefined,
+    fileNr: source.fileNr ?? undefined,
+    batch: source.batch ?? undefined,
+    supplierName: source.supplierName,
+    supplierFile: source.supplierFile,
+    commercialFiles: source.commercialFiles,
+  });
+  let id: string;
+  try {
+    id = await db.transaction(async (tx) => {
+      // clicks on two drafts of the same earlier run at once: one lock per earlier run, then the
+      // check again (the unique index covers the same draft only)
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`rerun:${source.id}`}))`);
+      if (await openRerunFor(tx, doc)) throw new JobError("this draft is already being run again");
+      const [row] = await tx
+        .insert(jobs)
+        .values({ ...p, kind: "neutralise", rerunOf: doc.id, createdBy: actor.email })
+        .returning({ id: jobs.id });
+      await logAudit(tx, actor, "document.rerun", doc.id, { job: row.id, from: source.id, file: p.supplierFile.filename });
+      return row.id;
+    });
+  } catch (err) {
+    // two clicks at once on the same draft: the unique index lets one through
+    if (isOneOpenRerunViolation(err)) throw new JobError("this draft is already being run again");
+    throw err;
+  }
+  await wakeWorker();
+  return id;
 }
 
 /**
@@ -126,11 +239,18 @@ export async function wakeWorker() {
   }
 }
 
-export async function listJobs(db: Db, limit = 100, apiJobId?: string) {
+/** Newest first. `fileNr`: only the neutralise jobs of that dossier (dossier overview); `apiJobId`:
+ * only the jobs of one API request (API v1). */
+export async function listJobs(db: Db, limit = 100, filter: { fileNr?: string; apiJobId?: string } = {}) {
   const rows = await db
     .select()
     .from(jobs)
-    .where(apiJobId ? eq(jobs.apiJobId, apiJobId) : undefined)
+    .where(
+      and(
+        filter.fileNr === undefined ? undefined : and(eq(jobs.kind, "neutralise"), eq(jobs.fileNr, filter.fileNr)),
+        filter.apiJobId ? eq(jobs.apiJobId, filter.apiJobId) : undefined,
+      ),
+    )
     .orderBy(desc(jobs.createdAt))
     .limit(limit);
   const results = rows.length

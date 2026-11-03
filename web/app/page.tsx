@@ -6,6 +6,7 @@ import { getDb } from "@/lib/db";
 import { DOC_TYPES, ENTITIES, STATUSES, type DocStatus, type DocType, type Entity } from "@/lib/db/schema";
 import { listDocuments, PAGE_SIZE, type DocumentFilters } from "@/lib/documents/service";
 import { formatDateTime, formatDay } from "@/lib/format";
+import { dossierHref } from "@/lib/documents/dossier";
 
 export const metadata = { title: "Library · TMC Document Center" };
 
@@ -150,7 +151,13 @@ export default async function LibraryPage({ searchParams }: PageProps<"/">) {
                     </div>
                   </td>
                   <td className={cell}>{d.batch}</td>
-                  <td className={cell}>{d.fileNr}</td>
+                  <td className={cell}>
+                    {d.fileNr && (
+                      <Link href={dossierHref(d.fileNr)} className="text-tmc underline" title="Dossier overview">
+                        {d.fileNr}
+                      </Link>
+                    )}
+                  </td>
                   <td className={cell}>{d.entity}</td>
                   <td className={cell}>
                     <span className={d.status === "Final" ? "text-green-700" : d.status === "Superseded" ? "text-gray-500" : "text-amber-700"}>

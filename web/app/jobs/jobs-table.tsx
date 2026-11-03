@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { JobState } from "@/lib/constants";
 import { formatDateTime } from "@/lib/format";
 import type { listJobs } from "@/lib/jobs";
+import { dossierHref } from "@/lib/documents/dossier";
 
 const STATE: Record<JobState, { label: string; className: string }> = {
   queued: { label: "Waiting for the neutralizer", className: "text-gray-700" },
@@ -57,7 +58,14 @@ export function JobsTable({ rows }: { rows: Awaited<ReturnType<typeof listJobs>>
                 )}
               </td>
               <td className="px-3 py-2 text-xs">
-                {[job.productName, job.fileNr, job.batch].filter(Boolean).join(" · ") || "—"}
+                {[job.productName, job.batch].filter(Boolean).join(" · ")}
+                {job.fileNr && (
+                  <Link href={dossierHref(job.fileNr)} className="block text-tmc underline" title="Dossier overview">
+                    {job.fileNr}
+                  </Link>
+                )}
+                {!job.productName && !job.batch && !job.fileNr && "—"}
+                {job.rerunOf && <span className="mt-1 block text-gray-500">Run again</span>}
               </td>
               <td className={`px-3 py-2 font-medium ${STATE[job.state].className}`}>
                 {STATE[job.state].label}

@@ -1,0 +1,3 @@
+ALTER TABLE "jobs" ADD COLUMN "rerun_of" uuid;--> statement-breakpoint
+ALTER TABLE "jobs" ADD CONSTRAINT "jobs_rerun_of_documents_id_fk" FOREIGN KEY ("rerun_of") REFERENCES "public"."documents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "jobs_one_open_rerun" ON "jobs" USING btree ("rerun_of") WHERE "jobs"."rerun_of" is not null and "jobs"."state" in ('queued', 'running');

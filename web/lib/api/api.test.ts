@@ -24,6 +24,7 @@ import {
   requestResults,
   RequestError,
   rollup,
+  wasFinal,
 } from "./requests";
 
 const admin: Actor = { email: "wilman@transmare.com", name: "Willem", role: "admin" };
@@ -471,7 +472,9 @@ describe("state rollup (Willem 27/10)", () => {
   const t = (m: number) => new Date(Date.UTC(2026, 9, 27, 9, m));
   const req = { kind: "coa-neutralise" as const, createdAt: t(0), cancelledAt: null };
   const child = (state: string, m: number) => ({ id: `j${m}`, apiJobId: "r", state, createdAt: t(m), startedAt: null, finishedAt: null });
-  const doc = (status: "To check" | "Final" | "Superseded" | "Rejected", m: number) => ({ id: `d${m}`, jobId: "j1", status, createdAt: t(m), approvedAt: null });
+  // a Final and a former Final carry a version; a draft (also one replaced by "Run again") has none
+  const doc = (status: "To check" | "Final" | "Superseded" | "Rejected", m: number, version: number | null = status === "Final" || status === "Superseded" ? 1 : null) =>
+    ({ id: `d${m}`, jobId: "j1", status, createdAt: t(m), approvedAt: null, version });
 
   it("every draft rejected: back to waiting-input", () => {
     expect(rollup(req, [child("done", 1)], [doc("Rejected", 2)]).state).toBe("waiting-input");
@@ -487,6 +490,11 @@ describe("state rollup (Willem 27/10)", () => {
     const r = rollup(req, [child("done", 1)], [doc("Superseded", 2)], t(9));
     expect(r.state).toBe("ready");
     expect(r.changedAt).toEqual(t(9));
+  });
+  it("a draft replaced by Run again (Superseded, no version) is never ready (security review H1)", () => {
+    expect(rollup(req, [child("done", 1)], [doc("Superseded", 2, null)]).state).toBe("waiting-input");
+    expect(wasFinal({ status: "Superseded", version: null })).toBe(false);
+    expect(wasFinal({ status: "Superseded", version: 2 })).toBe(true);
   });
   it("a run or a draft open wins over ready", () => {
     expect(rollup(req, [child("done", 1), child("queued", 4)], [doc("Final", 2)]).state).toBe("in-progress");
