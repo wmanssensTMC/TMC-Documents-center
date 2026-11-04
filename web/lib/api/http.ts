@@ -76,10 +76,51 @@ export async function readJson(req: Request): Promise<unknown> {
   }
 }
 
+/**
+ * The largest body this platform takes or sends through a function, in MB (v1.1, contract 15.1 and
+ * 15.3). Vercel Functions stop at about 4.5 MB, so 4 there; on Azure up to the file limits (100 / 25).
+ */
+export function platformMaxBytes(): number {
+  const mb = Number(process.env.DC_API_MAX_BODY_MB ?? 4);
+  return Math.floor((Number.isFinite(mb) && mb > 0 ? Math.min(mb, 100) : 4) * 1024 * 1024);
+}
+
+/**
+ * The raw body, exactly `Content-Length` bytes and at most `max`: the length is checked before a
+ * byte is read, and again while reading (a body that runs past its own length is refused).
+ */
+export async function readBytes(req: Request, max: number): Promise<Uint8Array> {
+  const header = req.headers.get("content-length");
+  if (!header || !/^\d{1,12}$/.test(header) || Number(header) < 1) throw new ApiError("length_required");
+  const length = Number(header);
+  if (length > max) throw new ApiError("payload_too_large");
+  const out = new Uint8Array(length);
+  let size = 0;
+  if (req.body) {
+    const reader = req.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (size + value.length > length) {
+        await reader.cancel();
+        throw new ApiError("payload_too_large");
+      }
+      out.set(value, size);
+      size += value.length;
+    }
+  }
+  if (size !== length) throw new ApiError("invalid_payload", ["Content-Length"]);
+  return out;
+}
+
+/** Supplier document hand-offs per key and minute (contract 15.1), on top of the write limit. */
+export const MAX_HANDOFFS_PER_MINUTE = 10;
+const handoffs: Window = new Map();
+
 type Handler = (ctx: { db: Db; caller: ApiCaller }) => Promise<Response>;
 
 /** Runs a handler for a valid key. `create` calls are limited in the database, reads here. */
-export async function withApiKey(req: Request, mode: "read" | "create", handler: Handler): Promise<Response> {
+export async function withApiKey(req: Request, mode: "read" | "create" | "handoff", handler: Handler): Promise<Response> {
   try {
     if (!apiEnabled()) throw new ApiError("unavailable");
     const now = Date.now();
@@ -91,7 +132,10 @@ export async function withApiKey(req: Request, mode: "read" | "create", handler:
       take(refused, ip, Number.MAX_SAFE_INTEGER, now);
       throw new ApiError("unauthorized");
     }
-    const wait = mode === "read" ? takeRead(caller.client, now) : takeWrite(caller.client, now);
+    const wait =
+      mode === "read"
+        ? takeRead(caller.client, now)
+        : (takeWrite(caller.client, now) ?? (mode === "handoff" ? take(handoffs, caller.client, MAX_HANDOFFS_PER_MINUTE, now) : null));
     if (wait !== null) throw new ApiError("rate_limited", [], wait);
     return await handler({ db, caller });
   } catch (err) {

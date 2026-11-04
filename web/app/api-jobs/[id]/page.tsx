@@ -12,12 +12,15 @@ import { requireUser } from "@/lib/auth";
 import { API_KIND_ROUTE } from "@/lib/constants";
 import { getDb } from "@/lib/db";
 import { listEntities } from "@/lib/entities";
-import { formatDateTime } from "@/lib/format";
+import { formatBytes, formatDateTime } from "@/lib/format";
 import { listJobs } from "@/lib/jobs";
 import { getStorage } from "@/lib/storage";
 import { REQUEST_KIND, REQUEST_STATE } from "../requests-table";
+import { startHandedOver } from "./actions";
 
 export const metadata = { title: "Request · TMC Document Center" };
+
+const field = "rounded-md border border-gray-300 px-2 py-1.5 text-sm focus:border-tmc focus:outline-none";
 
 export default async function RequestPage({ params, searchParams }: PageProps<"/api-jobs/[id]">) {
   const user = await requireUser();
@@ -99,6 +102,25 @@ export default async function RequestPage({ params, searchParams }: PageProps<"/
         </table>
       </section>
 
+      {route && !cancelled && req.supplierFile && runs.length === 0 && (
+        <section className="mt-6 rounded-lg bg-white p-4 shadow-sm ring-1 ring-black/5">
+          <h2 className="font-semibold">Supplier document from TMC Logistics</h2>
+          <p className="mt-1 text-sm text-gray-600">
+            A coordinator chose {req.supplierFile.filename} ({formatBytes(req.supplierFile.size)}) from the shipment&apos;s mail.
+            Type the supplier name (internal, never printed) and send it to the neutralizer. Dossier and product name are proposals
+            you may change.
+          </p>
+          <form action={startHandedOver} className="mt-3 grid gap-3 sm:grid-cols-4">
+            <input type="hidden" name="id" value={req.id} />
+            <input name="supplierName" defaultValue={req.supplierName ?? ""} required minLength={2} maxLength={200} placeholder="Supplier name *" aria-label="Supplier name" className={field} />
+            <input name="productName" defaultValue={req.lines.length === 1 ? (req.lines[0].description ?? "") : ""} maxLength={200} placeholder="Product name (TMC)" aria-label="Product name" className={field} />
+            <input name="fileNr" defaultValue={req.orderNo} maxLength={50} placeholder="Dossier" aria-label="Dossier" className={field} />
+            {route === "coa" && <input name="batch" maxLength={100} placeholder="Batch" aria-label="Batch" className={field} />}
+            <button className="rounded-md bg-tmc px-3 py-1.5 text-sm font-medium text-white hover:bg-tmc/90 sm:col-span-4 sm:w-fit">Send to the neutralizer</button>
+          </form>
+        </section>
+      )}
+
       {route && !cancelled && (
         <>
           <h2 className="mt-8 text-lg font-semibold text-tmc">Add supplier document</h2>
@@ -109,7 +131,7 @@ export default async function RequestPage({ params, searchParams }: PageProps<"/
           <NeutraliseForm
             uploadMode={getStorage().mode}
             entitiesWithDetails={(await listEntities(db)).map((e) => e.code)}
-            request={{ id: req.id, route, entity: req.entity, orderNo: req.orderNo, lines: req.lines }}
+            request={{ id: req.id, route, entity: req.entity, orderNo: req.orderNo, lines: req.lines, supplierName: req.supplierName }}
           />
         </>
       )}

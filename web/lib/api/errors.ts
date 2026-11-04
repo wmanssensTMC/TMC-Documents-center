@@ -10,9 +10,16 @@ export const API_ERRORS = {
   not_found: [404, "Job not found."],
   idempotency_conflict: [409, "This Idempotency-Key was already used with another body."],
   not_cancellable: [409, "This job cannot be cancelled."],
-  payload_too_large: [413, "The request body is larger than 64 KB."],
+  // v1.1 (contract section 15.4)
+  not_waiting_for_input: [409, "This job does not wait for a supplier document."],
+  not_final: [409, "This document is not Final."],
+  file_too_large: [409, "This file is larger than the Document Center can send here."],
+  length_required: [411, "The Content-Length header is required."],
+  payload_too_large: [413, "The request body is too large."],
+  unsupported_type: [415, "This file type is not accepted."],
   invalid_payload: [422, "The request does not match the contract."],
   unknown_field: [422, "The request has a field the contract does not allow."],
+  not_accepted_for_kind: [422, "This kind of job does not take a supplier document."],
   rate_limited: [429, "Too many requests; try again later."],
   unavailable: [503, "The Document Center API is not available."],
 } as const satisfies Record<string, readonly [number, string]>;
