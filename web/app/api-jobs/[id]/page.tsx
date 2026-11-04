@@ -102,7 +102,7 @@ export default async function RequestPage({ params, searchParams }: PageProps<"/
         </table>
       </section>
 
-      {route && !cancelled && req.supplierFile && runs.length === 0 && (
+      {route && !cancelled && req.supplierFile && req.handOffPending && (
         <section className="mt-6 rounded-lg bg-white p-4 shadow-sm ring-1 ring-black/5">
           <h2 className="font-semibold">Supplier document from TMC Logistics</h2>
           <p className="mt-1 text-sm text-gray-600">

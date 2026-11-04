@@ -29,7 +29,7 @@ export async function finalResultFile(db: Db, storage: Storage, caller: ApiCalle
   if (!file) throw new ApiError("unavailable");
   if (file.size !== null && file.size > max) {
     await file.stream.cancel();
-    throw new ApiError("file_too_large");
+    throw new ApiError("too_large_for_link");
   }
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -40,7 +40,7 @@ export async function finalResultFile(db: Db, storage: Storage, caller: ApiCalle
     size += value.length;
     if (size > max) {
       await reader.cancel();
-      throw new ApiError("file_too_large");
+      throw new ApiError("too_large_for_link");
     }
     chunks.push(value);
   }
@@ -59,5 +59,7 @@ export async function finalResultFile(db: Db, storage: Storage, caller: ApiCalle
 /** Content-Disposition with the document name; the ASCII form for old readers, UTF-8 beside it. */
 export function attachmentHeader(name: string) {
   const ascii = name.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
-  return `attachment; filename="${ascii}.pdf"; filename*=UTF-8''${encodeURIComponent(`${name}.pdf`)}`;
+  // RFC 5987: encodeURIComponent leaves ' ( ) * as they are (review L5)
+  const encoded = encodeURIComponent(`${name}.pdf`).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${ascii}.pdf"; filename*=UTF-8''${encoded}`;
 }

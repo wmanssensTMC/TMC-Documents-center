@@ -94,6 +94,16 @@ export async function createJobs(db: Db, storage: Storage, actor: Actor, raws: J
       if (p.apiJobId) {
         const req = await assertRequestOpen(tx, p.apiJobId, { route: p.route });
         if (req.entity !== p.entity) throw new JobError(`this request is for entity ${req.entity}`);
+        // the document TMC Logistics handed over gives one run only: checked under the request's row
+        // lock, so a double click or the hand-off racing a person files one (security review M1)
+        if (req.supplierFile?.key === p.supplierFile.key) {
+          const [used] = await tx
+            .select({ id: jobs.id })
+            .from(jobs)
+            .where(and(eq(jobs.apiJobId, req.id), sql`${jobs.supplierFile}->>'key' = ${p.supplierFile.key}`))
+            .limit(1);
+          if (used) throw new JobError("this document was already sent to the neutralizer");
+        }
       }
       const [row] = await tx
         .insert(jobs)

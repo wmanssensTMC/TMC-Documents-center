@@ -192,6 +192,33 @@ describe("PUT /jobs/{id}/supplier-document (15.1)", () => {
     await claimNextJob(db);
   });
 
+  it("the handed-over document gives one run only: a second start is refused (security review M1)", async () => {
+    const { job } = await create({ supplierName: SUPPLIER });
+    await put(job.jobId, PDF); // starts the run
+    const [req] = await db.select().from(schema.apiJobs).where(eq(schema.apiJobs.id, job.jobId));
+    await expect(startEngine(db, storage, { email: "sigber@transmare.com", name: "Sigi", role: "user" }, req, SUPPLIER)).rejects.toThrow(/already sent/);
+    expect(await db.select().from(schema.jobs).where(eq(schema.jobs.apiJobId, job.jobId))).toHaveLength(1);
+    await claimNextJob(db);
+  });
+
+  it("after a person's run gave nothing, a hand-off without a name still waits for the name and can start (review M3)", async () => {
+    const { job } = await create();
+    const key0 = newUploadKey("input");
+    files.set(key0, PDF);
+    const { createJobs } = await import("@/lib/jobs");
+    await createJobs(db, storage, { email: "sigber@transmare.com", name: "Sigi", role: "user" }, [
+      { route: "coa", entity: "TMC", supplierName: SUPPLIER, supplierFile: { key: key0, filename: "coa.pdf" }, apiJobId: job.jobId },
+    ]);
+    const run = (await claimNextJob(db))!;
+    await saveDrafts(db, run, [], 0, "nothing usable"); // no draft: back to waiting for a supplier document
+    const out = await (await put(job.jobId, PDF)).json();
+    expect(out).toMatchObject({ state: "waiting-input", problem: PROBLEM.supplierName });
+    const [req] = await db.select().from(schema.apiJobs).where(eq(schema.apiJobs.id, job.jobId));
+    await startEngine(db, storage, { email: "sigber@transmare.com", name: "Sigi", role: "user" }, req, SUPPLIER);
+    expect(await db.select().from(schema.jobs).where(eq(schema.jobs.apiJobId, job.jobId))).toHaveLength(2);
+    await claimNextJob(db);
+  });
+
   it("replay: same key + same bytes = 200 same answer; same key + other bytes = 409; another key = 409", async () => {
     const { job } = await create();
     const k = randomUUID();
@@ -272,7 +299,7 @@ describe("GET /jobs/{id}/results/{documentId}/file (15.3)", () => {
     expect(JSON.stringify(results)).not.toMatch(/Acme|lot 7/);
   });
 
-  it("not Final (To check, Superseded) = 409; no X-Requested-By = 422; another job's document or client = 404; too large = 409", async () => {
+  it("not Final (To check, Superseded) = 409; no X-Requested-By = 422; another job's document or client = 404; too large = 413", async () => {
     const { job } = await create({ supplierName: SUPPLIER });
     await put(job.jobId, PDF);
     const { doc } = await finalOf(job.jobId);
@@ -282,7 +309,7 @@ describe("GET /jobs/{id}/results/{documentId}/file (15.3)", () => {
     expect((await get(other.job.jobId, doc.id)).status).toBe(404);
     expect((await get(job.jobId, randomUUID())).status).toBe(404);
     files.set(doc.pdfKey, new Uint8Array(5 * 1024 * 1024).fill(0x25));
-    expect(await code(await get(job.jobId, doc.id))).toBe("file_too_large"); // over the 4 MB platform limit
+    expect(await code(await get(job.jobId, doc.id))).toBe("too_large_for_link"); // over the 4 MB platform limit (413)
     for (const status of ["To check", "Superseded"] as const) {
       await db.update(schema.documents).set({ status, ...(status === "To check" ? { version: null } : {}) }).where(eq(schema.documents.id, doc.id));
       expect(await code(await get(job.jobId, doc.id))).toBe("not_final");

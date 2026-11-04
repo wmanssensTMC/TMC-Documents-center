@@ -99,7 +99,16 @@ export async function handOverSupplierDocument(db: Db, storage: Storage, caller:
     });
     return updated;
   });
-  if (!stored) throw new ApiError("not_waiting_for_input");
+  if (!stored) {
+    // the same hand-off sent twice at once: the other one stored it, so this is a replay (review L2)
+    const [now] = await db.select().from(apiJobs).where(eq(apiJobs.id, row.id));
+    if (now?.supplierFile && now.supplierFileKey === key.toLowerCase() && now.supplierFile.sha256 === sha256) {
+      return { body: view(await current(db, now), now.supplierFile), created: false };
+    }
+    // a cancel or another hand-off came first: this file stays stored but unused (never deleted); key only
+    console.warn("api v1.1: hand-off refused after storing; unused file", file.key);
+    throw new ApiError("not_waiting_for_input");
+  }
   if (stored.supplierName) {
     try {
       await startEngine(db, storage, { email: stored.createdBy, name: caller.client, role: "user" }, stored, stored.supplierName);

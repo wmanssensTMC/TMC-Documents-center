@@ -112,6 +112,10 @@ export const jobs = pgTable(
     index("jobs_state_created").on(t.state, t.createdAt),
     index("jobs_created_by").on(t.createdBy, t.createdAt),
     index("jobs_api_job").on(t.apiJobId),
+    // API v1.1: one run per supplier file of a request (the handed-over one is used once, review M1).
+    uniqueIndex("jobs_one_run_per_api_file")
+      .on(t.apiJobId, sql`(${t.supplierFile}->>'key')`)
+      .where(sql`${t.apiJobId} IS NOT NULL AND ${t.kind} = 'neutralise'`),
     // One open finalise per document at a time (review L3).
     uniqueIndex("jobs_one_open_finalise")
       .on(t.documentId)

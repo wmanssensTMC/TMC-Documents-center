@@ -82,7 +82,9 @@ export async function readJson(req: Request): Promise<unknown> {
  */
 export function platformMaxBytes(): number {
   const mb = Number(process.env.DC_API_MAX_BODY_MB ?? 4);
-  return Math.floor((Number.isFinite(mb) && mb > 0 ? Math.min(mb, 100) : 4) * 1024 * 1024);
+  // on Vercel a higher setting could never work: clamped, whatever is set (review L4)
+  const ceiling = process.env.VERCEL ? 4 : 100;
+  return Math.floor((Number.isFinite(mb) && mb > 0 ? Math.min(mb, ceiling) : 4) * 1024 * 1024);
 }
 
 /**
@@ -94,7 +96,8 @@ export async function readBytes(req: Request, max: number): Promise<Uint8Array> 
   if (!header || !/^\d{1,12}$/.test(header) || Number(header) < 1) throw new ApiError("length_required");
   const length = Number(header);
   if (length > max) throw new ApiError("payload_too_large");
-  const out = new Uint8Array(length);
+  // memory grows with what really arrives, never with what the header claims (review L4)
+  const chunks: Uint8Array[] = [];
   let size = 0;
   if (req.body) {
     const reader = req.body.getReader();
@@ -105,12 +108,12 @@ export async function readBytes(req: Request, max: number): Promise<Uint8Array> 
         await reader.cancel();
         throw new ApiError("payload_too_large");
       }
-      out.set(value, size);
+      chunks.push(value);
       size += value.length;
     }
   }
   if (size !== length) throw new ApiError("invalid_payload", ["Content-Length"]);
-  return out;
+  return new Uint8Array(Buffer.concat(chunks));
 }
 
 /** Supplier document hand-offs per key and minute (contract 15.1), on top of the write limit. */

@@ -1,5 +1,5 @@
 {
-  "id": "55d1772c-6014-4ea4-a58e-0fe499981067",
+  "id": "7d31a84c-1023-4598-ad60-f49683b96a61",
   "prevId": "99a1e63c-7590-4959-ac87-26cde99501fb",
   "version": "7",
   "dialect": "postgresql",
@@ -1167,6 +1167,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "jobs_one_run_per_api_file": {
+          "name": "jobs_one_run_per_api_file",
+          "columns": [
+            {
+              "expression": "api_job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"supplier_file\"->>'key')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"jobs\".\"api_job_id\" IS NOT NULL AND \"jobs\".\"kind\" = 'neutralise'",
           "concurrently": false,
           "method": "btree",
           "with": {}

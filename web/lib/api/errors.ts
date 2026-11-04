@@ -13,9 +13,9 @@ export const API_ERRORS = {
   // v1.1 (contract section 15.4)
   not_waiting_for_input: [409, "This job does not wait for a supplier document."],
   not_final: [409, "This document is not Final."],
-  file_too_large: [409, "This file is larger than the Document Center can send here."],
   length_required: [411, "The Content-Length header is required."],
   payload_too_large: [413, "The request body is too large."],
+  too_large_for_link: [413, "This file is too large for the link; download it from the Document Center."],
   unsupported_type: [415, "This file type is not accepted."],
   invalid_payload: [422, "The request does not match the contract."],
   unknown_field: [422, "The request has a field the contract does not allow."],

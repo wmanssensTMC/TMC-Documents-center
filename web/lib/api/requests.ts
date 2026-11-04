@@ -108,13 +108,18 @@ export function canonicalJson(v: unknown): string {
 
 // ---------- state rollup (contract section 7, edge cases Willem 27/10) ----------
 
-type Child = { id: string; apiJobId: string | null; state: string; createdAt: Date; startedAt: Date | null; finishedAt: Date | null };
+type Child = { id: string; apiJobId: string | null; state: string; createdAt: Date; startedAt: Date | null; finishedAt: Date | null; supplierKey?: string | null };
 type Result = { id: string; jobId: string | null; status: DocStatus; createdAt: Date; approvedAt: Date | null; version: number | null };
 
 /** A Final, or a former Final: a Superseded with a version. A draft replaced by "Run again" is
  * Superseded without a version and never counts (security review H1, 02/11/2026). */
 export const wasFinal = (d: { status: DocStatus; version: number | null }) => d.status === "Final" || (d.status === "Superseded" && d.version !== null);
-export type Rollup = { state: ApiJobState; problem: string | null; resultCount: number; changedAt: Date };
+/** `handOffPending`: a document handed over through the API that no run was made from yet (internal, never answered). */
+export type Rollup = { state: ApiJobState; problem: string | null; resultCount: number; changedAt: Date; handOffPending: boolean };
+
+/** A run was made from the handed-over document (one check for rollup, page and action; review M3). */
+export const handOffUsed = (req: Partial<Pick<ApiJob, "supplierFile">>, children: Pick<Child, "supplierKey">[]) =>
+  !!req.supplierFile && children.some((c) => c.supplierKey === req.supplierFile!.key);
 
 /**
  * cancelled > a run queued or running (in-progress) > a draft waiting for a check (to-check) >
@@ -130,7 +135,8 @@ export function rollup(
 ): Rollup {
   const times = [req.createdAt, req.cancelledAt, lastAudit, ...children.flatMap((c) => [c.createdAt, c.startedAt, c.finishedAt]), ...results.flatMap((d) => [d.createdAt, d.approvedAt])];
   const changedAt = new Date(Math.max(...times.filter((t): t is Date => !!t).map((t) => t.getTime())));
-  const base = { resultCount: results.length, changedAt };
+  const handOffPending = !!req.supplierFile && !handOffUsed(req, children);
+  const base = { resultCount: results.length, changedAt, handOffPending };
   if (req.cancelledAt) return { ...base, state: "cancelled", problem: null };
   if (children.some((c) => c.state === "queued" || c.state === "running")) return { ...base, state: "in-progress", problem: null };
   if (results.some((d) => d.status === "To check" || d.status === "Draft")) return { ...base, state: "to-check", problem: null };
@@ -139,14 +145,22 @@ export function rollup(
   if (latest?.state === "failed") return { ...base, state: "failed", problem: PROBLEM.engine };
   if (req.kind === "label") return { ...base, state: "waiting-input", problem: PROBLEM.label };
   // handed over and not run yet: waits for the supplier name, or (name known) for a person to start it
-  if (req.supplierFile && children.length === 0) return { ...base, state: "waiting-input", problem: req.supplierName ? null : PROBLEM.supplierName };
+  if (handOffPending) return { ...base, state: "waiting-input", problem: req.supplierName ? null : PROBLEM.supplierName };
   return { ...base, state: "waiting-input", problem: PROBLEM.supplierDocument };
 }
 
 async function childrenAndResults(db: Db | Tx, apiJobIds: string[]) {
   if (!apiJobIds.length) return { children: [] as Child[], results: [] as (Result & { type: string; name: string; version: number | null; batch: string | null; pdfKey: string | null })[], audit: new Map<string, Date>() };
   const children = await db
-    .select({ id: jobs.id, apiJobId: jobs.apiJobId, state: jobs.state, createdAt: jobs.createdAt, startedAt: jobs.startedAt, finishedAt: jobs.finishedAt })
+    .select({
+      id: jobs.id,
+      apiJobId: jobs.apiJobId,
+      state: jobs.state,
+      createdAt: jobs.createdAt,
+      startedAt: jobs.startedAt,
+      finishedAt: jobs.finishedAt,
+      supplierKey: sql<string | null>`${jobs.supplierFile}->>'key'`,
+    })
     .from(jobs)
     .where(inArray(jobs.apiJobId, apiJobIds));
   const results = children.length
