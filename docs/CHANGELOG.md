@@ -1,6 +1,6 @@
 # Changelog
 
-## 04/11/2026 · COA tables: numbered free-text tables and section headings (branch `phase-2p-coa-tables`)
+## 04/11/2026 · COA tables: numbered free-text tables and section headings (branch `phase-2p-coa-tables`, merged 04/11; security review 80/100, fixes applied)
 - Numbered free-text tables ("Sr. TESTS / SPECIFICATIONS / OBSERVATIONS", "1 Description ...", text over several lines; the scanned Methyl Paraben COA) are read by word position, column by column: wrapped lines are joined in their own column, sub-tests ("A. IR absorption", "B.Melting range", after a bullet "Methanol") are their own rows as printed, and a parent test without values becomes a heading above its sub-tests. Only used when the other readings found fewer rows than the numbered tests. A line that cannot be placed for sure (a word over a column edge, or its own name and result under a row that has one) drops its whole row; every row read this way is yellow for a person, and a numbered test without a row keeps "[results table may be incomplete ...]".
 - The provenance gate also reads that table column by column per row, the same way the rows are built (only the source's own words, in reading order).
 - Section headings inside a results table ("Chemical & Physical", "Microbiological", "OTHERS") are kept as one bold row across the TMC table, in their place, never yellow and never counted as a test. Only analysis words count as a heading, so a supplier or lab name in a one-cell row never becomes one (rule 3).
