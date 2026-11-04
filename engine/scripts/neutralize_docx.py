@@ -880,6 +880,8 @@ def split_coa_by_batch(data):
     for fields in page_fields:
         if not fields.get("batch_lot") and not fields.get("results_table"): continue
         merged = dict(base)
+        if fields.get("results_table"):
+            _drop_table_marks(merged)         # the marks belong to the table they were read with (L2)
         merged.update({k: v for k, v in fields.items() if v})
         result.append(merged)
     return result if result else [base]
@@ -914,7 +916,18 @@ def numbered_tests(layout_text):
 # run of the source's own words in one column, in reading order; anything that cannot be placed
 # for sure drops its whole row, and every row read this way is yellow for a person.
 _NUM_HDR_RESULT = {"observations", "observation", "results", "result", "findings"}
-_NUM_STOP = re.compile(r"^\s*(?:remarks?|notes?|prepared|checked|approved|conclusion)\b", re.I)
+# the table ends at the first of these anywhere on a line: the signature block and page furniture
+# below the tests are never part of a row (security review H1, 04/11/2026)
+_NUM_STOP = re.compile(r"\b(?:remarks?|notes?|prepared|checked|approved|conclusion|for\s+and\s+on\s+behalf"
+                       r"|manager|signature|page\s+\d+\s+of)\b", re.I)
+# supplier identity in any cell drops the row, so the gap keeps the table flagged (rule 3, H1)
+_NUM_IDENTITY = re.compile(
+    _IDENTITY_PARAM.pattern
+    + r"|(?<!\w)(?:ltd|limited|pvt|gmbh|inc|llc|s\.a\.?|b\.v\.?|co\.|corp|plot|road|street)(?!\w)"
+    r"|\S+@\S+\.\w+|\bwww\.|https?://|\b(?:tel|phone|fax|mob\w*)\b|\+\d[\d ()/.-]{7,}\d", re.I)
+_NUM_MAX_CONT = 4          # continuation lines one row may take
+_NUM_GAP = 2.5             # a vertical gap this many times the line pitch ends the table
+_numbered_cache = {}
 _NUM_SUB = re.compile(r"^(?:[A-Z]\.|[a-z]\)|\((?:[ivx]+|[a-z])\))")     # "A. IR absorption", "B.Melting"
 _NUM_BULLETS = {"•", "·", "▪", "-", "–", "*"}
 
@@ -942,21 +955,33 @@ def _numbered_columns(line):
 
 
 def _numbered_pass(words):
-    """One pass over the numbered table -> (rows, groups, numbers kept, numbers seen, readings).
+    """One pass over the numbered table -> (rows, groups, numbers kept, numbers seen).
     rows: [param, spec, result, "", ""]; groups: [(row index, parent name)] for a numbered test
-    printed without values above its sub-tests; readings: every column run of every row, kept or
-    dropped (a source reading for the provenance gate, never a row by itself)."""
+    printed without values above its sub-tests. Read once per word list (review L1)."""
+    if not words:
+        return [], [], set(), 0
+    hit = _numbered_cache.get(id(words))
+    if hit and hit[0] is words:
+        return hit[1]
+    result = _numbered_read(words)
+    if len(_numbered_cache) > 16:
+        _numbered_cache.clear()
+    _numbered_cache[id(words)] = (words, result)
+    return result
+
+
+def _numbered_read(words):
     lines = _word_lines(words)
     hdr = next((i for i, l in enumerate(lines) if _numbered_columns(l)), None)
     if hdr is None:
-        return [], [], set(), 0, []
+        return [], [], set(), 0
     cols = _numbered_columns(lines[hdr])
     xp, xs, xr, tol = cols["param"], cols["spec"], cols["result"], 3.0
-    rows, groups, kept, readings = [], [], set(), []
-    state = {"cur": None, "expected": 1, "skip": False, "bullet": False, "parent": None}
+    rows, groups, kept = [], [], set()
+    state = {"cur": None, "expected": 1, "skip": False, "bullet": False, "parent": None, "seen": 0}
 
     def new(number, sub, p, s, r):
-        return {"number": number, "sub": sub, "cells": [p, s, r], "bad": False}
+        return {"number": number, "sub": sub, "cells": [list(p), list(s), list(r)], "bad": False, "cont": 0}
 
     def finish():
         cur = state["cur"]
@@ -964,13 +989,14 @@ def _numbered_pass(words):
         if cur is None:
             return
         texts = [" ".join(w["text"] for w in c) for c in cur["cells"]]
-        readings.extend(t for t in texts if t)
         param, spec, result = texts
-        if cur["bad"] or not param or _IDENTITY_PARAM.search(param):
+        if cur["bad"] or not param or _NUM_IDENTITY.search(" ".join(texts)):
             return
         if not spec and not result:
-            if not cur["sub"]:
-                state["parent"] = (cur["number"], param)   # a heading only if sub-tests follow
+            # a parent test printed without values: a heading above its sub-tests only when it is
+            # an analysis heading; anything else stays out (security review M1)
+            if not cur["sub"] and _group_heading([param]):
+                state["parent"] = (cur["number"], param)
             return
         parent = state["parent"]
         if cur["sub"] and parent and parent[0] == cur["number"]:
@@ -979,10 +1005,26 @@ def _numbered_pass(words):
         rows.append([param, spec, result, "", ""])
         kept.add(cur["number"])
 
+    pitches, prev = [], lines[hdr]
     for line in lines[hdr + 1:]:
         text = " ".join(w["text"] for w in line)
-        if _NUM_STOP.match(text):
+        if _NUM_STOP.search(text):
             break
+        if line[0]["page"] != prev[0]["page"]:
+            # a new page: the open row ends here; page furniture never joins it (security review H1).
+            # The table goes on only where the page repeats the column header.
+            finish()
+            prev = line
+            if _numbered_columns(line):
+                continue
+            state["skip"] = True
+        else:
+            gap = line[0]["top"] - prev[0]["top"]
+            if len(pitches) >= 2 and gap > _NUM_GAP * sorted(pitches)[len(pitches) // 2]:
+                break                         # a blank band: the table is over
+            if gap > 0:
+                pitches.append(gap)
+            prev = line
         num = [w for w in line if w["x1"] <= xp - 2]
         p = [w for w in line if w not in num and w["x0"] < xs - tol]
         s = [w for w in line if w not in num and xs - tol <= w["x0"] < xr - tol]
@@ -994,7 +1036,10 @@ def _numbered_pass(words):
             finish()
             n = int(numtxt.rstrip("."))
             if n != state["expected"]:
-                state["skip"] = True          # out of order: never guess where it belongs
+                # out of order: never guess where it belongs; it counts as a test without a row,
+                # so the table stays flagged (testing review, 04/11/2026)
+                state["seen"] = max(state["seen"], n)
+                state["skip"] = True
                 continue
             state.update(expected=n + 1, skip=False, bullet=False, cur=new(n, False, p, s, r))
             if straddles:
@@ -1014,36 +1059,47 @@ def _numbered_pass(words):
             if straddles:
                 state["cur"]["bad"] = True
             continue
-        if straddles or (p and r and cur["cells"][2]):
-            cur["bad"] = True                 # its own name and result under a row that has one
-            state["skip"] = True
-            readings.extend(" ".join(w["text"] for w in c) for c in (p, s, r) if c)
+        cur["cont"] += 1
+        if straddles or (p and r and cur["cells"][2]) or cur["cont"] > _NUM_MAX_CONT:
+            cur["bad"] = True                 # its own name and result under a row that has one,
+            state["skip"] = True              # or more wrapped lines than a test cell holds
             continue
         for i, c in enumerate((p, s, r)):
-            cur["cells"][i] = cur["cells"][i] + c
+            cur["cells"][i].extend(c)
     finish()
-    return rows, groups, kept, state["expected"] - 1, readings
+    return rows, groups, kept, max(state["expected"] - 1, state["seen"])
+
+
+_TABLE_MARKS = ("_yellow_rows", "_numbered_gap", "_groups", "_groups_n")
+
+
+def _drop_table_marks(fields):
+    """Marks of a results table that is being replaced (security review L2)."""
+    for k in _TABLE_MARKS:
+        fields.pop(k, None)
 
 
 def numbered_free_text_rows(words):
     """-> (rows, groups, gap): gap is True when a numbered test has no row (dropped or unread)."""
-    rows, groups, kept, seen, _ = _numbered_pass(words)
+    rows, groups, kept, seen = _numbered_pass(words)
     return rows, groups, bool(seen) and len(kept) < seen
 
 
 def numbered_column_readings(words):
-    """The numbered table's columns read top to bottom per row, for the provenance gate."""
-    return _numbered_pass(words)[4]
+    """The cells of the rows the numbered reader kept, as the provenance gate reads them: never a
+    dropped row's text (security review M2)."""
+    rows, groups, _kept, _seen = _numbered_pass(words)
+    return [c for r in rows for c in r[:3] if c] + [g for _i, g in groups]
 
 
 # A section heading inside a results table ("Chemical & Physical", "Microbiological", "OTHERS"):
 # only these words, so a supplier or lab name in a one-cell row never becomes a heading (rule 3).
+# Bare header words and test names ("Results", "Assay", "Identification") are not in it: alone in a
+# row they stay dropped as before, never a heading (security review L3, 04/11/2026).
 _GROUP_WORDS = {"chemical", "physical", "physico", "physicochemical", "physico-chemical", "microbiological",
                 "microbiology", "microbial", "others", "other", "general", "organoleptic", "sensory",
-                "appearance", "identification", "impurities", "heavy", "metals", "residual", "solvents",
-                "elemental", "additional", "analytical", "tests", "test", "properties", "parameters",
-                "data", "analysis", "analyses", "characteristics", "and", "results", "purity", "assay",
-                "packaging", "&", "/"}
+                "impurities", "heavy", "metals", "residual", "solvents", "elemental", "additional",
+                "analytical", "properties", "analyses", "characteristics", "and", "packaging", "&", "/"}
 
 
 def _group_heading(cells):
@@ -1168,6 +1224,7 @@ def column_batches(data, path):
                 yellow.add(len(rows))
                 rows.append([label, "", DOUBT, unit, ""])
         f["results_table"] = rows
+        _drop_table_marks(f)                  # read from the side-by-side columns, not those (L2)
         f["_yellow_results"] = yellow
         batches.append(f)
     return batches, held, notes, {lot: [r for r in rs if r] for lot, rs in readings.items()}
@@ -1369,8 +1426,11 @@ def build_docx(coa_fields, ref_fields, product_name, output_path, entity=None, r
             # the scan readings did not agree on this value: a person checks it
             _yellow_cell(new_row.cells[3], result or DOUBT)
         if n in read_rows:
-            # read from a numbered free-text table by word position: a person checks the row
-            _yellow_cell(new_row.cells[0], param)
+            # read from a numbered free-text table by word position: a person checks every value of
+            # the row, not only its name (security review M3)
+            for i, val in enumerate(values):
+                if val and i < len(new_row.cells):
+                    _yellow_cell(new_row.cells[i], val)
 
     ai_rows = ai.rows if ai else []
     for param, spec, result, uom, method in ai_rows:
@@ -1407,9 +1467,9 @@ def build_docx(coa_fields, ref_fields, product_name, output_path, entity=None, r
 # ═══════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════
-def _source_texts(src, readings, coa_fields):
+def _source_texts(src, readings, coa_fields, numbered=True):
     """Everything the source of one COA says, as the provenance gate reads it; the AI reader's
-    check uses the very same texts (27/10/2026)."""
+    check uses the same texts (27/10/2026) without the numbered-table readings (numbered=False)."""
     rows = [row for t in (src.get("tables") or []) for row in (t.get("rows") or []) if row]
     texts = [src.get("full_text", "")] + [p.get("text", "") for p in src.get("pages", [])]
     # the layout reading of the same file: test rows are read from it (20/10/2026)
@@ -1417,8 +1477,10 @@ def _source_texts(src, readings, coa_fields):
     texts += [" ".join(c for c in row if c) for row in rows]
     texts += [c.replace("\n", " ") for row in rows for c in row if c]
     texts += readings.get((coa_fields.get("_source"), coa_fields.get("_lot")), [])
-    # a numbered free-text table read column by column, as its rows are built (04/11/2026)
-    texts += numbered_column_readings(src.get("words"))
+    # a numbered free-text table read column by column, as its rows are built (04/11/2026): only
+    # when this COA's table came from it, and only the rows kept (security review M2)
+    if numbered and coa_fields.get("_yellow_rows"):
+        texts += numbered_column_readings(src.get("words"))
     return texts + [close_hyphens(t) for t in texts]
 
 
@@ -1630,7 +1692,9 @@ def main():
                                     {"lot": coa_fields.get("batch_lot"), "fabricagedatum": coa_fields.get("manufacture_date"),
                                      "vervaldatum": coa_fields.get("expiry_date")})
         if ai_provider is not None and needs and coa_fields.get("_source"):
-            ai = ai_reader.propose(coa_fields["_source"], needs, src_texts, coa_fields.get("results_table") or [],
+            # never the numbered-table readings: they are built by the reader itself (review M2)
+            ai = ai_reader.propose(coa_fields["_source"], needs, _source_texts(src, readings, coa_fields, numbered=False),
+                                   coa_fields.get("results_table") or [],
                                    ai_provider, ai_budget, ai_forbid, helpers=sys.modules[__name__],
                                    on_usage=note_ai_usage)
             if ai.log:

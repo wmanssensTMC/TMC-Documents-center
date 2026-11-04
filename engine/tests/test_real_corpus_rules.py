@@ -285,7 +285,9 @@ check("numbered table: one row per test, wrapped lines joined in their own colum
       rows_n[0][:3] == ["Description", "White powder or crystals.", "White powder."], rows_n[:1])
 check("numbered table: sub-tests 'A.', 'B.' and after a bullet are their own rows, as printed",
       ["A. IR", "B.Melting point", "Methanol"] == [p for p in params if p in ("A. IR", "B.Melting point", "Methanol")], params)
-check("numbered table: a parent without values is a heading above its sub-tests", groups_n == [(1, "Identification")], groups_n)
+# security review M1/L3 (04/11/2026): "Identification" alone is a test name, not an analysis heading
+check("numbered table: a parent test name without values is no heading; its sub-tests stay rows",
+      groups_n == [] and "A. IR" in params, groups_n)
 check("numbered table: a line with its own name and result under a row that has one drops that row",
       not any(p.startswith("Related") or p == "HPLC" for p in params) and "Assay" in params, params)
 check("numbered table: a numbered test without a row keeps the table flagged", gap_n is True)
@@ -436,6 +438,65 @@ with tempfile.TemporaryDirectory() as _d:
     check("a plain table (word positions, no numbered run) gets no new marks: no yellow, no heading row",
           yellow_runs(_pl) == [] and not any(k in _pf for k in ("_yellow_rows", "_numbered_gap", "_groups"))
           and all(len({id(c._tc) for c in r.cells}) > 1 for r in _prow), (yellow_runs(_pl), _pf))
+
+# security and testing review of the numbered reader (04/11/2026): the table ends where the tests
+# end, supplier identity in any cell drops the row, every cell of a read row is yellow
+_pg = (_HDR + _line(124, "1", "Description", "White", "White") + _line(140, "2", "pH", "5-7", "6.1") + _line(156, "3", "Assay", "98.0% to")
+       + _line(40, "", "", "Example Pharma Ltd", page=2) + _line(60, "", "", "102.0%", "99.7%", page=2))
+check("numbered table: a page-2 letterhead never joins a row",
+      not any("Example" in c for r in N.numbered_free_text_rows(_pg)[0] for c in r), N.numbered_free_text_rows(_pg)[0])
+_sig = (_HDR + _line(124, "1", "Description", "White", "White") + _line(140, "2", "pH", "5-7", "6.1")
+        + _line(156, "3", "Assay", "98.0% to 102.0%", "99.7%") + _line(168, "", "", "", "For ACME Chemicals QC Manager"))
+_rs, _gs, _xs = N.numbered_free_text_rows(_sig)
+check("numbered table: a signature block in the result column never joins the last row",
+      not any("ACME" in c or "Manager" in c for r in _rs for c in r) and [r[0] for r in _rs][:2] == ["Description", "pH"], _rs)
+_tel = (_HDR + _line(124, "1", "Description", "White", "White") + _line(140, "2", "pH", "5-7", "6.1")
+        + _line(156, "3", "Assay", "98.0% to 102.0%", "99.7%") + _line(168, "", "", "Tel +91 22 1234 5678", "acme@example.in"))
+_rt, _gt, _xt = N.numbered_free_text_rows(_tel)
+check("numbered table: a row that takes a phone number or e-mail is dropped and the table stays flagged",
+      not any("Tel" in c or "@" in c for r in _rt for c in r) and "Assay" not in [r[0] for r in _rt] and _xt is True, (_rt, _xt))
+_co = (_HDR + _line(124, "1", "Description", "White", "White") + _line(140, "2", "pH", "5-7", "6.1")
+       + _line(156, "3", "Assay", "Example Pharma Pvt Ltd", "99.7%"))
+_rc, _gc, _xc = N.numbered_free_text_rows(_co)
+check("numbered table: a company form (Pvt Ltd) in a spec cell drops the row", "Assay" not in [r[0] for r in _rc] and _xc is True, _rc)
+_oo = (_HDR + _line(124, "1", "Description", "White", "White") + _line(140, "2", "pH", "5-7", "6.1")
+       + _line(156, "3", "Assay", "98-102", "99.1") + _line(172, "5", "Water", "NMT 1%", "0.2%") + _line(188, "6", "Ash", "NMT 0.1%", "0.05%"))
+check("numbered table: numbers 1, 2, 3, 5, 6: the skipped tests keep the table flagged", N.numbered_free_text_rows(_oo)[2] is True)
+_long = (_HDR + _line(124, "1", "Description", "White", "White") + _line(140, "2", "pH", "5-7", "6.1")
+         + _line(156, "3", "Assay", "98.0%", "99.7%") + sum((_line(166 + 10 * i, "", "", f"w{i}", "") for i in range(5)), []))
+_rl5 = N.numbered_free_text_rows(_long)
+check("numbered table: more than 4 wrapped lines drop the row", "Assay" not in [r[0] for r in _rl5[0]] and _rl5[2] is True, _rl5)
+_gap = (_HDR + _line(124, "1", "Description", "White", "White") + _line(136, "2", "pH", "5-7", "6.1")
+        + _line(148, "3", "Assay", "98.0%", "99.7%") + _line(260, "", "", "Distributed by Example", ""))
+check("numbered table: a blank band ends the table", not any("Example" in c for r in N.numbered_free_text_rows(_gap)[0] for c in r))
+_mic = (_HDR + _line(124, "1", "Description", "White", "White") + _line(140, "2", "Microbiological")
+        + _line(156, "", "A. TAMC", "NMT 1000", "<10") + _line(172, "3", "Assay", "98-102", "99.1"))
+check("numbered table: an analysis-word parent ('Microbiological') is a heading above its sub-tests",
+      N.numbered_free_text_rows(_mic)[1] == [(1, "Microbiological")], N.numbered_free_text_rows(_mic)[1])
+check("an analysis word that is a test name ('Assay', 'Results') alone is no heading",
+      N._group_heading(["Assay"]) is None and N._group_heading(["Results"]) is None and N._group_heading(["Identification"]) is None
+      and N._group_heading(["Chemical & Physical"]) == "Chemical & Physical")
+# M2: the gate reads only the rows kept, and only when the numbered reader made the table
+_keptr = N.numbered_column_readings(_tel)
+check("gate: numbered readings hold only the cells of kept rows, never a dropped row's text",
+      not any("Tel" in t or "@" in t or "Assay" in t for t in _keptr) and "Description" in _keptr, _keptr)
+_src_n = {"full_text": "", "pages": [], "layout_text": "", "tables": [], "words": _tel}
+check("gate: no numbered readings when the table did not come from the numbered reader",
+      "Description" not in N._source_texts(_src_n, {}, {}) and "Description" in N._source_texts(_src_n, {}, {"_yellow_rows": {0}})
+      and "Description" not in N._source_texts(_src_n, {}, {"_yellow_rows": {0}}, numbered=False))
+# M3: every filled cell of a read row is yellow
+with tempfile.TemporaryDirectory() as _d:
+    _p3 = str(Path(_d) / "m3.docx")
+    N.build_docx({"batch_lot": "L-1", "manufacture_date": "01.2026", "expiry_date": "01.2028",
+                  "results_table": [["Assay", "98.0% to 102.0%", "99.7%", "", ""]], "_yellow_rows": {0}},
+                 {"doc_ref": "840.S0999"}, "Sodium Benzoate", _p3)
+    _y3 = yellow_runs(_p3)
+    check("numbered row: name, specification and result are all yellow", all(v in _y3 for v in ("Assay", "99.7%")) and
+          any("98.0" in v or "102.0" in v for v in _y3), _y3)
+# L2: a replaced results table never keeps the marks of the table it replaced
+_mk = {"results_table": [["a", "", "1", "", ""]], "_yellow_rows": {0}, "_numbered_gap": True, "_groups": [(0, "X")], "_groups_n": 1}
+N._drop_table_marks(_mk)
+check("marks of a replaced table are dropped", not any(k in _mk for k in N._TABLE_MARKS) and "results_table" in _mk)
 
 print(f"\n{ok} passed, {bad} failed")
 sys.exit(1 if bad else 0)
