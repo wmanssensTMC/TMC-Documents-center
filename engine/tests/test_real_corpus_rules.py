@@ -341,6 +341,101 @@ with tempfile.TemporaryDirectory() as _d:
                                           "01.2026", "01.2028"], template_path=str(N.TEMPLATE_DOC)),
           provenance.check(_q, _src, ["Sodium Benzoate", "840.S0999", "L-1", "Production date", N.INCOMPLETE,
                                       "01.2026", "01.2028"], template_path=str(N.TEMPLATE_DOC)))
+    _r = [list(r) for r in rows_n]
+    _r[[r[0] for r in _r].index("Assay")][2] = "99.9%"                  # a value the source never printed
+    _z = str(Path(_d) / "invented.docx")
+    N.build_docx({"batch_lot": "L-1", "manufacture_date": "01.2026", "expiry_date": "01.2028", "results_table": _r,
+                  "_yellow_rows": set(range(len(_r))), "_groups": groups_n, "_groups_n": len(_r)},
+                 {"doc_ref": "840.S0999"}, "Sodium Benzoate", _z)
+    _v = provenance.check(_z, _src, ["Sodium Benzoate", "840.S0999", "L-1", "Production date",
+                                     "01.2026", "01.2028"], template_path=str(N.TEMPLATE_DOC))
+    check("the gate still refuses a value the numbered table never printed", any("99.9" in str(v) for v in _v), _v)
+
+# 04/11/2026 review: the numbered reader's edges, synthetic lines in the same columns as NUM
+_HDR = [w for w in NUM if w["top"] == 100]
+def _line(top, n, p="", s="", r="", page=1):
+    return _words(top, *[(x, t) for x, t in ((36, n), (65, p), (201, s), (430, r)) if t], page=page)
+_four = (_HDR + _line(124, "1", "Description", "White powder", "White powder") + _line(140, "2", "pH", "5-7", "6.1")
+         + _line(156, "3", "Assay", "98-102", "99.1") + _line(172, "4", "Water", "NMT 1%", "0.2%"))
+_lay4 = "Sr. TESTS\n1 Description White powder\n2 pH 5-7 6.1\n3 Assay 98-102 99.1\n4 Water NMT 1% 0.2%"
+_hdr3 = ["Test", "Specification", "Result"]
+_part = {"full_text": _lay4, "layout_text": _lay4, "words": _four,
+         "tables": [{"page": 1, "rows": [_hdr3, ["Description", "White powder", "White powder"]]}]}
+_fp = N.parse_coa_fields(_part)
+check("numbered table: used when the table reading found fewer rows, and every row is yellow",
+      [r[0] for r in _fp["results_table"]] == ["Description", "pH", "Assay", "Water"]
+      and _fp.get("_yellow_rows") == {0, 1, 2, 3} and _fp.get("_numbered_gap") is False, _fp)
+_full = dict(_part, tables=[{"page": 1, "rows": [_hdr3, ["Description", "White powder", "White powder"],
+                                                 ["pH", "5-7", "6.1"], ["Assay", "98-102", "99.1"], ["Water", "NMT 1%", "0.2%"]]}])
+_ff = N.parse_coa_fields(_full)
+check("numbered table: not used when the table reading has every numbered test (no yellow rows)",
+      len(_ff["results_table"]) == 4 and "_yellow_rows" not in _ff and "_numbered_gap" not in _ff, _ff)
+_fw = N.parse_coa_fields({k: v for k, v in _part.items() if k != "words"})
+check("numbered table: without word positions (Word file, scan) the table reading stays as it was",
+      len(_fw["results_table"]) == 1 and "_yellow_rows" not in _fw, _fw)
+_fl = N.parse_coa_fields(dict(_part, words=_HDR + _line(124, "1", "Description", "White powder", "White powder")))
+check("numbered table: kept only when it reads more rows than the table did",
+      len(_fl["results_table"]) == 1 and "_yellow_rows" not in _fl, _fl)
+_ooo = (_HDR + _line(124, "1", "Description", "White", "White") + _line(140, "2", "pH", "5-7", "6.1")
+        + _line(156, "4", "Assay", "98-102", "99") + _line(172, "5", "Water", "NMT 1%", "0.2%"))
+check("numbered table: a number out of order is skipped with what follows, never placed",
+      [r[0] for r in N.numbered_free_text_rows(_ooo)[0]] == ["Description", "pH"], N.numbered_free_text_rows(_ooo))
+_lone = (_HDR + _line(124, "1", "Description", "White", "White") + _line(140, "2", "Identification")
+         + _line(156, "3", "Assay", "98-102", "99"))
+_rl, _gl, _xl = N.numbered_free_text_rows(_lone)
+check("numbered table: a parent without values and without sub-tests is no heading and no row, and flags the gap",
+      _gl == [] and "Identification" not in [r[0] for r in _rl] and _xl is True, (_rl, _gl, _xl))
+_own = (_HDR + _line(124, "1", "Description", "White", "White") + _line(140, "2", "Identification", "Positive", "Positive")
+        + _line(156, "", "A. IR", "Conforms", "Conforms") + _line(172, "3", "Assay", "98", "99"))
+_ro, _go, _ = N.numbered_free_text_rows(_own)
+check("numbered table: a parent with its own values stays a test row, never a heading",
+      _go == [] and [r[0] for r in _ro] == ["Description", "Identification", "A. IR", "Assay"], (_ro, _go))
+_who = (_HDR + _line(124, "1", "Description", "White", "White")
+        + _line(140, "2", "Manufacturer", "Example Pharma Ltd", "Example Pharma Ltd") + _line(156, "3", "Assay", "98-102", "99"))
+_rw, _, _xw = N.numbered_free_text_rows(_who)
+check("numbered table: a supplier line in the test column is never a row (rule 3), and flags the gap",
+      not any("Example" in c for r in _rw for c in r) and _xw is True, _rw)
+_uni = _HDR + _line(124, "1", "Lead", "≤ 0.5 µg/g", "< 0,1 µg/g") + _line(140, "2", "pH", "5-7", "6.1")
+check("numbered table: unicode limits are kept exactly as printed",
+      N.numbered_free_text_rows(_uni)[0][0][:3] == ["Lead", "≤ 0.5 µg/g", "< 0,1 µg/g"], N.numbered_free_text_rows(_uni))
+check("numbered table: no or empty word positions give nothing and do not fail",
+      N.numbered_free_text_rows(None) == ([], [], False) and N.numbered_free_text_rows([]) == ([], [], False)
+      and N.numbered_column_readings(None) == [])
+check("the gate reads a source without word positions as before",
+      "x" in N._source_texts({"full_text": "x"}, {}, {}))
+
+# headings: edges and abuse
+check("a heading over 40 characters or 5 words, markup, or only empty cells is no heading",
+      N._group_heading(["Physical " * 6]) is None and N._group_heading(["Tests & Results & Data & Analysis"]) is None
+      and N._group_heading(["Chemical<script>"]) is None and N._group_heading(["", None, "  "]) is None)
+check("a heading next to empty (None) cells is still a heading", N._group_heading([None, "Microbiological", ""]) == "Microbiological")
+_hs = N.parse_coa_fields({"full_text": "", "layout_text": "", "tables": [{"page": 1, "rows": [
+    ["Microbiological", "", ""], ["Microbiological", "", ""], _hdr3, ["TAMC", "<=100", "<10"]]}]})
+check("a heading repeated in its place is kept once", _hs.get("_groups") == [(0, "Microbiological")], _hs.get("_groups"))
+_he = N.parse_coa_fields({"full_text": "", "layout_text": "", "tables": [{"page": 1, "rows": [["Microbiological", "", ""], _hdr3]}]})
+check("a heading above no tests gives no headings", "_groups" not in _he, _he)
+_hn = N.parse_coa_fields(dict(_part, tables=[{"page": 1, "rows": [["Chemical", "", ""], _hdr3,
+                                                                   ["Description", "White powder", "White powder"]]}]))
+check("a table heading is dropped when the numbered reading replaces its rows",
+      len(_hn["results_table"]) == 4 and "_groups" not in _hn, _hn)
+_hx = N.parse_coa_fields({"full_text": "", "layout_text": "", "tables": [{"page": 1, "rows": [
+    ["Example Pharma Ltd", "", ""], _hdr3, ["pH", "5-7", "6.1"]]}]})
+check("a supplier name above the column names is no heading and no row",
+      "_groups" not in _hx and [r[0] for r in _hx["results_table"]] == ["pH"], _hx)
+with tempfile.TemporaryDirectory() as _d:
+    _m = str(Path(_d) / "mismatch.docx")
+    N.build_docx({"batch_lot": "L-1", "results_table": [["pH", "5-7", "6.1", "", ""]],
+                  "_groups": [(0, "Microbiological")], "_groups_n": 2}, {"doc_ref": "840.S0999"}, "Sodium Benzoate", _m)
+    _mt = [r.cells[0].text for r in _docx.Document(_m).tables[1].rows]
+    check("headings are left out when the rows changed after reading (_groups_n differs)", "Microbiological" not in _mt, _mt)
+    _pl = str(Path(_d) / "plain.docx")
+    _pf = N.parse_coa_fields({"full_text": "", "layout_text": "", "words": _HDR, "tables": [{"page": 1, "rows": [_hdr3, ["pH", "5-7", "6.1"]]}]})
+    N.build_docx(dict(_pf, batch_lot="L-1", manufacture_date="01.2026", expiry_date="01.2028"),
+                 {"doc_ref": "840.S0999"}, "Sodium Benzoate", _pl)
+    _prow = _docx.Document(_pl).tables[1].rows
+    check("a plain table (word positions, no numbered run) gets no new marks: no yellow, no heading row",
+          yellow_runs(_pl) == [] and not any(k in _pf for k in ("_yellow_rows", "_numbered_gap", "_groups"))
+          and all(len({id(c._tc) for c in r.cells}) > 1 for r in _prow), (yellow_runs(_pl), _pf))
 
 print(f"\n{ok} passed, {bad} failed")
 sys.exit(1 if bad else 0)
