@@ -113,6 +113,9 @@ export async function createJobs(db: Db, storage: Storage, actor: Actor, raws: J
       out.push(row.id);
     }
     return out;
+  }).catch((err) => {
+    if (isUniqueViolation(err, "jobs_one_run_per_api_file")) throw new JobError("this document was already sent to the neutralizer");
+    throw err;
   });
   await wakeWorker();
   return ids;
@@ -153,13 +156,16 @@ type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 const DOCUMENT_ID = z.uuid();
 
-/** Two clicks at once on the same draft: only the partial unique index, nothing else (review L4). */
-function isOneOpenRerunViolation(err: unknown) {
+/** A unique-index violation of exactly this index, nothing else (review L4). */
+function isUniqueViolation(err: unknown, index: string) {
   const e = err as { code?: string; constraint?: string; message?: string; cause?: { code?: string; constraint?: string; message?: string } };
   const code = e?.code ?? e?.cause?.code;
   const where = `${e?.constraint ?? ""} ${e?.cause?.constraint ?? ""} ${e?.message ?? ""} ${e?.cause?.message ?? ""}`;
-  return code === "23505" && where.includes("jobs_one_open_rerun");
+  return code === "23505" && where.includes(index);
 }
+
+/** Two clicks at once on the same draft: only the partial unique index, nothing else (review L4). */
+const isOneOpenRerunViolation = (err: unknown) => isUniqueViolation(err, "jobs_one_open_rerun");
 
 /**
  * "Run again with the latest neutralizer" (Willem 02/11): a new job from the draft's own job, same
