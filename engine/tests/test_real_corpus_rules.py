@@ -256,5 +256,91 @@ check("a label stuck to a date is no batch",
 check("a label in front of a LOT code is no batch", N.clean_identifier("Lot No. LOT2504280") == "")
 check("'No.123' is a label with a number, no batch", N.clean_identifier("No.123") == "")
 
+# 04/11/2026, real scanned COA: a numbered free-text table read by word position
+def _words(top, *cols, page=1):
+    """One printed line: (x, text) pairs; each word 6 pt per character plus a 2 pt space."""
+    out = []
+    for x, text in cols:
+        for part in text.split():
+            out.append({"page": page, "text": part, "x0": float(x), "x1": float(x + 6 * len(part)), "top": float(top)})
+            x += 6 * len(part) + 2
+    return out
+NUM = (_words(100, (36, "Sr."), (66, "TESTS"), (201, "SPECIFICATIONS"), (431, "OBSERVATIONS"))
+       + _words(112, (36, "No."))
+       + _words(124, (36, "1"), (65, "Description"), (201, "White powder or"), (430, "White"))
+       + _words(136, (201, "crystals."), (430, "powder."))
+       + _words(150, (36, "2"), (65, "Identification"))
+       + _words(162, (65, "A. IR"), (201, "Passes the test."), (430, "Passes."))
+       + _words(174, (66, "B.Melting point"), (201, "125-128 C"), (430, "126.3 C"))
+       + _words(188, (36, "3"), (65, "Residual solvents"), (201, "Meets USP <467>"))
+       + _words(196, (83, "•"))
+       + _words(204, (102, "Methanol"), (201, "NMT3000ppm"), (429, "746 ppm"))
+       + _words(218, (36, "4"), (65, "Related Substances"), (201, "Impurity A: NMT 0.5%"), (430, "Not detected."))
+       + _words(230, (65, "HPLC"), (201, "Total: NMT 1.0%"), (430, "Not detected."))
+       + _words(244, (36, "5"), (65, "Assay"), (201, "98.0% to 102.0%"), (430, "99.7%"))
+       + _words(258, (32, "Remarks: meets USP"), (300, "Lot 1 Ltd")))
+rows_n, groups_n, gap_n = N.numbered_free_text_rows(NUM)
+params = [r[0] for r in rows_n]
+check("numbered table: one row per test, wrapped lines joined in their own column",
+      rows_n[0][:3] == ["Description", "White powder or crystals.", "White powder."], rows_n[:1])
+check("numbered table: sub-tests 'A.', 'B.' and after a bullet are their own rows, as printed",
+      ["A. IR", "B.Melting point", "Methanol"] == [p for p in params if p in ("A. IR", "B.Melting point", "Methanol")], params)
+check("numbered table: a parent without values is a heading above its sub-tests", groups_n == [(1, "Identification")], groups_n)
+check("numbered table: a line with its own name and result under a row that has one drops that row",
+      not any(p.startswith("Related") or p == "HPLC" for p in params) and "Assay" in params, params)
+check("numbered table: a numbered test without a row keeps the table flagged", gap_n is True)
+check("numbered table: nothing after 'Remarks' is read", not any("Remarks" in p or "Ltd" in " ".join(r) for p, r in zip(params, rows_n)))
+reads = N.numbered_column_readings(NUM)
+check("numbered table: the gate reads each column of each row in order", "White powder or crystals." in reads, reads[:4])
+check("numbered table: a numbered list without the header gives nothing",
+      N.numbered_free_text_rows([w for w in NUM if w["top"] != 100])[0] == [])
+_off = [dict(w, x0=w["x0"] + 2, x1=w["x1"] + 160) if w["text"] == "or" else w for w in NUM]
+check("numbered table: a word running over a column edge drops its row",
+      "Description" not in [r[0] for r in N.numbered_free_text_rows(_off)[0]])
+
+# section headings inside a results table (04/11/2026, real COA)
+check("a section heading is recognised", N._group_heading(["Chemical & Physical", "", ""]) == "Chemical & Physical"
+      and N._group_heading(["OTHERS", ""]) == "OTHERS" and N._group_heading(["Microbiological"]) == "Microbiological")
+check("a supplier or lab name in a one-cell row is never a heading",
+      N._group_heading(["ACME QC Laboratory"]) is None and N._group_heading(["Example Chemicals Ltd"]) is None)
+check("a heading needs one filled cell and no number",
+      N._group_heading(["Chemical", "Physical"]) is None and N._group_heading(["Section 2 Chemical"]) is None)
+_tbl = {"full_text": "", "layout_text": "", "tables": [{"page": 1, "rows": [
+    ["Chemical & Physical", "", "", ""], ["Characteristic", "Unit", "Specification", "Results"],
+    ["pH", "", "5.5-7.5", "6.9"], ["Microbiological", "", "", ""],
+    ["Total aerobic microbial count", "cfu/g", "<= 100", "<100"]]}]}
+_f = N.parse_coa_fields(_tbl)
+check("section headings are kept with their place and never counted as tests",
+      len(_f["results_table"]) == 2 and _f["_groups"] == [(0, "Chemical & Physical"), (1, "Microbiological")]
+      and _f["_groups_n"] == 2, (_f.get("results_table"), _f.get("_groups")))
+check("a table without headings is read exactly as before", "_groups" not in N.parse_coa_fields(
+    {"full_text": "", "layout_text": "", "tables": [{"page": 1, "rows": _tbl["tables"][0]["rows"][1:3]}]}))
+import docx as _docx  # noqa: E402
+with tempfile.TemporaryDirectory() as _d:
+    _p = str(Path(_d) / "groups.docx")
+    N.build_docx(dict(_f, batch_lot="L-1", manufacture_date="01.2026", expiry_date="01.2028"),
+                 {"doc_ref": "840.S0999"}, "Sodium Benzoate", _p)
+    _rows = _docx.Document(_p).tables[1].rows
+    _heads = [r.cells[0].text for r in _rows if len({id(c._tc) for c in r.cells}) == 1]
+    check("headings are one row across the table, bold, in their place",
+          _heads == ["Chemical & Physical", "Microbiological"]
+          and all(run.bold for r in _rows if r.cells[0].text in _heads for p in r.cells[0].paragraphs for run in p.runs if run.text),
+          [r.cells[0].text for r in _rows])
+    check("headings are never yellow", yellow_runs(_p) == [], yellow_runs(_p))
+    _q = str(Path(_d) / "numbered.docx")
+    N.build_docx({"batch_lot": "L-1", "manufacture_date": "01.2026", "expiry_date": "01.2028",
+                  "results_table": rows_n, "_yellow_rows": set(range(len(rows_n))), "_numbered_gap": True,
+                  "_incomplete": len(rows_n), "_groups": groups_n, "_groups_n": len(rows_n)},
+                 {"doc_ref": "840.S0999"}, "Sodium Benzoate", _q)
+    _y = yellow_runs(_q)
+    check("rows read from a numbered table are yellow for a person", all(p in _y for p in params), _y)
+    check("a numbered test without a row keeps the incomplete note, whatever the count", N.INCOMPLETE in _y, _y)
+    _src = N.numbered_column_readings(NUM) + [" ".join(w["text"] for w in NUM)]
+    check("and the provenance gate accepts the numbered rows",
+          not provenance.check(_q, _src, ["Sodium Benzoate", "840.S0999", "L-1", "Production date", N.INCOMPLETE,
+                                          "01.2026", "01.2028"], template_path=str(N.TEMPLATE_DOC)),
+          provenance.check(_q, _src, ["Sodium Benzoate", "840.S0999", "L-1", "Production date", N.INCOMPLETE,
+                                      "01.2026", "01.2028"], template_path=str(N.TEMPLATE_DOC)))
+
 print(f"\n{ok} passed, {bad} failed")
 sys.exit(1 if bad else 0)
