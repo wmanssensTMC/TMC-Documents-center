@@ -27,6 +27,7 @@ export const NOT_NEEDED = "Not needed in TMC Logistics";
 // The only problem texts that ever go out (contract section 7).
 export const PROBLEM = {
   supplierDocument: "Supplier document needed",
+  supplierName: "Supplier name needed",
   label: "Label to be made in Document Center",
   engine: "Engine could not read the document",
 } as const;
@@ -42,7 +43,7 @@ const text = (max: number) =>
     .refine((s) => !UNSAFE.test(s), "contains control characters")
     .refine((s) => !s.trimStart().startsWith("-"), 'cannot start with "-"');
 
-const transmareEmail = z
+export const transmareEmail = z
   .email()
   .max(254)
   .refine((s) => s.toLowerCase().endsWith("@transmare.com"), "must be a @transmare.com address");
@@ -70,6 +71,11 @@ export const createBody = z.strictObject({
       .min(1)
       .max(500)
       .refine((ls) => new Set(ls.map((l) => l.lineNo)).size === ls.length, "line numbers must be unique"),
+    // v1.1 (contract 15.2): the BC vendor name, neutralise kinds only (a label never takes it, BRIEF 7.3)
+    supplierName: text(200)
+      .transform((s) => s.trim())
+      .refine((s) => s.length >= 2, "at least 2 characters")
+      .optional(),
   }),
 });
 
@@ -102,36 +108,59 @@ export function canonicalJson(v: unknown): string {
 
 // ---------- state rollup (contract section 7, edge cases Willem 27/10) ----------
 
-type Child = { id: string; apiJobId: string | null; state: string; createdAt: Date; startedAt: Date | null; finishedAt: Date | null };
+type Child = { id: string; apiJobId: string | null; state: string; createdAt: Date; startedAt: Date | null; finishedAt: Date | null; supplierKey?: string | null };
 type Result = { id: string; jobId: string | null; status: DocStatus; createdAt: Date; approvedAt: Date | null; version: number | null };
 
 /** A Final, or a former Final: a Superseded with a version. A draft replaced by "Run again" is
  * Superseded without a version and never counts (security review H1, 02/11/2026). */
 export const wasFinal = (d: { status: DocStatus; version: number | null }) => d.status === "Final" || (d.status === "Superseded" && d.version !== null);
-export type Rollup = { state: ApiJobState; problem: string | null; resultCount: number; changedAt: Date };
+/** `handOffPending`: a document handed over through the API that no run was made from yet (internal, never answered). */
+export type Rollup = { state: ApiJobState; problem: string | null; resultCount: number; changedAt: Date; handOffPending: boolean };
+
+/** A run was made from the handed-over document (one check for rollup, page and action; review M3). */
+export const handOffUsed = (req: Partial<Pick<ApiJob, "supplierFile">>, children: Pick<Child, "supplierKey">[]) =>
+  !!req.supplierFile && children.some((c) => c.supplierKey === req.supplierFile!.key);
 
 /**
  * cancelled > a run queued or running (in-progress) > a draft waiting for a check (to-check) >
  * at least one Final (ready; a Final later superseded still counts, a replaced draft never) > the latest run failed
- * (failed) > nothing usable yet, also when every draft was rejected (waiting-input).
+ * (failed) > nothing usable yet, also when every draft was rejected (waiting-input). A supplier
+ * document handed over through the API with no supplier name known yet: "Supplier name needed".
  */
-export function rollup(req: Pick<ApiJob, "kind" | "createdAt" | "cancelledAt">, children: Child[], results: Result[], lastAudit?: Date | null): Rollup {
+export function rollup(
+  req: Pick<ApiJob, "kind" | "createdAt" | "cancelledAt"> & Partial<Pick<ApiJob, "supplierFile" | "supplierName">>,
+  children: Child[],
+  results: Result[],
+  lastAudit?: Date | null,
+): Rollup {
   const times = [req.createdAt, req.cancelledAt, lastAudit, ...children.flatMap((c) => [c.createdAt, c.startedAt, c.finishedAt]), ...results.flatMap((d) => [d.createdAt, d.approvedAt])];
   const changedAt = new Date(Math.max(...times.filter((t): t is Date => !!t).map((t) => t.getTime())));
-  const base = { resultCount: results.length, changedAt };
+  const handOffPending = !!req.supplierFile && !handOffUsed(req, children);
+  const base = { resultCount: results.length, changedAt, handOffPending };
   if (req.cancelledAt) return { ...base, state: "cancelled", problem: null };
   if (children.some((c) => c.state === "queued" || c.state === "running")) return { ...base, state: "in-progress", problem: null };
   if (results.some((d) => d.status === "To check" || d.status === "Draft")) return { ...base, state: "to-check", problem: null };
   if (results.some(wasFinal)) return { ...base, state: "ready", problem: null };
   const latest = [...children].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
   if (latest?.state === "failed") return { ...base, state: "failed", problem: PROBLEM.engine };
-  return { ...base, state: "waiting-input", problem: req.kind === "label" ? PROBLEM.label : PROBLEM.supplierDocument };
+  if (req.kind === "label") return { ...base, state: "waiting-input", problem: PROBLEM.label };
+  // handed over and not run yet: waits for the supplier name, or (name known) for a person to start it
+  if (handOffPending) return { ...base, state: "waiting-input", problem: req.supplierName ? null : PROBLEM.supplierName };
+  return { ...base, state: "waiting-input", problem: PROBLEM.supplierDocument };
 }
 
 async function childrenAndResults(db: Db | Tx, apiJobIds: string[]) {
-  if (!apiJobIds.length) return { children: [] as Child[], results: [] as (Result & { type: string; name: string; version: number | null; batch: string | null })[], audit: new Map<string, Date>() };
+  if (!apiJobIds.length) return { children: [] as Child[], results: [] as (Result & { type: string; name: string; version: number | null; batch: string | null; pdfKey: string | null })[], audit: new Map<string, Date>() };
   const children = await db
-    .select({ id: jobs.id, apiJobId: jobs.apiJobId, state: jobs.state, createdAt: jobs.createdAt, startedAt: jobs.startedAt, finishedAt: jobs.finishedAt })
+    .select({
+      id: jobs.id,
+      apiJobId: jobs.apiJobId,
+      state: jobs.state,
+      createdAt: jobs.createdAt,
+      startedAt: jobs.startedAt,
+      finishedAt: jobs.finishedAt,
+      supplierKey: sql<string | null>`${jobs.supplierFile}->>'key'`,
+    })
     .from(jobs)
     .where(inArray(jobs.apiJobId, apiJobIds));
   const results = children.length
@@ -146,6 +175,7 @@ async function childrenAndResults(db: Db | Tx, apiJobIds: string[]) {
           name: documents.name,
           version: documents.version,
           batch: documents.batch,
+          pdfKey: documents.pdfKey, // internal: only the v1.1 Final file reads it, never answered
         })
         .from(documents)
         .where(
@@ -174,7 +204,7 @@ async function childrenAndResults(db: Db | Tx, apiJobIds: string[]) {
   return { children, results, audit };
 }
 
-async function rollupMany(db: Db | Tx, reqs: ApiJob[]) {
+export async function rollupMany(db: Db | Tx, reqs: ApiJob[]) {
   const { children, results, audit } = await childrenAndResults(
     db,
     reqs.map((r) => r.id),
@@ -217,7 +247,7 @@ export type JobView = ReturnType<typeof jobView>;
 
 const UUID = z.uuid();
 
-async function ownRequest(db: Db | Tx, caller: ApiCaller, id: string): Promise<ApiJob> {
+export async function ownRequest(db: Db | Tx, caller: ApiCaller, id: string): Promise<ApiJob> {
   if (!UUID.safeParse(id).success) throw new ApiError("not_found");
   const [row] = await db
     .select()
@@ -238,6 +268,8 @@ export async function createRequest(db: Db, caller: ApiCaller, idempotencyKey: s
   const body = parsed.data;
   const key = idempotencyKey.toLowerCase();
   if (body.source.requestId.toLowerCase() !== key) throw new ApiError("invalid_payload", ["source.requestId"]);
+  // a label never takes a supplier name from outside (BRIEF 7.3): for that kind the field does not exist
+  if (body.kind === "label" && body.facts.supplierName !== undefined) throw new ApiError("unknown_field", ["facts.supplierName"]);
   const bodyHash = sha256(canonicalJson(raw));
 
   const existing = async () => {
@@ -281,6 +313,7 @@ export async function createRequest(db: Db, caller: ApiCaller, idempotencyKey: s
         requestedBy,
         reason: body.source.reason,
         lines: body.facts.lines,
+        supplierName: body.facts.supplierName ?? null,
         createdBy,
       })
       .onConflictDoNothing()

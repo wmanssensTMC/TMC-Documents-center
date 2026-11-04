@@ -24,6 +24,8 @@ export type FormRequest = {
   entity: Entity;
   orderNo: string;
   lines: { lineNo: number; itemNo: string | null; description: string | null }[];
+  /** v1.1: the BC vendor name sent with the request, as a proposal the person may change. */
+  supplierName?: string | null;
 };
 
 const input =
@@ -51,7 +53,7 @@ export function NeutraliseForm({
   const [entity, setEntity] = useState<Entity>(request?.entity ?? "TMC");
   const [rows, setRows] = useState<Row[]>([]);
   const [commercial, setCommercial] = useState<File[]>([]);
-  const [supplierName, setSupplierName] = useState("");
+  const [supplierName, setSupplierName] = useState(request?.supplierName ?? "");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const withCommercial = route === "auto" || route === "coa";

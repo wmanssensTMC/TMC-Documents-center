@@ -112,6 +112,10 @@ export const jobs = pgTable(
     index("jobs_state_created").on(t.state, t.createdAt),
     index("jobs_created_by").on(t.createdBy, t.createdAt),
     index("jobs_api_job").on(t.apiJobId),
+    // API v1.1: one run per supplier file of a request (the handed-over one is used once, review M1).
+    uniqueIndex("jobs_one_run_per_api_file")
+      .on(t.apiJobId, sql`(${t.supplierFile}->>'key')`)
+      .where(sql`${t.apiJobId} IS NOT NULL AND ${t.kind} = 'neutralise'`),
     // One open finalise per document at a time (review L3).
     uniqueIndex("jobs_one_open_finalise")
       .on(t.documentId)
@@ -127,6 +131,8 @@ export const jobs = pgTable(
 
 /** One BC order line as a calling app sends it (API v1, contract section 6): BC facts only. */
 export type ApiLine = { lineNo: number; itemNo: string | null; description: string | null };
+/** A supplier document handed over through the API (v1.1). `filename` is internal, for display only. */
+export type ApiSupplierFile = JobFile & { sha256: string; size: number; contentType: string };
 
 // Apps that may call the API (API v1, contract section 3). Only the SHA-256 of a key is kept;
 // the key itself is shown once to the admin who makes it. Two active keys per client (rotation).
@@ -172,6 +178,13 @@ export const apiJobs = pgTable(
     requestedBy: text("requested_by").notNull(),
     reason: text("reason").notNull(),
     lines: jsonb("lines").$type<ApiLine[]>().notNull(),
+    // v1.1 (contract 15.2): the BC vendor name sent with the job. Internal, like a typed one: block
+    // list for the output check and the AI reader, never printed, never in an API answer.
+    supplierName: text("supplier_name"),
+    // v1.1 (contract 15.1): the one supplier document handed over through the API, kept here until
+    // the engine can start (a supplier name is known), and the hand-off's own Idempotency-Key.
+    supplierFile: jsonb("supplier_file").$type<ApiSupplierFile>(),
+    supplierFileKey: uuid("supplier_file_key"),
     createdBy: text("created_by").notNull(), // "<client>:<requestedBy>"
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     cancelledBy: text("cancelled_by"),
